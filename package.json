@@ -1,0 +1,15 @@
+{
+  "name": "egmon-dots",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Egmon Dots — points et carrés, sur papier quadrillé",
+  "scripts": {
+    "start": "node server/index.js",
+    "test": "node tests/engine.test.js && node tests/ai.test.js"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "socket.io": "^4.8.1"
+  }
+}

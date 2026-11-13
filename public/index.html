@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Jeu - chimie</title>
+  <meta name="description" content="Le plaisir des heures d'école, sur une feuille quadrillée.">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,560;9..144,680&family=Outfit:wght@380;500;640&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/styles.css">
+</head>
+<body data-theme="classic" data-page="home">
+  <header class="topbar">
+    <button type="button" class="brand" id="brand">
+      <svg class="mark" viewBox="0 0 64 64" aria-hidden="true">
+        <line x1="12" y1="14" x2="50" y2="14"/>
+        <line x1="50" y1="14" x2="50" y2="50"/>
+        <line x1="12" y1="50" x2="50" y2="50"/>
+        <line x1="12" y1="14" x2="12" y2="32"/>
+        <circle cx="12" cy="14" r="3.2"/>
+        <circle cx="50" cy="14" r="3.2"/>
+        <circle cx="50" cy="50" r="3.2"/>
+        <circle cx="12" cy="50" r="3.2"/>
+      </svg>
+      <span>Jeu - chimie</span>
+    </button>
+  </header>
+
+  <main>
+    <section id="screen-home" class="screen">
+      <div class="home-center">
+        <h1>Jeu - chimie</h1>
+        <p class="home-lead">Retrouvez le plaisir des heures d’école, quand une feuille quadrillée et deux stylos suffisaient. Fermez les carrés, et revivez ce moment.</p>
+        <button type="button" class="home-cta" id="create-match">Créer une partie</button>
+      </div>
+    </section>
+
+    <section id="screen-modes" class="screen" hidden>
+      <div class="modes-wrap">
+        <h1>Créer une partie</h1>
+        <div class="modes-layout">
+          <div class="mode-list">
+            <button type="button" class="mode" id="go-solo">
+              <strong>Solo</strong>
+              <span>Contre un robot.</span>
+            </button>
+            <button type="button" class="mode" id="go-local">
+              <strong>2 joueurs</strong>
+              <span>Même écran, deux stylos.</span>
+            </button>
+            <button type="button" class="mode" id="go-online">
+              <strong>En ligne</strong>
+              <span>Bientôt disponible.</span>
+            </button>
+            <button type="button" class="mode" id="go-tourney">
+              <strong>Tournois</strong>
+              <span>Bientôt disponible.</span>
+            </button>
+          </div>
+          <aside class="mode-side">
+            <button type="button" id="go-profile">Profil</button>
+            <button type="button" id="go-history">Historique</button>
+          </aside>
+        </div>
+        <button type="button" class="text-btn modes-back" data-home>Retour</button>
+      </div>
+    </section>
+
+    <section id="screen-setup" class="screen" hidden>
+      <form id="setup-form" class="sheet">
+        <p class="eyebrow">Nouvelle feuille</p>
+        <h1 id="setup-title">Partie solo</h1>
+        <p class="lead" id="setup-lead"></p>
+
+        <fieldset>
+          <legend>Taille du papier</legend>
+          <div class="choices" data-field="size">
+            <button type="button" data-value="20-17" data-rows="20" data-cols="17" aria-pressed="true">Cahier<small>17 × 22</small></button>
+            <button type="button" data-value="16-12" data-rows="16" data-cols="12">Cahier long<small>24 × 32</small></button>
+            <button type="button" data-value="custom" data-rows="0" data-cols="0">Libre<small>2 à 32</small></button>
+          </div>
+          <div id="custom-size" class="inline-fields" hidden>
+            <label>Lignes de carrés <input id="rows" type="number" min="2" max="32" value="6"></label>
+            <label>Colonnes de carrés <input id="cols" type="number" min="2" max="32" value="6"></label>
+          </div>
+        </fieldset>
+
+        <fieldset data-show="custom">
+          <legend>Adversaire</legend>
+          <div class="choices" data-field="opponent">
+            <button type="button" data-value="solo" aria-pressed="true">Robot</button>
+            <button type="button" data-value="local">Ami sur cet écran</button>
+          </div>
+        </fieldset>
+
+        <fieldset>
+          <legend>Règle de tour</legend>
+          <div class="choices" data-field="rule">
+            <button type="button" data-value="extra" aria-pressed="true">Classique<small>Si tu encercles, tu rejoues</small></button>
+            <button type="button" data-value="once">Alternative<small>Un point par tour</small></button>
+          </div>
+        </fieldset>
+
+        <fieldset>
+          <legend>Temps du jeu</legend>
+          <div class="choices" data-field="timeMode">
+            <button type="button" data-value="none" aria-pressed="true">Illimité</button>
+            <button type="button" data-value="global">Chrono global</button>
+          </div>
+          <div id="time-box" hidden>
+            <div id="time-presets" class="choices compact">
+              <button type="button" data-set-time="300">5 min</button>
+              <button type="button" data-set-time="600">10 min</button>
+              <button type="button" data-set-time="900">15 min</button>
+              <button type="button" data-set-time="1200">20 min</button>
+            </div>
+            <input id="timeLimit" type="hidden" value="300">
+          </div>
+        </fieldset>
+
+        <fieldset>
+          <legend>Objectif de score</legend>
+          <div class="choices" data-field="score">
+            <button type="button" data-value="0" aria-pressed="true">Aucun<small>Toute la feuille</small></button>
+            <button type="button" data-value="5">5</button>
+            <button type="button" data-value="10">10</button>
+            <button type="button" data-value="20">20</button>
+            <button type="button" data-value="custom">Autre</button>
+          </div>
+          <label id="score-custom" hidden>Premier à <input id="scoreLimit" type="number" min="1" max="500" value="15"> maisons</label>
+        </fieldset>
+
+        <div class="split">
+          <fieldset>
+            <legend>Stylo du joueur 1</legend>
+            <label class="name-label" data-show="solo local online custom">Nom <input id="p1Name" maxlength="18" placeholder="Ton nom" autocomplete="off"></label>
+            <div class="swatches" data-field="p1Color">
+              <button type="button" data-value="red" aria-label="Rouge" aria-pressed="false"></button>
+              <button type="button" data-value="blue" aria-label="Bleu" aria-pressed="true"></button>
+              <button type="button" data-value="black" aria-label="Noir"></button>
+              <button type="button" data-value="green" aria-label="Vert"></button>
+              <button type="button" data-value="purple" aria-label="Violet"></button>
+              <button type="button" data-value="orange" aria-label="Orange"></button>
+            </div>
+          </fieldset>
+          <fieldset>
+            <legend>Stylo du joueur 2</legend>
+            <label class="name-label" data-show="local custom">Nom <input id="p2Name" maxlength="18" placeholder="Nom du second" autocomplete="off"></label>
+            <div class="swatches" data-field="p2Color">
+              <button type="button" data-value="red" aria-label="Rouge" aria-pressed="true"></button>
+              <button type="button" data-value="blue" aria-label="Bleu"></button>
+              <button type="button" data-value="black" aria-label="Noir"></button>
+              <button type="button" data-value="green" aria-label="Vert"></button>
+              <button type="button" data-value="purple" aria-label="Violet"></button>
+              <button type="button" data-value="orange" aria-label="Orange"></button>
+            </div>
+          </fieldset>
+        </div>
+
+        <fieldset>
+          <legend>Thème</legend>
+          <div class="choices" data-field="theme">
+            <button type="button" data-value="classic" aria-pressed="true">Cahier</button>
+            <button type="button" data-value="light">Clair</button>
+          </div>
+        </fieldset>
+
+        <fieldset data-show="solo custom">
+          <legend>Robot</legend>
+          <div class="choices" data-field="difficulty">
+            <button type="button" data-value="easy">Facile<small>Au hasard</small></button>
+            <button type="button" data-value="medium" aria-pressed="true">Moyen<small>Contre et construit</small></button>
+            <button type="button" data-value="hard">Difficile<small>Ferme la forme</small></button>
+            <button type="button" data-value="expert">Expert<small>Anticipe le contre</small></button>
+          </div>
+        </fieldset>
+
+        <div class="form-actions">
+          <button type="button" class="btn" data-home>Retour</button>
+          <button type="submit" class="btn primary" id="setup-go">Lancer la partie</button>
+        </div>
+      </form>
+    </section>
+
+    <section id="screen-online" class="screen" hidden>
+      <div class="sheet narrow">
+        <p class="eyebrow">À distance</p>
+        <h1>Jouer en ligne</h1>
+        <p class="lead" id="online-lead">Créez une salle privée, ou rejoignez-en une avec le code.</p>
+        <button type="button" class="btn primary xl" id="create-open">Créer une partie</button>
+        <form id="join-form" class="join">
+          <h2>Rejoindre</h2>
+          <label>Votre nom <input id="join-name" maxlength="18" value="Joueur 2" autocomplete="off" required></label>
+          <label>Code <input id="join-code" maxlength="8" placeholder="EGD-4821" autocapitalize="characters" required></label>
+          <p class="hint">Votre couleur</p>
+          <div class="swatches" data-field="joinColor">
+            <button type="button" data-value="red" aria-label="Rouge" aria-pressed="true"></button>
+            <button type="button" data-value="blue" aria-label="Bleu"></button>
+            <button type="button" data-value="black" aria-label="Noir"></button>
+            <button type="button" data-value="green" aria-label="Vert"></button>
+            <button type="button" data-value="purple" aria-label="Violet"></button>
+            <button type="button" data-value="orange" aria-label="Orange"></button>
+          </div>
+          <button type="submit" class="btn primary">Rejoindre la salle</button>
+        </form>
+        <button type="button" class="btn" data-home>Retour</button>
+      </div>
+    </section>
+
+    <section id="screen-lobby" class="screen" hidden>
+      <div class="sheet narrow lobby">
+        <p class="eyebrow">Salle privée</p>
+        <h1>Donnez ce code</h1>
+        <p id="lobby-code" class="code">EGD-0000</p>
+        <p id="lobby-status">En attente d’un adversaire…</p>
+        <div class="form-actions">
+          <button type="button" class="btn" id="copy-code">Copier le code</button>
+          <button type="button" class="btn" id="copy-link">Copier le lien</button>
+        </div>
+        <button type="button" class="btn" id="lobby-cancel">Annuler</button>
+      </div>
+    </section>
+
+    <section id="screen-game" class="screen" hidden>
+      <p id="conn-banner" class="banner" hidden></p>
+      <div class="game-shell">
+        <article class="player" id="p0-card">
+          <p class="eyebrow" id="p0-turn" hidden>Au trait</p>
+          <h2 id="p0-name">Joueur 1</h2>
+          <p class="score" id="p0-score">0</p>
+          <p class="pen-name" id="p0-pen"></p>
+          <p class="turn-time" id="p0-time" hidden></p>
+          <div class="track" id="p0-bar" hidden><i></i></div>
+        </article>
+        <div class="board-column">
+          <div class="board-meta">
+            <p id="turn-label">Au tour du joueur</p>
+            <p id="clock" hidden>5:00</p>
+            <p id="rule-chip"></p>
+            <p id="move-count"></p>
+          </div>
+          <div class="board-stage">
+            <div class="board-wrap">
+              <canvas id="board" aria-label="Plateau de points et de carrés"></canvas>
+            </div>
+          </div>
+        </div>
+        <article class="player" id="p1-card">
+          <p class="eyebrow" id="p1-turn" hidden>Au trait</p>
+          <h2 id="p1-name">Joueur 2</h2>
+          <p class="score" id="p1-score">0</p>
+          <p class="pen-name" id="p1-pen"></p>
+          <p class="turn-time" id="p1-time" hidden></p>
+          <div class="track" id="p1-bar" hidden><i></i></div>
+        </article>
+        <div class="game-tools">
+          <button type="button" class="icon-btn" id="game-menu-btn" aria-label="Paramètres" aria-expanded="false">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M19.4 13.1a7.6 7.6 0 0 0 .1-1.1 7.6 7.6 0 0 0-.1-1.1l2-1.5a.5.5 0 0 0 .1-.6l-1.9-3.3a.5.5 0 0 0-.6-.2l-2.4 1a7.3 7.3 0 0 0-1.9-1.1l-.4-2.5a.5.5 0 0 0-.5-.4h-3.8a.5.5 0 0 0-.5.4L9.3 5.2a7.3 7.3 0 0 0-1.9 1.1l-2.4-1a.5.5 0 0 0-.6.2L2.5 8.8a.5.5 0 0 0 .1.6l2 1.5a7.6 7.6 0 0 0-.1 1.1 7.6 7.6 0 0 0 .1 1.1l-2 1.5a.5.5 0 0 0-.1.6l1.9 3.3a.5.5 0 0 0 .6.2l2.4-1a7.3 7.3 0 0 0 1.9 1.1l.4 2.5a.5.5 0 0 0 .5.4h3.8a.5.5 0 0 0 .5-.4l.4-2.5a7.3 7.3 0 0 0 1.9-1.1l2.4 1a.5.5 0 0 0 .6-.2l1.9-3.3a.5.5 0 0 0-.1-.6l-2-1.5ZM12 15.4A3.4 3.4 0 1 1 12 8.6a3.4 3.4 0 0 1 0 6.8Z"/>
+            </svg>
+          </button>
+          <div id="game-menu" class="game-menu" hidden>
+            <button type="button" class="btn" id="pause-btn">Pause</button>
+            <button type="button" class="btn" id="restart-btn">Recommencer</button>
+            <button type="button" class="btn danger" id="abandon-btn">Abandonner</button>
+          </div>
+        </div>
+      </div>
+      <div id="game-overlay" class="overlay" hidden>
+        <div class="dialog">
+          <div class="confetti" aria-hidden="true"></div>
+          <p class="eyebrow" id="overlay-kicker"></p>
+          <h2 id="overlay-title"></h2>
+          <p id="overlay-text"></p>
+          <div class="form-actions" id="overlay-actions"></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="screen-profile" class="screen" hidden>
+      <form id="profile-form" class="sheet narrow">
+        <h1>Profil</h1>
+        <label>Nom <input id="profile-name" type="text" maxlength="40" autocomplete="name" placeholder="Ton nom"></label>
+        <label>E-mail <input id="profile-email" type="email" maxlength="80" autocomplete="email" placeholder="ton@email"></label>
+        <div class="form-actions">
+          <button type="button" class="btn" data-home>Retour</button>
+          <button type="submit" class="btn primary">Enregistrer</button>
+        </div>
+      </form>
+    </section>
+
+    <section id="screen-history" class="screen" hidden>
+      <div class="sheet">
+        <p class="eyebrow">Carnet</p>
+        <h1>Historique</h1>
+        <div class="stats">
+          <p><strong id="stat-played">0</strong><span>Parties</span></p>
+          <p><strong id="stat-wins">0</strong><span>Victoires</span></p>
+          <p><strong id="stat-losses">0</strong><span>Défaites</span></p>
+          <p><strong id="stat-draws">0</strong><span>Égalités</span></p>
+        </div>
+        <div id="history-list"></div>
+        <div class="form-actions">
+          <button type="button" class="btn" data-home>Retour</button>
+          <button type="button" class="btn" id="clear-history">Effacer</button>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">created by Prospere Egmon</footer>
+  <div id="toast" role="status"></div>
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>

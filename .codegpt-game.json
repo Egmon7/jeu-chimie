@@ -1,0 +1,8 @@
+{
+  "name": "egmon-dots",
+  "engine": "generic",
+  "launch": { "cmd": "node", "args": ["server/index.js"] },
+  "log": { "stdout": true },
+  "ready": "Egmon Dots",
+  "sourceRoots": ["public/js", "server", "tests"]
+}
