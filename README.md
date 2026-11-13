@@ -13,17 +13,6 @@ On peut jouer seul contre un robot, ou à deux sur le même écran. Le profil ga
 | Serveur | Node.js, Express, Socket.IO |
 | Sur cet appareil | Profil, réglages, historique |
 
-## Publier
-
-| Point | Détail |
-| --- | --- |
-| Dossier du site | `public` |
-| Solo et 2 joueurs | marchent sans serveur |
-| En ligne | demande un serveur, pas la page GitHub |
-
-`localhost` est seulement l’adresse quand on lance le jeu chez soi. Les personnes qui ouvrent le site ne passent pas par cette machine. L’historique reste dans le navigateur de chacune.
-
-
 
 ## Auteur
 
