@@ -79,6 +79,15 @@
         <h1 id="setup-title">Partie solo</h1>
         <p class="lead" id="setup-lead"></p>
 
+        <div class="names-first">
+          <label class="name-label" data-show="solo local online custom">Ton nom
+            <input id="p1Name" maxlength="18" placeholder="Écris ton nom" autocomplete="off">
+          </label>
+          <label class="name-label" data-show="local custom">Nom du second
+            <input id="p2Name" maxlength="18" placeholder="Nom du second" autocomplete="off">
+          </label>
+        </div>
+
         <fieldset>
           <legend>Taille du papier</legend>
           <div class="choices" data-field="size">
@@ -140,7 +149,6 @@
         <div class="split">
           <fieldset>
             <legend>Stylo du joueur 1</legend>
-            <label class="name-label" data-show="solo local online custom">Nom <input id="p1Name" maxlength="18" placeholder="Ton nom" autocomplete="off"></label>
             <div class="swatches" data-field="p1Color">
               <button type="button" data-value="red" aria-label="Rouge" aria-pressed="false"></button>
               <button type="button" data-value="blue" aria-label="Bleu" aria-pressed="true"></button>
@@ -152,7 +160,6 @@
           </fieldset>
           <fieldset>
             <legend>Stylo du joueur 2</legend>
-            <label class="name-label" data-show="local custom">Nom <input id="p2Name" maxlength="18" placeholder="Nom du second" autocomplete="off"></label>
             <div class="swatches" data-field="p2Color">
               <button type="button" data-value="red" aria-label="Rouge" aria-pressed="true"></button>
               <button type="button" data-value="blue" aria-label="Bleu"></button>

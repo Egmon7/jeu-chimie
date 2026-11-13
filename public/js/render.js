@@ -104,7 +104,7 @@ export class BoardView {
     let bestDist = limit;
     for (let r = 0; r <= game.rows; r += 1) {
       for (let c = 0; c <= game.cols; c += 1) {
-        if (game.dots[r][c] != null) continue;
+        if (game.dots[r][c] != null || game.framed[r][c] != null) continue;
         const [px, py] = this.point(c, r);
         const dist = Math.hypot(x - px, y - py);
         if (dist < bestDist) {

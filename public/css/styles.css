@@ -641,6 +641,28 @@ body[data-page="setup"] #setup-form h1,
 body[data-page="setup"] legend,
 body[data-page="profile"] #profile-form h1,
 body[data-page="history"] #screen-history h1 { color: #f7f8fa; }
+body[data-page="setup"] .names-first {
+  display: grid;
+  gap: 14px;
+  margin: 4px 0 10px;
+}
+body[data-page="setup"] .names-first .name-label {
+  color: #f4f6f8;
+  font-size: 1rem;
+  font-weight: 640;
+}
+body[data-page="setup"] .names-first input,
+body[data-page="setup"] #p1Name,
+body[data-page="setup"] #p2Name {
+  min-height: 48px;
+  font-size: 1.15rem;
+  background: #f4f6f8;
+  color: #0e1616;
+  border: 0;
+  border-radius: 12px;
+  padding: 10px 14px;
+}
+body[data-page="setup"] .names-first input::placeholder { color: #6d7c8c; }
 body[data-page="profile"] #profile-form h1,
 body[data-page="history"] #screen-history h1 {
   font-family: var(--font);

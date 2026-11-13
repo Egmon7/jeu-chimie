@@ -152,4 +152,35 @@ assert(settings.rows === 32 && settings.cols === 2, "tailles bornées");
 assert(settings.p1Color !== settings.p2Color, "couleurs distinctes");
 assert(settings.p1Name === "Ada", "nom nettoyé");
 
+const wide = createGame({ rows: 8, cols: 10, extraTurn: false, timeMode: "none" });
+wide.dots[4][5] = 1;
+const border = [];
+for (let r = 2; r <= 6; r += 1) {
+  for (let c = 2; c <= 8; c += 1) {
+    if (r === 2 || r === 6 || c === 2 || c === 8) border.push([r, c]);
+  }
+}
+for (const [r, c] of border.slice(0, -1)) wide.dots[r][c] = 0;
+wide.dots[1][8] = 0;
+wide.dots[1][9] = 0;
+wide.dots[2][9] = 0;
+wide.current = 0;
+const big = applyMove(wide, { r: border.at(-1)[0], c: border.at(-1)[1] });
+assert(big.completed === 1 && wide.scores[0] === 1, "un grand contour, même avec un prolongement, se ferme");
+assert(enclosures(wide).length === 1 && enclosures(wide)[0].loop.length >= 8, "le grand cadre se dessine");
+
+const yard = createGame({ rows: 6, cols: 6, extraTurn: false, timeMode: "none" });
+yard.dots[3][3] = 1;
+const fence = [];
+for (let r = 1; r <= 5; r += 1) {
+  for (let c = 1; c <= 5; c += 1) {
+    if (r === 1 || r === 5 || c === 1 || c === 5) fence.push([r, c]);
+  }
+}
+for (const [r, c] of fence.slice(0, -1)) yard.dots[r][c] = 0;
+yard.current = 0;
+applyMove(yard, { r: fence.at(-1)[0], c: fence.at(-1)[1] });
+assert(!legalMoves(yard).some((move) => move.r === 3 && move.c === 2), "l'intérieur mangé n'est plus jouable");
+assert(applyMove(yard, { r: 4, c: 4 }).ok === false, "personne ne rejoue dans la maison");
+
 console.log("engine ok");

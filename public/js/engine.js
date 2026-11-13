@@ -217,8 +217,9 @@ function ringOf(game, player, cells) {
   return ring;
 }
 
-function traceMixed(ring) {
+function traceRing(ring) {
   if (ring.size < 4) return [];
+  const has = (r, c) => ring.has(`${r},${c}`);
   let sr = Infinity;
   let sc = Infinity;
   for (const item of ring) {
@@ -228,53 +229,57 @@ function traceMixed(ring) {
       sc = c;
     }
   }
-  const has = (r, c) => ring.has(`${r},${c}`);
   let r = sr;
   let c = sc;
-  let incoming = 6;
+  let from = 4;
   const loop = [];
   const guard = ring.size * 8;
   for (let n = 0; n < guard; n += 1) {
     loop.push({ r, c });
-    const ortho = [];
-    const diag = [];
-    for (let dir = 0; dir < 8; dir += 1) {
+    let found = -1;
+    for (let turn = 1; turn <= 8; turn += 1) {
+      const dir = (from + turn) % 8;
       const nr = r + DIRS8[dir][0];
       const nc = c + DIRS8[dir][1];
-      if (!has(nr, nc)) continue;
-      if (n > 0) {
-        const backR = r - DIRS8[incoming][0];
-        const backC = c - DIRS8[incoming][1];
-        if (nr === backR && nc === backC) continue;
-      }
-      if (dir % 2 === 0) ortho.push(dir);
-      else diag.push(dir);
-    }
-    let pool = ortho.length ? ortho : diag;
-    if (!pool.length && n > 0) {
-      const backDir = (incoming + 4) % 8;
-      if (has(r + DIRS8[backDir][0], c + DIRS8[backDir][1])) pool = [backDir];
-    }
-    if (!pool.length) return [];
-    let chosen = null;
-    for (let turn = 1; turn <= 8; turn += 1) {
-      const dir = (incoming + turn) % 8;
-      if (pool.includes(dir)) {
-        chosen = dir;
+      if (has(nr, nc)) {
+        found = dir;
         break;
       }
     }
-    if (chosen == null) return [];
-    incoming = chosen;
-    r += DIRS8[chosen][0];
-    c += DIRS8[chosen][1];
+    if (found < 0) return [];
+    const nr = r + DIRS8[found][0];
+    const nc = c + DIRS8[found][1];
+    from = (found + 4) % 8;
+    r = nr;
+    c = nc;
     if (r === sr && c === sc && loop.length >= 4) return loop;
   }
   return [];
 }
 
+function angularLoop(ring, cells) {
+  const dots = [...ring].map((item) => {
+    const [r, c] = item.split(",").map(Number);
+    return { r, c };
+  });
+  if (dots.length < 4) return [];
+  let ar = 0;
+  let ac = 0;
+  for (const [r, c] of cells) {
+    ar += r;
+    ac += c;
+  }
+  ar /= cells.length;
+  ac /= cells.length;
+  dots.sort((a, b) => Math.atan2(a.r - ar, a.c - ac) - Math.atan2(b.r - ar, b.c - ac) || a.r - b.r || a.c - b.c);
+  return dots;
+}
+
 function loopAround(game, player, cells) {
-  return traceMixed(ringOf(game, player, cells));
+  const ring = ringOf(game, player, cells);
+  const traced = traceRing(ring);
+  if (attachedLoop(traced)) return traced;
+  return angularLoop(ring, cells);
 }
 
 function attachedLoop(loop) {
@@ -311,16 +316,32 @@ function newHouses(game, player) {
   const seen = new Set((game.houses || []).filter((house) => house.alive && house.owner === player).map((house) => house.key));
   for (const region of interiorRegions(game, player)) {
     const loop = loopAround(game, player, region.cells);
-    if (!attachedLoop(loop)) continue;
+    if (loop.length < 4) continue;
     if (loop.some((dot) => game.dots[dot.r][dot.c] !== player || game.framed[dot.r][dot.c] != null)) continue;
     const children = region.captured.length ? region.captured.slice() : kidsInside(game, player, loop);
     if (!children.length) continue;
     const key = houseKey(children);
     if (seen.has(key)) continue;
     seen.add(key);
-    found.push({ loop, children, key });
+    found.push({
+      loop,
+      children,
+      key,
+      cells: region.cells.map(([r, c]) => ({ r, c })),
+    });
   }
   return found;
+}
+
+function sealCell(game, player, r, c) {
+  if (game.framed[r][c] != null) return;
+  if (game.dots[r][c] === player) return;
+  game.framed[r][c] = player;
+}
+
+function sealHouse(game, player, house) {
+  for (const cell of house.cells || []) sealCell(game, player, cell.r, cell.c);
+  for (const kid of house.children) sealCell(game, player, kid.r, kid.c);
 }
 
 function swallowHouses(game, player) {
@@ -372,6 +393,7 @@ export function dotIsOpen(game, move) {
   const c = move.c;
   if (!Number.isInteger(r) || !Number.isInteger(c)) return false;
   if (r < 0 || r > game.rows || c < 0 || c > game.cols) return false;
+  if (game.framed[r][c] != null) return false;
   return game.dots[r][c] == null;
 }
 
@@ -389,7 +411,7 @@ export function legalMoves(game) {
   const moves = [];
   for (let r = 0; r <= game.rows; r += 1) {
     for (let c = 0; c <= game.cols; c += 1) {
-      if (game.dots[r][c] == null) moves.push({ r, c });
+      if (dotIsOpen(game, { r, c })) moves.push({ r, c });
     }
   }
   return moves;
@@ -432,9 +454,7 @@ export function applyMove(game, move) {
       alive: true,
     });
     game.scores[player] += 1;
-    for (const kid of house.children) {
-      if (game.framed[kid.r][kid.c] == null) game.framed[kid.r][kid.c] = player;
-    }
+    sealHouse(game, player, house);
   }
   const eaten = swallowHouses(game, player);
   if (!houses.length && eaten > 0) game.scores[player] += eaten;
@@ -443,7 +463,7 @@ export function applyMove(game, move) {
   const limit = game.settings.scoreLimit;
   if (limit > 0 && game.scores[player] >= limit) {
     finish(game, player, "score");
-  } else if (game.movesPlayed >= game.totalDots) {
+  } else if (legalMoves(game).length === 0 || game.movesPlayed >= game.totalDots) {
     finishByScore(game);
   } else if ((houses.length > 0 || eaten > 0) && game.settings.extraTurn) {
     resetTurnClock(game);
