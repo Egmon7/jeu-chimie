@@ -5,11 +5,16 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Jeu - chimie</title>
   <meta name="description" content="Le plaisir des heures d'école, sur une feuille quadrillée.">
+  <style>
+    html, body { margin: 0; background: #0e1616; color: #f4f6f8; }
+    [hidden] { display: none !important; }
+    body:not(.ready) { visibility: hidden; }
+  </style>
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,560;9..144,680&family=Outfit:wght@380;500;640&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="css/styles.css">
+  <link rel="stylesheet" href="css/styles.css" onload="document.body.classList.add('ready')">
 </head>
 <body data-theme="classic" data-page="home">
   <header class="topbar">
