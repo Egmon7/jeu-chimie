@@ -53,6 +53,7 @@ body {
   min-height: 100dvh;
 }
 button, input { font: inherit; color: inherit; }
+input, select, textarea { font-size: max(16px, 1em); }
 button { cursor: pointer; }
 h1, h2, .brand span, .code {
   font-family: var(--display);
@@ -186,7 +187,8 @@ input[type="number"], input[type="text"], input[type="email"], #join-code, #join
 .swatches button[data-value="purple"] { background: #7b3ff2; }
 .swatches button[data-value="orange"] { background: #f0741a; }
 .swatches button[aria-pressed="true"] { outline: 2px solid var(--ink); outline-offset: 3px; }
-.swatches button:disabled { opacity: 0.28; cursor: not-allowed; outline: none; }
+.swatches button:disabled, .choices button:disabled { opacity: 0.28; cursor: not-allowed; outline: none; }
+.score-cap { margin: 8px 0 0; font-size: 0.92rem; }
 .form-actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 16px; }
 .hint { margin-bottom: 0; color: var(--muted); }
 
@@ -281,7 +283,7 @@ body[data-page="play"] #screen-game {
 .pen-name, .turn-time, .board-meta p { color: var(--muted); margin: 4px 0; }
 .track { height: 5px; border-radius: 99px; background: var(--line); overflow: hidden; margin-top: 10px; }
 .track i { display: block; height: 100%; width: 100%; background: var(--pen, var(--accent)); transform-origin: left center; }
-.board-column { grid-area: board; display: flex; flex-direction: column; min-height: 0; min-width: 0; height: 100%; }
+.board-column { grid-area: board; display: flex; flex-direction: column; min-height: 0; min-width: 0; max-width: 100%; height: 100%; overflow: hidden; }
 .board-stage {
   flex: 1;
   min-height: 0;
@@ -679,7 +681,8 @@ body[data-page="history"] .empty,
 body[data-page="history"] .stats span,
 body[data-page="history"] .history-item span { color: #9aa8ba; }
 body[data-page="setup"] .lead,
-body[data-page="setup"] label { color: #9aa8ba; }
+body[data-page="setup"] label,
+body[data-page="setup"] .score-cap { color: #9aa8ba; }
 body[data-page="setup"] .choices button {
   background: #1c2a29;
   color: #f4f6f8;
@@ -742,3 +745,21 @@ body[data-page="history"] .btn.primary {
   }
   body[data-page="modes"] .mode-list .mode span { white-space: normal; }
 }
+
+.board-stage {
+  display: flex;
+  flex-direction: column;
+  align-items: safe center;
+  justify-content: safe center;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  touch-action: manipulation;
+}
+.board-wrap {
+  flex: 0 0 auto;
+  width: max(min(100cqw, calc(100cqh * var(--sheet-w, 9) / var(--sheet-h, 10))), calc(var(--sheet-w, 9) * 40px));
+}
+#board { touch-action: manipulation; }

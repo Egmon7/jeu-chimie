@@ -1,7 +1,14 @@
-import { legalMoves, moveInfo } from "./engine.js";
+import { applyMove, cloneGame, dotIsOpen, legalMoves, moveInfo } from "./engine.js";
 
 const NEAR = [[-1, -1], [-1, 0], [-1, 1], [0, -1], [0, 1], [1, -1], [1, 0], [1, 1]];
 const ORTHO = [[-1, 0], [1, 0], [0, -1], [0, 1]];
+
+const PROFILE = {
+  medium: { depth: 0, window: 4, reply: 0, fork: 1 },
+  hard: { depth: 2, window: 6, reply: 4, fork: 1 },
+  veryhard: { depth: 2, window: 8, reply: 5, fork: 2 },
+  expert: { depth: 3, window: 6, reply: 4, fork: 3 },
+};
 
 function pick(list) {
   return list[Math.floor(Math.random() * list.length)];
@@ -11,155 +18,286 @@ function inside(game, r, c) {
   return r >= 0 && c >= 0 && r <= game.rows && c <= game.cols;
 }
 
-function ownerAt(game, r, c) {
-  if (!inside(game, r, c)) return null;
-  return game.dots[r][c];
-}
-
-function dotsOf(game, player) {
+function aliveDots(game, player) {
   const list = [];
   for (let r = 0; r <= game.rows; r += 1) {
     for (let c = 0; c <= game.cols; c += 1) {
-      if (game.dots[r][c] === player) list.push({ r, c });
+      if (game.dots[r][c] === player && game.framed[r][c] == null) list.push({ r, c });
     }
   }
   return list;
 }
 
-function withPlayer(game, player, run) {
-  const saved = game.current;
-  game.current = player;
-  try {
-    return run();
-  } finally {
-    game.current = saved;
+function focus(game, player, dist) {
+  const spots = new Map();
+  for (const dot of aliveDots(game, player)) {
+    for (let dr = -dist; dr <= dist; dr += 1) {
+      for (let dc = -dist; dc <= dist; dc += 1) {
+        if (dr === 0 && dc === 0 || Math.max(Math.abs(dr), Math.abs(dc)) > dist) continue;
+        const r = dot.r + dr;
+        const c = dot.c + dc;
+        if (!dotIsOpen(game, { r, c })) continue;
+        spots.set(`${r},${c}`, { r, c });
+      }
+    }
   }
+  return [...spots.values()];
 }
 
-function capturingMoves(game, player) {
-  return withPlayer(game, player, () => {
-    const found = [];
-    for (const move of legalMoves(game)) {
+function winningMoves(game, player) {
+  const saved = game.current;
+  game.current = player;
+  const victims = aliveDots(game, 1 - player);
+  const found = [];
+  const holes = focus(game, player, 1)
+    .filter((move) => tightness(game, player, move) >= 2)
+    .sort((a, b) => nearestDot(victims, a) - nearestDot(victims, b) || tightness(game, player, b) - tightness(game, player, a))
+    .slice(0, 12);
+  try {
+    for (const move of holes) {
       const info = moveInfo(game, move);
       if (info.completes > 0) found.push({ move, completes: info.completes });
     }
-    return found;
+  } finally {
+    game.current = saved;
+  }
+  found.sort((a, b) => {
+    if (b.completes !== a.completes) return b.completes - a.completes;
+    const da = nearestDot(victims, a.move);
+    const db = nearestDot(victims, b.move);
+    if (da !== db) return da - db;
+    return tightness(game, player, b.move) - tightness(game, player, a.move) || a.move.r - b.move.r || a.move.c - b.move.c;
   });
+  return found;
 }
 
-function bestCapture(list) {
-  if (!list.length) return null;
-  list.sort((a, b) => b.completes - a.completes);
-  const best = list[0].completes;
-  return pick(list.filter((item) => item.completes === best)).move;
+function nearestDot(dots, move) {
+  let best = 99;
+  for (const dot of dots) best = Math.min(best, Math.max(Math.abs(dot.r - move.r), Math.abs(dot.c - move.c)));
+  return best;
 }
 
-function attachedScore(game, player, r, c) {
-  let ortho = 0;
-  let diag = 0;
-  for (const [dr, dc] of ORTHO) {
-    if (ownerAt(game, r + dr, c + dc) === player) ortho += 1;
-  }
+function tightness(game, player, move) {
+  let count = 0;
   for (const [dr, dc] of NEAR) {
-    if (dr !== 0 && dc !== 0 && ownerAt(game, r + dr, c + dc) === player) diag += 1;
+    const r = move.r + dr;
+    const c = move.c + dc;
+    if (!inside(game, r, c)) continue;
+    if (game.dots[r][c] === player && game.framed[r][c] == null) count += 1;
   }
-  return ortho * 6 + diag * 2;
+  return count;
 }
 
-function ringProgress(game, player, dot) {
+function ringAround(game, player, dot) {
   let ours = 0;
   let gaps = 0;
   for (const [dr, dc] of NEAR) {
-    const who = ownerAt(game, dot.r + dr, dot.c + dc);
-    if (who === player) ours += 1;
-    else if (who == null && inside(game, dot.r + dr, dot.c + dc)) gaps += 1;
+    const r = dot.r + dr;
+    const c = dot.c + dc;
+    if (!inside(game, r, c)) continue;
+    const who = game.dots[r][c];
+    if (who === player && game.framed[r][c] == null) ours += 1;
+    else if (who == null && game.framed[r][c] == null) gaps += 1;
   }
   return { ours, gaps };
 }
 
-function shapeScore(game, player, move) {
+function buildScore(game, player, move) {
   const { r, c } = move;
-  const mine = dotsOf(game, player);
-  const others = dotsOf(game, 1 - player);
-  let score = attachedScore(game, player, r, c);
+  const mine = aliveDots(game, player);
+  const others = aliveDots(game, 1 - player);
+  let score = 0;
+  for (const [dr, dc] of ORTHO) {
+    const nr = r + dr;
+    const nc = c + dc;
+    if (inside(game, nr, nc) && game.dots[nr][nc] === player && game.framed[nr][nc] == null) score += 6;
+  }
+  for (const [dr, dc] of NEAR) {
+    if (dr === 0 || dc === 0) continue;
+    const nr = r + dr;
+    const nc = c + dc;
+    if (inside(game, nr, nc) && game.dots[nr][nc] === player && game.framed[nr][nc] == null) score += 2;
+  }
+  if (mine.length && score === 0) score -= 12;
 
-  if (!mine.length) {
+  if (!others.length) {
     score -= Math.abs(r - game.rows / 2) + Math.abs(c - game.cols / 2);
-    for (const dot of others) {
-      const dist = Math.max(Math.abs(dot.r - r), Math.abs(dot.c - c));
-      if (dist <= 2) score += (3 - dist) * 8;
-    }
     return score;
   }
 
-  if (score === 0) score -= 12;
-
+  let nearest = 99;
   for (const dot of others) {
     const dist = Math.max(Math.abs(dot.r - r), Math.abs(dot.c - c));
+    nearest = Math.min(nearest, dist);
     if (dist > 2) continue;
-    const ring = ringProgress(game, player, dot);
-    if (dist === 1) score += 16 + ring.ours * 4 + (ring.gaps <= 2 ? 10 : 0);
-    else if (score > 0) score += 5;
+    const ring = ringAround(game, player, dot);
+    if (dist === 1) score += 18 + ring.ours * 6 + (ring.gaps <= 2 ? 12 : 0);
+    else if (score > 0) score += 4 + ring.ours;
   }
-
-  for (const dot of mine) {
-    if (Math.max(Math.abs(dot.r - r), Math.abs(dot.c - c)) !== 1) continue;
-    const ring = ringProgress(game, 1 - player, dot);
-    if (ring.ours >= 2) score += 8 + ring.ours * 2;
-  }
+  score -= nearest * 3;
   return score;
 }
 
-function rankedMoves(game, player, moves) {
-  return moves
-    .map((move) => ({ move, score: shapeScore(game, player, move) }))
-    .sort((a, b) => b.score - a.score);
+function byBuild(game, player) {
+  const mine = aliveDots(game, player);
+  const others = aliveDots(game, 1 - player);
+  if (!mine.length && !others.length) {
+    const center = { r: Math.round(game.rows / 2), c: Math.round(game.cols / 2) };
+    return dotIsOpen(game, center) ? [center] : legalMoves(game).slice(0, 1);
+  }
+  const pool = new Map();
+  for (const move of focus(game, player, 2)) pool.set(`${move.r},${move.c}`, move);
+  for (const move of focus(game, 1 - player, 2)) pool.set(`${move.r},${move.c}`, move);
+  const list = [...pool.values()];
+  if (!list.length) return legalMoves(game).slice(0, 1);
+  list.sort((a, b) => buildScore(game, player, b) - buildScore(game, player, a) || a.r - b.r || a.c - b.c);
+  return list;
+}
+
+function consider(game, player, limit) {
+  const seen = new Set();
+  const out = [];
+  const push = (move) => {
+    const key = `${move.r},${move.c}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(move);
+  };
+  for (const item of winningMoves(game, player)) push(item.move);
+  for (const move of byBuild(game, player)) {
+    if (out.length >= limit) break;
+    push(move);
+  }
+  return out;
+}
+
+function pendingCount(game, player) {
+  return winningMoves(game, player).length;
+}
+
+function positionValue(game, me, fork) {
+  if (game.status !== "playing") {
+    if (game.winner === me) return 9000 + game.scores[me] * 10;
+    if (game.winner === "draw" || game.winner == null) return 0;
+    return -9000 - game.scores[1 - me] * 10;
+  }
+  const diff = game.scores[me] - game.scores[1 - me];
+  let shape = 0;
+  for (const dot of aliveDots(game, 1 - me)) {
+    const ring = ringAround(game, me, dot);
+    if (ring.ours >= 2) shape += ring.ours * 3 + (ring.gaps <= 2 ? 8 : 0);
+  }
+  for (const dot of aliveDots(game, me)) {
+    const ring = ringAround(game, 1 - me, dot);
+    if (ring.ours >= 2) shape -= ring.ours * 3 + (ring.gaps <= 2 ? 8 : 0);
+  }
+  const mine = pendingCount(game, me);
+  const opp = pendingCount(game, 1 - me);
+  let value = diff * 100 + shape;
+  if (game.current === me) {
+    value += mine >= 2 ? 70 * fork + 80 : mine * (20 + fork * 5);
+    value -= opp * 25;
+  } else {
+    value -= opp >= 2 ? 80 * fork + 100 : opp * (40 + fork * 8);
+    value += mine >= 2 ? 60 * fork : mine * 12;
+  }
+  return value;
+}
+
+function search(game, me, depth, profile) {
+  if (game.status !== "playing" || depth <= 0) return positionValue(game, me, profile.fork);
+  const player = game.current;
+  const moves = consider(game, player, profile.reply);
+  if (!moves.length) return positionValue(game, me, profile.fork);
+  let best = player === me ? -Infinity : Infinity;
+  for (const move of moves) {
+    const copy = cloneGame(game);
+    applyMove(copy, move);
+    const value = search(copy, me, depth - 1, profile);
+    if (player === me) best = Math.max(best, value);
+    else best = Math.min(best, value);
+  }
+  return best;
+}
+
+function taste(game, player, move, fork) {
+  const copy = cloneGame(game);
+  const result = applyMove(copy, move);
+  if (!result.ok) return -99999;
+  if (copy.status !== "playing") return copy.winner === player ? 5000 : copy.winner === "draw" ? 0 : -5000;
+  const mine = pendingCount(copy, player);
+  const opp = pendingCount(copy, 1 - player);
+  const gained = (result.completed + result.eaten) * 120;
+  const doors = mine >= 2 ? 90 * fork : mine * 16;
+  const danger = opp >= 2 ? 100 * fork : opp * 40;
+  return gained + doors - danger;
+}
+
+function bestImmediate(game, player, chain) {
+  const found = winningMoves(game, player);
+  if (!found.length) return null;
+  if (!chain || found.length === 1) return found[0].move;
+  let best = found[0].move;
+  let bestValue = -1;
+  for (const item of found.slice(0, 4)) {
+    const copy = cloneGame(game);
+    const result = applyMove(copy, item.move);
+    const again = copy.status === "playing" && copy.current === player ? pendingCount(copy, player) : 0;
+    const value = (result.completed + result.eaten) * 10 + again;
+    if (value > bestValue) {
+      bestValue = value;
+      best = item.move;
+    }
+  }
+  return best;
+}
+
+function mediumChoice(game, player) {
+  const ranked = byBuild(game, player).slice(0, 4);
+  if (!ranked.length) return legalMoves(game)[0] || null;
+  let choice = ranked[0];
+  let gift = 99;
+  for (const move of ranked) {
+    const copy = cloneGame(game);
+    const result = applyMove(copy, move);
+    const next = result.ok && copy.status === "playing" && copy.current !== player ? pendingCount(copy, 1 - player) : 0;
+    if (next < gift) {
+      gift = next;
+      choice = move;
+    }
+  }
+  return choice;
+}
+
+function searchRoot(game, player, profile) {
+  const ranked = consider(game, player, Math.max(profile.window + 4, 10));
+  ranked.sort((a, b) => taste(game, player, b, profile.fork) - taste(game, player, a, profile.fork) || a.r - b.r || a.c - b.c);
+  const window = ranked.slice(0, profile.window);
+  let best = window[0];
+  let bestValue = -Infinity;
+  for (const move of window) {
+    const copy = cloneGame(game);
+    applyMove(copy, move);
+    const value = search(copy, player, profile.depth - 1, profile);
+    if (value > bestValue) {
+      bestValue = value;
+      best = move;
+    }
+  }
+  return best || legalMoves(game)[0] || null;
 }
 
 export function chooseMove(game, difficulty = "medium") {
   const moves = legalMoves(game);
   if (!moves.length || game.status !== "playing") return null;
-  const player = game.current;
   if (difficulty === "easy") return pick(moves);
 
-  const capture = bestCapture(capturingMoves(game, player));
-  if (capture) return capture;
-
-  const threats = capturingMoves(game, 1 - player);
-  if (threats.length) {
-    threats.sort((a, b) => b.completes - a.completes);
-    const best = threats[0].completes;
-    const blocks = threats
-      .filter((item) => item.completes === best)
-      .map((item) => ({ move: item.move, score: shapeScore(game, player, item.move) }))
-      .sort((a, b) => b.score - a.score);
-    const top = blocks[0].score;
-    return pick(blocks.filter((item) => item.score === top)).move;
-  }
-
-  const ranked = rankedMoves(game, player, moves);
-  if (difficulty === "medium") {
-    const top = ranked[0].score;
-    return pick(ranked.filter((item) => item.score === top)).move;
-  }
-
-  const slack = difficulty === "expert" ? 2 : 4;
-  const window = ranked.filter((item) => item.score >= ranked[0].score - slack).slice(0, difficulty === "expert" ? 8 : 5);
-  let choice = window[0];
-  let bestValue = -Infinity;
-  for (const item of window) {
-    game.dots[item.move.r][item.move.c] = player;
-    const replyHit = capturingMoves(game, 1 - player).reduce((n, hit) => Math.max(n, hit.completes), 0);
-    let threat = 0;
-    if (difficulty === "expert" && replyHit === 0) {
-      threat = capturingMoves(game, player).reduce((n, hit) => Math.max(n, hit.completes), 0);
-    }
-    game.dots[item.move.r][item.move.c] = null;
-    const value = item.score + threat * 25 - replyHit * 40;
-    if (value > bestValue) {
-      bestValue = value;
-      choice = item;
-    }
-  }
-  return choice.move;
+  const profile = PROFILE[difficulty] || PROFILE.medium;
+  const player = game.current;
+  const win = bestImmediate(game, player, profile.depth > 0);
+  if (win) return win;
+  const block = bestImmediate(game, 1 - player, false);
+  if (block) return block;
+  if (profile.depth === 0) return mediumChoice(game, player);
+  return searchRoot(game, player, profile);
 }

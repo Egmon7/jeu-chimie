@@ -1,4 +1,4 @@
-import { applyMove, createGame, enclosures, legalMoves, moveInfo, normalizeSettings, tick } from "../public/js/engine.js";
+import { applyMove, createGame, enclosures, legalMoves, moveInfo, normalizeSettings, sheetHouseCap, tick } from "../public/js/engine.js";
 
 function assert(cond, message) {
   if (!cond) throw new Error(message);
@@ -182,5 +182,31 @@ yard.current = 0;
 applyMove(yard, { r: fence.at(-1)[0], c: fence.at(-1)[1] });
 assert(!legalMoves(yard).some((move) => move.r === 3 && move.c === 2), "l'intérieur mangé n'est plus jouable");
 assert(applyMove(yard, { r: 4, c: 4 }).ok === false, "personne ne rejoue dans la maison");
+
+assert(sheetHouseCap(20, 17) === 42, "le cahier 17×22 tient 42 maisons");
+assert(normalizeSettings({ rows: 20, cols: 17, scoreLimit: 50 }).scoreLimit === 42, "un objectif trop grand est ramené à la feuille");
+assert(normalizeSettings({ rows: 20, cols: 17, scoreLimit: 10 }).scoreLimit === 10, "un objectif tenable reste");
+assert(normalizeSettings({ scoreLimit: 0 }).scoreLimit === 0, "sans objectif, on joue toute la feuille");
+
+const gapRing = createGame({ rows: 6, cols: 6, extraTurn: false, timeMode: "none" });
+gapRing.dots[3][3] = 1;
+const edge = [];
+for (let r = 1; r <= 5; r += 1) {
+  for (let c = 1; c <= 5; c += 1) {
+    if ((r === 1 || r === 5 || c === 1 || c === 5) && !(r === 1 && c === 3)) edge.push([r, c]);
+  }
+}
+for (const [r, c] of edge.slice(0, -1)) gapRing.dots[r][c] = 0;
+gapRing.current = 0;
+const gapClose = applyMove(gapRing, { r: edge.at(-1)[0], c: edge.at(-1)[1] });
+assert(gapClose.completed === 1, "un grand cercle avec un petit trou se ferme");
+const gapLoop = enclosures(gapRing)[0].loop;
+let gapFar = 0;
+for (let i = 0; i < gapLoop.length; i += 1) {
+  const a = gapLoop[i];
+  const b = gapLoop[(i + 1) % gapLoop.length];
+  gapFar = Math.max(gapFar, Math.max(Math.abs(a.r - b.r), Math.abs(a.c - b.c)));
+}
+assert(gapFar <= 2 && gapFar >= 1, "le contour se referme sans grande ligne");
 
 console.log("engine ok");

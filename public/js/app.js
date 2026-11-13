@@ -7,6 +7,7 @@ import {
   formatClock,
   legalMoves,
   normalizeSettings,
+  sheetHouseCap,
   tick,
   COLORS,
 } from "./engine.js";
@@ -26,6 +27,7 @@ const DIFF_LABEL = {
   easy: "Facile",
   medium: "Moyen",
   hard: "Difficile",
+  veryhard: "Très difficile",
   expert: "Expert",
 };
 
@@ -239,11 +241,40 @@ function syncPenColors(changedField) {
   }
 }
 
+function sheetFromForm() {
+  const size = document.querySelector('[data-field="size"] [aria-pressed="true"]');
+  const custom = size?.dataset.value === "custom";
+  const rows = custom ? Number($("rows").value) : Number(size?.dataset.rows);
+  const cols = custom ? Number($("cols").value) : Number(size?.dataset.cols);
+  return { rows, cols, cap: sheetHouseCap(rows, cols) };
+}
+
+function syncScoreCap() {
+  const { cap } = sheetFromForm();
+  const note = $("score-cap");
+  if (note) note.textContent = `Cette feuille peut contenir au plus ${cap} maisons.`;
+  const input = $("scoreLimit");
+  if (input) {
+    input.max = String(cap);
+    if (Number(input.value) > cap) input.value = String(cap);
+  }
+  document.querySelectorAll('[data-field="score"] [data-value]').forEach((btn) => {
+    const value = Number(btn.dataset.value);
+    const over = Number.isFinite(value) && value > cap;
+    btn.disabled = over;
+    if (over && btn.getAttribute("aria-pressed") === "true") {
+      const fallback = ["20", "10", "5", "0"].find((item) => Number(item) <= cap) || "0";
+      setGroup("score", fallback);
+    }
+  });
+}
+
 function syncFormBits() {
   $("custom-size").hidden = readGroup("size") !== "custom";
   const timeMode = readGroup("timeMode");
   $("time-box").hidden = timeMode === "none";
   $("score-custom").hidden = readGroup("score") !== "custom";
+  syncScoreCap();
   document.querySelectorAll("[data-show]").forEach((el) => {
     el.hidden = !el.dataset.show.split(" ").includes(app.formMode);
   });
@@ -266,12 +297,57 @@ function syncFormBits() {
   applyTheme(readGroup("theme") || app.prefs.theme);
 }
 
-function openSetup(mode) {
+const MATCH_KEY = "egmon-live-match";
+
+function saveMatch() {
+  if (app.mode !== "solo" && app.mode !== "local") return;
+  try {
+    if (!app.game || app.game.status !== "playing") {
+      sessionStorage.removeItem(MATCH_KEY);
+      return;
+    }
+    sessionStorage.setItem(MATCH_KEY, JSON.stringify({
+      mode: app.mode,
+      players: app.players,
+      game: app.game,
+    }));
+  } catch {
+    /* la partie continue même si le navigateur refuse le stockage */
+  }
+}
+
+function restoreMatch() {
+  try {
+    const saved = JSON.parse(sessionStorage.getItem(MATCH_KEY) || "null");
+    if (!saved?.game || saved.game.status !== "playing") return false;
+    if (saved.mode !== "solo" && saved.mode !== "local") return false;
+    if (!Array.isArray(saved.game.dots) || !Array.isArray(saved.players) || saved.players.length !== 2) return false;
+    app.mode = saved.mode;
+    app.players = saved.players;
+    app.game = saved.game;
+    app.seat = 0;
+    app.paused = false;
+    app.inputLock = false;
+    app.recorded = false;
+    app.timeoutQueued = null;
+    show("screen-game", "replace");
+    paintMatch();
+    hideOverlay();
+    if (app.mode === "solo" && app.players[app.game.current]?.kind === "ai") queueAi();
+    return true;
+  } catch {
+    sessionStorage.removeItem(MATCH_KEY);
+    return false;
+  }
+}
+
+function openSetup(mode, historyMode = "push") {
   app.formMode = mode;
+  try { sessionStorage.setItem("egmon-setup-mode", mode); } catch { /* ignore */ }
   fillForm(app.prefs);
   $("p1Name").value = "";
   $("p2Name").value = "";
-  show("screen-setup");
+  show("screen-setup", historyMode);
 }
 
 function openProfile() {
@@ -312,6 +388,7 @@ function startMatch(settings, mode) {
   paintMatch();
   hideOverlay();
   if (mode === "solo" && app.game.current === 1) queueAi();
+  saveMatch();
 }
 
 function paintMatch() {
@@ -442,6 +519,7 @@ function playLocal(move, fromTimeout) {
   }
   if (result.eaten) popScore(1 - result.player);
   refreshHud();
+  saveMatch();
   window.setTimeout(() => afterMove(), 230 + result.completed * 180);
 }
 
@@ -453,6 +531,7 @@ function popScore(player) {
 }
 
 function afterMove() {
+  saveMatch();
   app.inputLock = false;
   if (!app.game) return;
   if (app.game.status === "finished") {
@@ -534,7 +613,11 @@ function resultCopy() {
     if (app.mode === "local") title = `${app.players[game.winner].name} gagne`;
     else title = game.winner === (app.mode === "online" ? app.seat : 0) ? "Victoire" : "Défaite";
   }
-  const text = `${app.players[0].name} ${game.scores[0]}  ·  ${game.scores[1]} ${app.players[1].name}\n${REASON[game.reason] || ""}`;
+  let because = REASON[game.reason] || "";
+  if (game.reason === "board" && game.settings.scoreLimit > 0) {
+    because = "La feuille est pleine avant l’objectif. Le plus grand score gagne.";
+  }
+  const text = `${app.players[0].name} ${game.scores[0]}  ·  ${game.scores[1]} ${app.players[1].name}\n${because}`;
   return { title, text, celebrate: title === "Victoire" || (app.mode === "local" && title !== "Égalité") };
 }
 
@@ -573,9 +656,11 @@ function rematch() {
   paintMatch();
   hideOverlay();
   if (app.mode === "solo" && app.game.current === 1) queueAi();
+  saveMatch();
 }
 
 function goHome() {
+  try { sessionStorage.removeItem(MATCH_KEY); } catch { /* ignore */ }
   if (app.mode === "online" && app.game?.status === "playing") {
     app.game.winner = 1 - app.seat;
     app.game.reason = "abandon";
@@ -884,6 +969,13 @@ function bind() {
     }
   });
 
+  for (const id of ["rows", "cols", "scoreLimit"]) {
+    $(id).addEventListener("input", () => {
+      if (!$("screen-setup") || $("screen-setup").hidden) return;
+      syncFormBits();
+    });
+  }
+
   $("create-match").addEventListener("click", () => show("screen-modes"));
   $("go-solo").addEventListener("click", () => openSetup("solo"));
   $("go-local").addEventListener("click", () => openSetup("local"));
@@ -1012,10 +1104,24 @@ function bind() {
     first === "home" ? `${location.pathname}${location.search}` : `${location.pathname}${location.search}#${first}`,
   );
   if (first === "history") renderHistory();
-  if (first !== "home") show(SCREEN_BY_PAGE[first], "skip");
+  if (first === "game") {
+    if (!restoreMatch()) show("screen-home", "replace");
+  } else if (first === "setup") {
+    openSetup(sessionStorage.getItem("egmon-setup-mode") || "solo", "skip");
+  } else if (first !== "home") {
+    show(SCREEN_BY_PAGE[first], "skip");
+  }
   window.addEventListener("popstate", (event) => {
     const page = event.state?.page || "home";
     if (page === "history") renderHistory();
+    if (page === "game") {
+      if (!restoreMatch()) show("screen-home", "replace");
+      return;
+    }
+    if (page === "setup") {
+      openSetup(sessionStorage.getItem("egmon-setup-mode") || "solo", "skip");
+      return;
+    }
     show(SCREEN_BY_PAGE[page] || "screen-home", "skip");
   });
 

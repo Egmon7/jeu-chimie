@@ -13,7 +13,7 @@ function almostSurrounded() {
   return game;
 }
 
-for (const level of ["medium", "hard", "expert"]) {
+for (const level of ["medium", "hard", "veryhard", "expert"]) {
   const move = chooseMove(almostSurrounded(), level);
   assert(move && move.r === 2 && move.c === 2, `${level} ferme le contour`);
 }
@@ -51,6 +51,11 @@ function startedRing() {
 
 const built = chooseMove(startedRing(), "medium");
 assert(built && Math.max(Math.abs(built.r - 3), Math.abs(built.c - 3)) === 1, "moyen poursuit la forme autour du point adverse");
+const again = chooseMove(startedRing(), "medium");
+assert(again && again.r === built.r && again.c === built.c, "moyen rejoue le même coup");
+
+const opening = chooseMove(createGame({ rows: 5, cols: 5, extraTurn: true, timeMode: "none" }), "medium");
+assert(opening && opening.r === 3 && opening.c === 3, "moyen ouvre au centre");
 
 function mustCounter() {
   const game = createGame({ rows: 4, cols: 4, extraTurn: true, timeMode: "none" });

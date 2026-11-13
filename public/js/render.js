@@ -14,6 +14,8 @@ export class BoardView {
     this.penStyle = "fine";
     this.theme = "classic";
     this.hover = null;
+    this.press = null;
+    this.pointers = new Set();
     this.anims = [];
     this.geom = null;
     this.canPlay = () => false;
@@ -21,8 +23,12 @@ export class BoardView {
     this.onPointer = this.onPointer.bind(this);
     canvas.addEventListener("pointerdown", this.onPointer);
     canvas.addEventListener("pointermove", this.onPointer);
-    canvas.addEventListener("pointerleave", () => {
+    canvas.addEventListener("pointerup", this.onPointer);
+    canvas.addEventListener("pointercancel", this.onPointer);
+    canvas.addEventListener("pointerleave", (event) => {
       this.hover = null;
+      this.press = null;
+      this.pointers.delete(event.pointerId);
     });
   }
 
@@ -77,8 +83,8 @@ export class BoardView {
       this.geom = null;
       return;
     }
-    const padX = 16;
-    const padY = 12;
+    const padX = 22;
+    const padY = 22;
     const cell = Math.min(
       (this.viewWidth - padX * 2) / game.cols,
       (this.viewHeight - padY * 2) / game.rows,
@@ -126,10 +132,41 @@ export class BoardView {
       this.canvas.style.cursor = this.hover ? "pointer" : "default";
       return;
     }
-    if (event.type === "pointerdown" && hit && this.canPlay()) {
-      event.preventDefault();
-      this.onMove(hit);
+    if (event.type === "pointerdown") {
+      this.pointers.add(event.pointerId);
+      if (this.pointers.size > 1) {
+        this.press = null;
+        return;
+      }
+      this.press = hit && this.canPlay()
+        ? {
+          id: event.pointerId,
+          x: event.clientX,
+          y: event.clientY,
+          hit,
+          scale: window.visualViewport?.scale || 1,
+        }
+        : null;
+      return;
     }
+    if (event.type === "pointercancel" || event.type === "pointerleave") {
+      this.pointers.delete(event.pointerId);
+      this.press = null;
+      if (event.type === "pointerleave") this.hover = null;
+      return;
+    }
+    if (event.type !== "pointerup") return;
+    this.pointers.delete(event.pointerId);
+    if (!this.press || this.press.id !== event.pointerId || this.pointers.size > 0) {
+      this.press = null;
+      return;
+    }
+    const press = this.press;
+    this.press = null;
+    const moved = Math.hypot(event.clientX - press.x, event.clientY - press.y);
+    const scale = window.visualViewport?.scale || 1;
+    if (moved > 10 || Math.abs(scale - press.scale) > 0.01) return;
+    this.onMove(press.hit);
   }
 
   frameProgress(player, now) {
@@ -170,30 +207,31 @@ export class BoardView {
     const geom = this.geom;
     if (!game || !geom) return;
     ctx.save();
+    const inset = Math.max(12, Math.min(18, geom.cell * 0.42));
+    const left = Math.max(6, geom.ox - inset);
+    const right = Math.min(w - 6, geom.ox + game.cols * geom.cell + inset);
+    const top = Math.max(6, geom.oy - inset);
+    const bottom = Math.min(h - 6, geom.oy + game.rows * geom.cell + inset);
     ctx.strokeStyle = "rgba(74, 128, 176, 0.28)";
     ctx.lineWidth = 1;
     for (let r = 0; r <= game.rows; r += 1) {
       const y = geom.oy + r * geom.cell;
       ctx.beginPath();
-      ctx.moveTo(10, y);
-      ctx.lineTo(w - 10, y);
+      ctx.moveTo(left, y);
+      ctx.lineTo(right, y);
       ctx.stroke();
     }
     ctx.strokeStyle = "rgba(74, 128, 176, 0.12)";
     for (let c = 0; c <= game.cols; c += 1) {
       const x = geom.ox + c * geom.cell;
       ctx.beginPath();
-      ctx.moveTo(x, 10);
-      ctx.lineTo(x, h - 10);
+      ctx.moveTo(x, top);
+      ctx.lineTo(x, bottom);
       ctx.stroke();
     }
     ctx.strokeStyle = "rgba(196, 64, 46, 0.72)";
     ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    const marginX = Math.max(14, geom.ox - 18);
-    ctx.moveTo(marginX, 8);
-    ctx.lineTo(marginX, h - 8);
-    ctx.stroke();
+    ctx.strokeRect(left, top, right - left, bottom - top);
     ctx.restore();
   }
 

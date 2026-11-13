@@ -12,7 +12,7 @@ export const COLORS = {
 export const COLOR_KEYS = Object.keys(COLORS);
 export const PEN_STYLES = ["fine", "marker", "pencil", "fountain"];
 export const THEMES = ["classic", "light"];
-export const DIFFICULTIES = ["easy", "medium", "hard", "expert"];
+export const DIFFICULTIES = ["easy", "medium", "hard", "veryhard", "expert"];
 
 export function defaultSettings() {
   return {
@@ -47,6 +47,13 @@ export function cleanName(value, fallback) {
   return text || fallback;
 }
 
+/** Une maison minimale occupe un bloc de 3 × 3 points. Au-delà, la feuille se remplit avant l'objectif. */
+export function sheetHouseCap(rows, cols) {
+  const across = Math.floor((Number(cols) + 1) / 3);
+  const down = Math.floor((Number(rows) + 1) / 3);
+  return Math.max(1, across * down);
+}
+
 export function normalizeSettings(input = {}) {
   const d = defaultSettings();
   const timeMode = ["none", "global", "turn"].includes(input.timeMode) ? input.timeMode : d.timeMode;
@@ -57,13 +64,19 @@ export function normalizeSettings(input = {}) {
   let p2Color = COLOR_KEYS.includes(input.p2Color) ? input.p2Color : d.p2Color;
   if (p1Color === p2Color) p2Color = COLOR_KEYS.find((key) => key !== p1Color);
 
+  const rows = clampInt(input.rows, 2, 32, d.rows);
+  const cols = clampInt(input.cols, 2, 32, d.cols);
+  let scoreLimit = clampInt(input.scoreLimit, 0, 500, 0);
+  const cap = sheetHouseCap(rows, cols);
+  if (scoreLimit > cap) scoreLimit = cap;
+
   return {
-    rows: clampInt(input.rows, 2, 32, d.rows),
-    cols: clampInt(input.cols, 2, 32, d.cols),
+    rows,
+    cols,
     extraTurn: input.extraTurn !== false,
     timeMode,
     timeLimit,
-    scoreLimit: clampInt(input.scoreLimit, 0, 500, 0),
+    scoreLimit,
     p1Color,
     p2Color,
     penStyle: PEN_STYLES.includes(input.penStyle) ? input.penStyle : d.penStyle,
@@ -139,7 +152,58 @@ const DIRS8 = [
   [-1, 1],
 ];
 
+function gapMask(game, player) {
+  const h = game.rows + 1;
+  const w = game.cols + 1;
+  const mask = Array.from({ length: h }, () => Array(w).fill(false));
+  const mine = (r, c) => r >= 0 && c >= 0 && r < h && c < w && game.dots[r][c] === player && game.framed[r][c] == null;
+  for (let r = 0; r < h; r += 1) {
+    for (let c = 0; c < w; c += 1) {
+      if (!mine(r, c)) continue;
+      for (let dr = 0; dr <= 2; dr += 1) {
+        for (let dc = -2; dc <= 2; dc += 1) {
+          if (Math.max(dr, Math.abs(dc)) !== 2) continue;
+          if (dr === 0 && dc <= 0) continue;
+          const r2 = r + dr;
+          const c2 = c + dc;
+          if (!mine(r2, c2)) continue;
+          let linked = false;
+          for (let ar = -1; ar <= 1 && !linked; ar += 1) {
+            for (let ac = -1; ac <= 1; ac += 1) {
+              if (ar === 0 && ac === 0) continue;
+              const rr = r + ar;
+              const cc = c + ac;
+              if (!mine(rr, cc)) continue;
+              if (Math.max(Math.abs(rr - r2), Math.abs(cc - c2)) <= 1) {
+                linked = true;
+                break;
+              }
+            }
+          }
+          if (linked) continue;
+          let crowded = false;
+          for (let rr = Math.min(r, r2); rr <= Math.max(r, r2) && !crowded; rr += 1) {
+            for (let cc = Math.min(c, c2); cc <= Math.max(c, c2); cc += 1) {
+              if ((rr === r && cc === c) || (rr === r2 && cc === c2)) continue;
+              if (mine(rr, cc)) crowded = true;
+            }
+          }
+          if (crowded) continue;
+          for (let rr = Math.min(r, r2); rr <= Math.max(r, r2); rr += 1) {
+            for (let cc = Math.min(c, c2); cc <= Math.max(c, c2); cc += 1) {
+              if ((rr === r && cc === c) || (rr === r2 && cc === c2)) continue;
+              if (game.dots[rr][cc] == null && game.framed[rr][cc] == null) mask[rr][cc] = true;
+            }
+          }
+        }
+      }
+    }
+  }
+  return mask;
+}
+
 function outsideSeen(game, player) {
+  const gaps = gapMask(game, player);
   const h = game.rows + 1;
   const w = game.cols + 1;
   const seen = Array.from({ length: h }, () => Array(w).fill(false));
@@ -147,6 +211,7 @@ function outsideSeen(game, player) {
   const push = (r, c) => {
     if (r < 0 || c < 0 || r >= h || c >= w || seen[r][c]) return;
     if (game.dots[r][c] === player && game.framed[r][c] == null) return;
+    if (gaps[r][c]) return;
     seen[r][c] = true;
     stack.push([r, c]);
   };
@@ -165,18 +230,19 @@ function outsideSeen(game, player) {
     push(r, c - 1);
     push(r, c + 1);
   }
-  return seen;
+  return { seen, gaps };
 }
 
 function interiorRegions(game, player) {
-  const seen = outsideSeen(game, player);
+  const { seen, gaps } = outsideSeen(game, player);
   const h = game.rows + 1;
   const w = game.cols + 1;
   const used = Array.from({ length: h }, () => Array(w).fill(false));
   const regions = [];
+  const blocked = (r, c) => game.dots[r][c] === player || gaps[r][c];
   for (let r = 0; r < h; r += 1) {
     for (let c = 0; c < w; c += 1) {
-      if (seen[r][c] || used[r][c] || game.dots[r][c] === player) continue;
+      if (seen[r][c] || used[r][c] || blocked(r, c)) continue;
       const cells = [];
       const captured = [];
       const stack = [[r, c]];
@@ -189,8 +255,7 @@ function interiorRegions(game, player) {
         for (const [dr, dc] of ORTHO) {
           const nr = r0 + dr;
           const nc = c0 + dc;
-          if (nr < 0 || nc < 0 || nr >= h || nc >= w || seen[nr][nc] || used[nr][nc]) continue;
-          if (game.dots[nr][nc] === player) continue;
+          if (nr < 0 || nc < 0 || nr >= h || nc >= w || seen[nr][nc] || used[nr][nc] || blocked(nr, nc)) continue;
           used[nr][nc] = true;
           stack.push([nr, nc]);
         }
@@ -275,11 +340,30 @@ function angularLoop(ring, cells) {
   return dots;
 }
 
+function loopStep(a, b) {
+  return Math.max(Math.abs(a.r - b.r), Math.abs(a.c - b.c));
+}
+
+function closedEnough(loop, maxStep) {
+  if (!loop || loop.length < 4) return false;
+  for (let i = 0; i < loop.length; i += 1) {
+    const step = loopStep(loop[i], loop[(i + 1) % loop.length]);
+    if (step < 1 || step > maxStep) return false;
+  }
+  return true;
+}
+
+function holdsInside(loop, cells) {
+  return cells.some(([r, c]) => strictlyInside(loop, r, c));
+}
+
 function loopAround(game, player, cells) {
   const ring = ringOf(game, player, cells);
   const traced = traceRing(ring);
-  if (attachedLoop(traced)) return traced;
-  return angularLoop(ring, cells);
+  if (attachedLoop(traced) && holdsInside(traced, cells)) return traced;
+  const around = angularLoop(ring, cells);
+  if (closedEnough(around, 2) && holdsInside(around, cells)) return around;
+  return [];
 }
 
 function attachedLoop(loop) {
@@ -345,7 +429,7 @@ function sealHouse(game, player, house) {
 }
 
 function swallowHouses(game, player) {
-  const seen = outsideSeen(game, player);
+  const { seen } = outsideSeen(game, player);
   let eaten = 0;
   for (const old of game.houses) {
     if (!old.alive || old.owner === player || !old.loop.length) continue;

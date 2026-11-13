@@ -83,7 +83,7 @@
           <label class="name-label" data-show="solo local online custom">Ton nom
             <input id="p1Name" maxlength="18" placeholder="Écris ton nom" autocomplete="off">
           </label>
-          <label class="name-label" data-show="local custom">Nom du second
+          <label class="name-label" data-show="local custom" hidden>Nom du second
             <input id="p2Name" maxlength="18" placeholder="Nom du second" autocomplete="off">
           </label>
         </div>
@@ -101,7 +101,7 @@
           </div>
         </fieldset>
 
-        <fieldset data-show="custom">
+        <fieldset data-show="custom" hidden>
           <legend>Adversaire</legend>
           <div class="choices" data-field="opponent">
             <button type="button" data-value="solo" aria-pressed="true">Robot</button>
@@ -143,7 +143,8 @@
             <button type="button" data-value="20">20</button>
             <button type="button" data-value="custom">Autre</button>
           </div>
-          <label id="score-custom" hidden>Premier à <input id="scoreLimit" type="number" min="1" max="500" value="15"> maisons</label>
+          <label id="score-custom" hidden>Premier à <input id="scoreLimit" type="number" min="1" max="42" value="15"> maisons</label>
+          <p class="score-cap" id="score-cap"></p>
         </fieldset>
 
         <div class="split">
@@ -183,9 +184,10 @@
           <legend>Robot</legend>
           <div class="choices" data-field="difficulty">
             <button type="button" data-value="easy">Facile<small>Au hasard</small></button>
-            <button type="button" data-value="medium" aria-pressed="true">Moyen<small>Contre et construit</small></button>
-            <button type="button" data-value="hard">Difficile<small>Ferme la forme</small></button>
-            <button type="button" data-value="expert">Expert<small>Anticipe le contre</small></button>
+            <button type="button" data-value="medium" aria-pressed="true">Moyen<small>Suit le cadre</small></button>
+            <button type="button" data-value="hard">Difficile<small>Lit ta réponse</small></button>
+            <button type="button" data-value="veryhard">Très difficile<small>Deux menaces</small></button>
+            <button type="button" data-value="expert">Expert<small>Deux portes</small></button>
           </div>
         </fieldset>
 
