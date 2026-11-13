@@ -199,14 +199,6 @@ for (let r = 1; r <= 5; r += 1) {
 for (const [r, c] of edge.slice(0, -1)) gapRing.dots[r][c] = 0;
 gapRing.current = 0;
 const gapClose = applyMove(gapRing, { r: edge.at(-1)[0], c: edge.at(-1)[1] });
-assert(gapClose.completed === 1, "un grand cercle avec un petit trou se ferme");
-const gapLoop = enclosures(gapRing)[0].loop;
-let gapFar = 0;
-for (let i = 0; i < gapLoop.length; i += 1) {
-  const a = gapLoop[i];
-  const b = gapLoop[(i + 1) % gapLoop.length];
-  gapFar = Math.max(gapFar, Math.max(Math.abs(a.r - b.r), Math.abs(a.c - b.c)));
-}
-assert(gapFar <= 2 && gapFar >= 1, "le contour se referme sans grande ligne");
+assert(gapClose.completed === 0 && enclosures(gapRing).length === 0, "un trou d'une case ne trace pas un trait sur deux cases");
 
 console.log("engine ok");

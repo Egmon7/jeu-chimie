@@ -152,58 +152,7 @@ const DIRS8 = [
   [-1, 1],
 ];
 
-function gapMask(game, player) {
-  const h = game.rows + 1;
-  const w = game.cols + 1;
-  const mask = Array.from({ length: h }, () => Array(w).fill(false));
-  const mine = (r, c) => r >= 0 && c >= 0 && r < h && c < w && game.dots[r][c] === player && game.framed[r][c] == null;
-  for (let r = 0; r < h; r += 1) {
-    for (let c = 0; c < w; c += 1) {
-      if (!mine(r, c)) continue;
-      for (let dr = 0; dr <= 2; dr += 1) {
-        for (let dc = -2; dc <= 2; dc += 1) {
-          if (Math.max(dr, Math.abs(dc)) !== 2) continue;
-          if (dr === 0 && dc <= 0) continue;
-          const r2 = r + dr;
-          const c2 = c + dc;
-          if (!mine(r2, c2)) continue;
-          let linked = false;
-          for (let ar = -1; ar <= 1 && !linked; ar += 1) {
-            for (let ac = -1; ac <= 1; ac += 1) {
-              if (ar === 0 && ac === 0) continue;
-              const rr = r + ar;
-              const cc = c + ac;
-              if (!mine(rr, cc)) continue;
-              if (Math.max(Math.abs(rr - r2), Math.abs(cc - c2)) <= 1) {
-                linked = true;
-                break;
-              }
-            }
-          }
-          if (linked) continue;
-          let crowded = false;
-          for (let rr = Math.min(r, r2); rr <= Math.max(r, r2) && !crowded; rr += 1) {
-            for (let cc = Math.min(c, c2); cc <= Math.max(c, c2); cc += 1) {
-              if ((rr === r && cc === c) || (rr === r2 && cc === c2)) continue;
-              if (mine(rr, cc)) crowded = true;
-            }
-          }
-          if (crowded) continue;
-          for (let rr = Math.min(r, r2); rr <= Math.max(r, r2); rr += 1) {
-            for (let cc = Math.min(c, c2); cc <= Math.max(c, c2); cc += 1) {
-              if ((rr === r && cc === c) || (rr === r2 && cc === c2)) continue;
-              if (game.dots[rr][cc] == null && game.framed[rr][cc] == null) mask[rr][cc] = true;
-            }
-          }
-        }
-      }
-    }
-  }
-  return mask;
-}
-
 function outsideSeen(game, player) {
-  const gaps = gapMask(game, player);
   const h = game.rows + 1;
   const w = game.cols + 1;
   const seen = Array.from({ length: h }, () => Array(w).fill(false));
@@ -211,7 +160,6 @@ function outsideSeen(game, player) {
   const push = (r, c) => {
     if (r < 0 || c < 0 || r >= h || c >= w || seen[r][c]) return;
     if (game.dots[r][c] === player && game.framed[r][c] == null) return;
-    if (gaps[r][c]) return;
     seen[r][c] = true;
     stack.push([r, c]);
   };
@@ -230,16 +178,16 @@ function outsideSeen(game, player) {
     push(r, c - 1);
     push(r, c + 1);
   }
-  return { seen, gaps };
+  return { seen };
 }
 
 function interiorRegions(game, player) {
-  const { seen, gaps } = outsideSeen(game, player);
+  const { seen } = outsideSeen(game, player);
   const h = game.rows + 1;
   const w = game.cols + 1;
   const used = Array.from({ length: h }, () => Array(w).fill(false));
   const regions = [];
-  const blocked = (r, c) => game.dots[r][c] === player || gaps[r][c];
+  const blocked = (r, c) => game.dots[r][c] === player;
   for (let r = 0; r < h; r += 1) {
     for (let c = 0; c < w; c += 1) {
       if (seen[r][c] || used[r][c] || blocked(r, c)) continue;
@@ -362,7 +310,7 @@ function loopAround(game, player, cells) {
   const traced = traceRing(ring);
   if (attachedLoop(traced) && holdsInside(traced, cells)) return traced;
   const around = angularLoop(ring, cells);
-  if (closedEnough(around, 2) && holdsInside(around, cells)) return around;
+  if (closedEnough(around, 1) && holdsInside(around, cells)) return around;
   return [];
 }
 
