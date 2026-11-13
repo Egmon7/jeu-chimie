@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Jeu chimie --Egmon</title>
+  <base href="public/">
+  <style>html, body { margin: 0; background: #0e1616; }</style>
+</head>
+<body>
+  <script>
+    (async () => {
+      const page = await fetch("index.html");
+      if (!page.ok) return;
+      const doc = new DOMParser().parseFromString(await page.text(), "text/html");
+      const base = document.querySelector("base");
+      document.head.replaceChildren(base, ...doc.head.childNodes);
+      const scripts = [...doc.body.querySelectorAll("script")];
+      scripts.forEach((node) => node.remove());
+      for (const attr of [...document.body.attributes]) document.body.removeAttribute(attr.name);
+      for (const attr of doc.body.attributes) document.body.setAttribute(attr.name, attr.value);
+      document.body.replaceChildren(...doc.body.childNodes);
+      for (const old of scripts) {
+        const script = document.createElement("script");
+        for (const attr of old.attributes) script.setAttribute(attr.name, attr.value);
+        script.textContent = old.textContent;
+        document.body.appendChild(script);
+      }
+    })();
+  </script>
+</body>
+</html>
