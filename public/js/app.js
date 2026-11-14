@@ -340,6 +340,7 @@ function restoreMatch() {
     app.inputLock = false;
     app.recorded = false;
     app.timeoutQueued = null;
+    resetSheetZoom();
     show("screen-game", "replace");
     paintMatch();
     hideOverlay();
@@ -394,6 +395,7 @@ function startMatch(settings, mode) {
     },
   ];
   app.board.clearAnims();
+  resetSheetZoom();
   show("screen-game");
   paintMatch();
   showModeReminder();
@@ -412,6 +414,106 @@ function showModeReminder() {
       ? "Quand une maison est prête, glisse sur tes points pour la fermer."
       : "Les maisons se ferment toutes seules.",
     actions: [{ label: "Compris", primary: true, on: hideOverlay }],
+  });
+}
+
+const sheetZoom = { value: 1 };
+
+function sheetZoomBounds(stage) {
+  const wrap = document.querySelector(".board-wrap");
+  const cols = Number(wrap?.style.getPropertyValue("--sheet-w")) || app.game?.cols || 24;
+  const rows = Number(wrap?.style.getPropertyValue("--sheet-h")) || app.game?.rows || 32;
+  const pad = 44;
+  const fitW = Math.max(1, stage.clientWidth - pad) / (cols * 72);
+  const fitH = Math.max(1, stage.clientHeight - pad) / (rows * 72);
+  const min = Math.min(1, fitW, fitH);
+  return { min: Math.max(0.18, min), max: 1.8 };
+}
+
+function applySheetZoom(next, anchorX, anchorY) {
+  const stage = document.querySelector(".board-stage");
+  const wrap = document.querySelector(".board-wrap");
+  if (!stage || !wrap || stage.clientWidth < 20) return;
+  const bounds = sheetZoomBounds(stage);
+  const zoom = Math.min(bounds.max, Math.max(bounds.min, next));
+  if (Math.abs(zoom - sheetZoom.value) < 0.004) return;
+  const before = wrap.getBoundingClientRect();
+  const relX = anchorX - before.left;
+  const relY = anchorY - before.top;
+  sheetZoom.value = zoom;
+  wrap.style.setProperty("--sheet-zoom", zoom.toFixed(4));
+  const after = wrap.getBoundingClientRect();
+  const scale = before.width ? after.width / before.width : 1;
+  stage.scrollLeft += relX * (scale - 1);
+  stage.scrollTop += relY * (scale - 1);
+  app.board?.resize();
+}
+
+function resetSheetZoom() {
+  const stage = document.querySelector(".board-stage");
+  const wrap = document.querySelector(".board-wrap");
+  sheetZoom.value = 1;
+  wrap?.style.setProperty("--sheet-zoom", "1");
+  if (stage) {
+    stage.scrollLeft = 0;
+    stage.scrollTop = 0;
+  }
+  app.board?.resize();
+}
+
+function bindSheetZoom() {
+  const stage = document.querySelector(".board-stage");
+  if (!stage) return;
+  const points = new Map();
+  let pinch = null;
+  const dropPinch = () => {
+    if (points.size >= 2) return;
+    pinch = null;
+  };
+  stage.addEventListener("pointerdown", (event) => {
+    points.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    if (points.size < 2) return;
+    const [a, b] = [...points.values()];
+    pinch = {
+      dist: Math.max(1, Math.hypot(a.x - b.x, a.y - b.y)),
+      zoom: sheetZoom.value,
+    };
+    if (!app.board) return;
+    app.board.press = null;
+    app.board.trace = [];
+    app.board.traceFault = false;
+    app.board.traceId = null;
+  });
+  stage.addEventListener("pointermove", (event) => {
+    if (!points.has(event.pointerId)) return;
+    points.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    if (!pinch || points.size < 2) return;
+    event.preventDefault();
+    const [a, b] = [...points.values()];
+    const dist = Math.max(1, Math.hypot(a.x - b.x, a.y - b.y));
+    applySheetZoom(pinch.zoom * (dist / pinch.dist), (a.x + b.x) / 2, (a.y + b.y) / 2);
+  }, { passive: false });
+  stage.addEventListener("pointerup", (event) => {
+    points.delete(event.pointerId);
+    dropPinch();
+  });
+  stage.addEventListener("pointercancel", (event) => {
+    points.delete(event.pointerId);
+    dropPinch();
+  });
+  stage.addEventListener("wheel", (event) => {
+    if (!event.ctrlKey && !event.metaKey) return;
+    event.preventDefault();
+    const factor = event.deltaY > 0 ? 0.9 : 1.1;
+    applySheetZoom(sheetZoom.value * factor, event.clientX, event.clientY);
+  }, { passive: false });
+  $("sheet-zoom-out").addEventListener("click", () => {
+    const rect = stage.getBoundingClientRect();
+    applySheetZoom(sheetZoom.value / 1.25, rect.left + rect.width / 2, rect.top + rect.height / 2);
+  });
+  $("sheet-zoom-in").addEventListener("click", () => {
+    const rect = stage.getBoundingClientRect();
+    applySheetZoom(sheetZoom.value * 1.25, rect.left + rect.width / 2, rect.top + rect.height / 2);
   });
 }
 
@@ -1021,6 +1123,7 @@ function onOnlineState(msg) {
     app.inputLock = false;
     app.paused = false;
     hideOverlay();
+    resetSheetZoom();
   }
   show("screen-game");
   paintMatch();
@@ -1304,6 +1407,7 @@ function bind() {
     goHome();
   });
   app.board = new BoardView($("board"));
+  bindSheetZoom();
   app.board.canPlay = () => canPlay();
   app.board.onMove = (move) => tryMove(move);
   app.board.onTrace = (loop, fault) => {

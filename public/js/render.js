@@ -270,6 +270,7 @@ export class BoardView {
       const rect = this.canvas.getBoundingClientRect();
       const hit = this.hitOwn(event.clientX - rect.left, event.clientY - rect.top);
       if (event.type === "pointerdown") {
+        if (this.traceId != null && this.traceId !== event.pointerId) return;
         event.preventDefault();
         this.traceId = event.pointerId;
         this.trace = [];
