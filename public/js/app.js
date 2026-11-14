@@ -69,6 +69,7 @@ const app = {
   clockSync: null,
   socket: null,
   roomCode: null,
+  queued: false,
   sounds: new Sounds(),
   board: null,
 };
@@ -80,6 +81,7 @@ const SCREEN_BY_PAGE = {
   modes: "screen-modes",
   setup: "screen-setup",
   online: "screen-online",
+  find: "screen-find",
   lobby: "screen-lobby",
   game: "screen-game",
   history: "screen-history",
@@ -101,6 +103,7 @@ function show(id, historyMode = "push") {
   });
   const page = pageOf(id);
   document.body.dataset.page = SHELL_PAGES.has(page) ? page : "play";
+  applyTheme(id === "screen-game" ? app.prefs.theme : "classic");
   if (id === "screen-game") {
     const wrap = document.querySelector(".board-wrap");
     if (app.game && wrap) {
@@ -113,6 +116,15 @@ function show(id, historyMode = "push") {
     fillProfileForm(loadProfile());
     pullProfile();
   }
+  if (app.queued && id !== "screen-find") {
+    app.queued = false;
+    app.socket?.emit("queue-leave");
+  }
+  if (id === "screen-online") {
+    const name = loadProfile().name;
+    if (name) $("join-name").value = name;
+  }
+  if (id === "screen-find") enterQueue();
   if (id === "screen-progress") loadProgress();
   if (id === "screen-rank") loadRanking();
   if (id === "screen-badges") renderBadgeCatalog();
@@ -308,7 +320,7 @@ function syncFormBits() {
   const titles = {
     solo: ["Robot", "Réglez la feuille, puis affrontez un robot."],
     local: ["Multijoueurs", "Même écran, deux stylos."],
-    online: ["Créer une salle", "Votre ami vous rejoindra avec le code."],
+    online: ["Créer une salle", "Choisis les règles. Le code s’affiche ensuite."],
     custom: ["Partie libre", "Taille, temps, score et adversaire."],
   };
   const [title, lead] = titles[app.formMode];
@@ -321,7 +333,6 @@ function syncFormBits() {
     custom: "Lancer la partie",
   };
   $("setup-go").textContent = labels[app.formMode];
-  applyTheme(readGroup("theme") || app.prefs.theme);
 }
 
 const MATCH_KEY = "egmon-live-match";
@@ -373,8 +384,9 @@ function openSetup(mode, historyMode = "push") {
   app.formMode = mode;
   try { sessionStorage.setItem("egmon-setup-mode", mode); } catch { /* ignore */ }
   fillForm(app.prefs);
-  $("p1Name").value = "";
+  $("p1Name").value = mode === "online" ? (loadProfile().name || "") : "";
   $("p2Name").value = "";
+  $("setup-go").textContent = mode === "online" ? "Créer la salle" : "Lancer la partie";
   show("screen-setup", historyMode);
 }
 
@@ -636,7 +648,6 @@ function remember(settings) {
   const { p1Name, p2Name, ...rest } = settings;
   app.prefs = { ...app.prefs, ...rest };
   savePrefs(app.prefs);
-  applyTheme(app.prefs.theme);
   app.sounds.enabled = false;
 }
 
@@ -1226,8 +1237,7 @@ function showResult() {
     celebrate,
     note: true,
     actions: [
-      { label: "Revanche", primary: true, on: () => rematch() },
-      { label: "Accueil", on: () => goHome() },
+      { label: "Accueil", primary: true, on: () => goHome() },
     ],
   });
 }
@@ -1346,6 +1356,29 @@ function ensureSocket() {
   app.socket = window.io({ autoConnect: false });
   app.socket.on("connect_error", () => toast("Serveur injoignable. Lancez npm start."));
   app.socket.on("state", (msg) => onOnlineState(msg));
+  app.socket.on("closed", () => {
+    if (app.ignoreOnline) return;
+    toast("Le créateur a quitté la salle.");
+    sessionStorage.removeItem("egmon-room");
+    app.mode = null;
+    show("screen-modes");
+  });
+  app.socket.on("notice", (text) => {
+    if (text === "La table n’a pas pu s’ouvrir." || text === "Tu es déjà dans une partie.") toast(text);
+  });
+  app.socket.on("queue", (msg) => {
+    if (!$("screen-find").hidden) renderFind(Array.isArray(msg.people) ? msg.people : []);
+  });
+  app.socket.on("invite", ({ from, token }) => {
+    askDialog({
+      kicker: "En ligne",
+      title: `${from} veut jouer`,
+      text: "Tu acceptes de rejoindre sa table ?",
+      confirm: "Accepter",
+      cancel: "Plus tard",
+      onYes: () => app.socket.emit("invite-answer", { token, yes: true }),
+    });
+  });
   app.socket.on("disconnect", () => {
     if (app.mode === "online") toast("Connexion interrompue.");
   });
@@ -1424,8 +1457,7 @@ function onOnlineState(msg) {
     banner.hidden = true;
   }
   if (!msg.game) {
-    $("lobby-code").textContent = msg.code;
-    $("lobby-status").textContent = "En attente d’un adversaire…";
+    renderLobby(msg);
     show("screen-lobby");
     return;
   }
@@ -1462,14 +1494,53 @@ function onOnlineState(msg) {
   if (app.game.status === "finished") finishOnline();
 }
 
-function finishOnline() {
-  recordGame();
-  showResult();
+function tableText(settings) {
+  const minutes = Math.round((Number(settings.timeLimit) || 0) / 60);
+  const time = settings.timeMode === "global" ? `${minutes} min` : "Illimité";
+  const score = Number(settings.scoreLimit) > 0 ? `Premier à ${settings.scoreLimit}` : "Toute la feuille";
+  return `${time} · ${score}`;
 }
 
-async function createRoom() {
-  const { settings } = readSettingsFromForm();
-  remember(settings);
+function renderLobby(msg) {
+  const mine = msg.you;
+  const seats = msg.seats || [];
+  $("lobby-code").textContent = msg.code;
+  $("lobby-share").hidden = mine !== 0;
+  $("lobby-rules").textContent = tableText(msg.settings);
+  $("lobby-seats").innerHTML = [0, 1].map((index) => {
+    const seat = seats[index] || {};
+    const here = seat.present && seat.connected && msg.ready?.[index];
+    const label = seat.present ? esc(seat.name || "Joueur") : "Place libre";
+    const state = !seat.present ? "En attente" : !seat.connected ? "Déconnecté" : here ? "Présent" : "Pas encore confirmé";
+    return `<p><strong>${label}</strong><span>${state}</span></p>`;
+  }).join("");
+  const both = seats[0]?.present && seats[1]?.present && seats[0]?.connected && seats[1]?.connected;
+  const ready = msg.ready?.[0] && msg.ready?.[1];
+  $("lobby-status").textContent = !seats[1]?.present
+    ? "Donne le code. La partie attend que l’autre arrive."
+    : !ready
+      ? "Les deux doivent confirmer leur présence."
+      : "Vous pouvez passer à la table.";
+  $("lobby-present").disabled = false;
+  $("lobby-present").setAttribute("aria-pressed", msg.ready?.[mine] ? "true" : "false");
+  $("lobby-present").textContent = msg.ready?.[mine] ? "Présence confirmée" : "Je suis là";
+  $("lobby-accept").hidden = mine !== 1 || !both;
+  $("lobby-accept").disabled = msg.accepted === true;
+  $("lobby-accept").textContent = msg.accepted ? "Réglages acceptés" : "J’accepte";
+  $("lobby-launch").hidden = mine !== 0 || !ready;
+  $("lobby-launch").disabled = !ready;
+}
+
+function renderFind(people) {
+  const list = $("find-list");
+  if (!people.length) {
+    list.innerHTML = `<p class="empty">Personne d’autre n’attend pour le moment.</p>`;
+    return;
+  }
+  list.innerHTML = people.map((person) => `<button type="button" class="find-card" data-token="${esc(person.token)}"><span class="face">${faceMarkup(person.photo)}</span><strong>${esc(person.name)}</strong></button>`).join("");
+}
+
+async function enterQueue() {
   app.ignoreOnline = false;
   try {
     await connectSocket();
@@ -1477,7 +1548,33 @@ async function createRoom() {
     toast("Le mode en ligne a besoin du serveur : npm start.");
     return;
   }
-  app.socket.emit("create", { playerId: playerId(), name: settings.p1Name, settings }, (res) => {
+  if ($("screen-find").hidden) return;
+  const profile = loadProfile();
+  app.queued = true;
+  app.socket.emit("queue-join", {
+    playerId: playerId(),
+    name: profile.name || "Joueur",
+    photo: profile.photo || "",
+    settings: { ...app.prefs, p1Name: profile.name || "Joueur" },
+  });
+}
+
+function finishOnline() {
+  recordGame();
+  showResult();
+}
+
+async function createOnlineRoom(settings) {
+  const name = settings?.p1Name || loadProfile().name || "Joueur";
+  const chosen = { ...app.prefs, ...settings, p1Name: name };
+  app.ignoreOnline = false;
+  try {
+    await connectSocket();
+  } catch {
+    toast("Le mode en ligne a besoin du serveur : npm start.");
+    return;
+  }
+  app.socket.emit("create", { playerId: playerId(), name, settings: chosen }, (res) => {
     if (!res?.ok) toast(res?.error || "Impossible de créer la salle.");
   });
 }
@@ -1591,12 +1688,20 @@ function bind() {
         savePrefs(app.prefs);
       }
       if (document.getElementById("setup-form") && ! $("screen-setup").hidden) syncFormBits();
-      else if (field.dataset.field === "theme") applyTheme(app.prefs.theme);
+      else if (field.dataset.field === "theme" && !$("screen-game").hidden) applyTheme(app.prefs.theme);
     }
     const preset = event.target.closest("[data-set-time]");
     if (preset) {
       $("timeLimit").value = preset.dataset.setTime;
       markTimePreset();
+    }
+    const tableBtn = event.target.closest("[data-table]");
+    if (tableBtn && app.seat === 0 && !app.game) {
+      const value = tableBtn.dataset.value;
+      const patch = tableBtn.dataset.table === "time"
+        ? (value === "none" ? { timeMode: "none" } : { timeMode: "global", timeLimit: Number(value) })
+        : { scoreLimit: Number(value) };
+      app.socket?.emit("table", patch);
     }
     const hubBtn = event.target.closest("[data-open-hub]");
     if (hubBtn) openHub(hubBtn.dataset.openHub);
@@ -1675,6 +1780,7 @@ function bind() {
     });
   });
   $("go-online").addEventListener("click", () => show("screen-online"));
+  $("go-find").addEventListener("click", () => show("screen-find"));
   $("go-account").addEventListener("click", openProfile);
   $("go-progress").addEventListener("click", openProgress);
   $("go-badges").addEventListener("click", openBadges);
@@ -1718,7 +1824,8 @@ function bind() {
       return;
     }
     if (app.formMode === "online") {
-      createRoom();
+      remember(settings);
+      createOnlineRoom(settings);
       return;
     }
     const mode = app.formMode === "custom" ? opponent : app.formMode;
@@ -1732,20 +1839,25 @@ function bind() {
       toast("Le code ressemble à EGD-K7MQ2P.");
       return;
     }
-    joinRoom(code, readGroup("joinColor"));
+    joinRoom(code, app.prefs.p2Color);
   });
   $("copy-code").addEventListener("click", () => copyText(app.roomCode || $("lobby-code").textContent));
-  $("copy-link").addEventListener("click", () => {
-    const url = new URL(location.href);
-    url.searchParams.set("room", app.roomCode || "");
-    copyText(url.toString());
-  });
   $("lobby-cancel").addEventListener("click", () => {
     app.ignoreOnline = true;
     app.socket?.emit("leave");
     sessionStorage.removeItem("egmon-room");
     app.mode = null;
-    show("screen-home");
+    show("screen-modes");
+  });
+  $("lobby-present").addEventListener("click", () => app.socket?.emit("present"));
+  $("lobby-accept").addEventListener("click", () => app.socket?.emit("accept"));
+  $("lobby-launch").addEventListener("click", () => app.socket?.emit("launch"));
+  $("find-back").addEventListener("click", () => show("screen-modes"));
+  $("find-list").addEventListener("click", (event) => {
+    const card = event.target.closest("[data-token]");
+    if (!card) return;
+    app.socket?.emit("invite", { token: card.dataset.token });
+    toast("Invitation envoyée.");
   });
   $("game-menu-btn").addEventListener("click", () => {
     const menu = $("game-menu");
@@ -1763,7 +1875,7 @@ function bind() {
   $("restart-btn").addEventListener("click", () => {
     closeGameMenu();
     if (app.mode === "online") {
-      toast("En ligne, la revanche se propose en fin de partie.");
+      toast("Recommencer n’est pas disponible en ligne.");
       return;
     }
     if (app.game) rematch();
@@ -1864,7 +1976,7 @@ function bind() {
     show(SCREEN_BY_PAGE[page] || "screen-home", "skip");
   });
 
-  applyTheme(app.prefs.theme);
+  applyTheme($("screen-game").hidden ? "classic" : app.prefs.theme);
   app.sounds.enabled = false;
   requestAnimationFrame(loop);
   window.egmonApp = app;

@@ -43,11 +43,20 @@ const io = new Server(httpServer, {
   },
 });
 const rooms = new Map();
+const queue = new Map();
 const hits = new Map();
 const connections = new Map();
 const ROOM_LIMIT = 80;
+const QUEUE_LIMIT = 80;
+const CONNECTIONS_PER_IP = 120;
+const WAITING_ROOM_MS = 20 * 60 * 1000;
+const PHOTO_URL = /^https:\/\/res\.cloudinary\.com\/ka4h4lpk\/image\/upload\/[A-Za-z0-9_./%-]{1,360}$/;
 
 app.disable("x-powered-by");
+app.use("/api", (req, res, next) => {
+  res.setHeader("Cache-Control", "no-store");
+  next();
+});
 app.use((req, res, next) => {
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("Referrer-Policy", "same-origin");
@@ -86,7 +95,7 @@ function apiPlayer(req, res) {
     res.status(503).json({ error: "Base indisponible." });
     return "";
   }
-  if (limited(`${req.ip}:api`, 40, 60_000)) {
+  if (limited(`${clientIp(req)}:api`, 120, 60_000)) {
     res.status(429).json({ error: "Trop d'essais." });
     return "";
   }
@@ -124,7 +133,7 @@ app.get("/api/ranking", api(async (req, res) => {
     res.status(503).json({ error: "Base indisponible." });
     return;
   }
-  if (limited(`${req.ip}:rank`, 30, 60_000)) {
+  if (limited(`${clientIp(req)}:rank`, 120, 60_000)) {
     res.status(429).json({ error: "Trop d'essais." });
     return;
   }
@@ -135,6 +144,10 @@ app.get("/api/ranking", api(async (req, res) => {
 app.get("/api/progress", api(async (req, res) => {
   if (!dbReady()) {
     res.status(503).json({ error: "Base indisponible." });
+    return;
+  }
+  if (limited(`${clientIp(req)}:progress`, 120, 60_000)) {
+    res.status(429).json({ error: "Trop d'essais." });
     return;
   }
   const player = isUuid(req.query.player) ? req.query.player : null;
@@ -154,9 +167,13 @@ app.get("/api/games/:id", api(async (req, res) => {
 app.post("/api/games/:id", api(async (req, res) => {
   const id = apiPlayer(req, res);
   if (!id) return;
-  const entry = req.body || {};
-  if (!isUuid(entry.id) || !Array.isArray(entry.names) || !Array.isArray(entry.scores)) {
+  const entry = validGame(req.body);
+  if (!entry) {
     res.status(400).json({ error: "Partie invalide." });
+    return;
+  }
+  if (limited(`${id}:game`, 30, 60 * 60 * 1000)) {
+    res.status(429).json({ error: "Trop de parties enregistrées." });
     return;
   }
   await insertGame(id, entry);
@@ -168,7 +185,7 @@ app.post("/api/messages", api(async (req, res) => {
     res.status(503).json({ error: "Base indisponible." });
     return;
   }
-  if (limited(`${req.ip}:message`, 6, 60 * 60 * 1000)) {
+  if (limited(`${clientIp(req)}:message`, 30, 60 * 60 * 1000)) {
     res.status(429).json({ error: "Trop de messages." });
     return;
   }
@@ -220,10 +237,69 @@ function limited(key, max, windowMs) {
   return false;
 }
 
+function lastForwarded(header) {
+  const parts = String(header || "").split(",").map((part) => part.trim()).filter(Boolean);
+  const last = (parts[parts.length - 1] || "").replace(/^::ffff:/, "");
+  if (last.length < 3 || last.length > 64) return "";
+  if (!/^(\d{1,3}\.){3}\d{1,3}$/.test(last) && !/^[0-9a-f:]+$/i.test(last)) return "";
+  return last;
+}
+
+function isPrivate(ip) {
+  return ip === "127.0.0.1"
+    || ip === "::1"
+    || ip.startsWith("10.")
+    || ip.startsWith("192.168.")
+    || /^172\.(1[6-9]|2\d|3[0-1])\./.test(ip)
+    || ip.startsWith("fc")
+    || ip.startsWith("fd");
+}
+
+function clientIp(req) {
+  const peer = String(req.socket?.remoteAddress || "").replace(/^::ffff:/, "");
+  const forwarded = lastForwarded(req.headers?.["x-forwarded-for"]);
+  if (isPrivate(peer) && forwarded) return forwarded;
+  return peer || "unknown";
+}
+
+function asObject(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+
+function queueToken(value) {
+  const token = String(value || "");
+  return /^[A-Z2-9]{6}$/.test(token) ? token : "";
+}
+
+function validGame(entry) {
+  if (!entry || typeof entry !== "object" || !isUuid(entry.id)) return null;
+  if (!["solo", "local", "online"].includes(entry.mode)) return null;
+  if (!Array.isArray(entry.names) || !Array.isArray(entry.scores) || !entry.scores.length) return null;
+  const scores = entry.scores.slice(0, 2).map((score) => {
+    const n = Number(score);
+    return Number.isInteger(n) && n >= 0 && n <= 42 ? n : -1;
+  });
+  if (scores.some((score) => score < 0)) return null;
+  const at = Number(entry.at);
+  return {
+    id: entry.id,
+    at: Number.isFinite(at) ? Math.min(Date.now() + 60_000, Math.max(0, at)) : Date.now(),
+    mode: entry.mode,
+    size: entry.size,
+    names: entry.names.slice(0, 2).map((name) => cleanName(name, "Joueur")),
+    scores,
+    winner: entry.winner === 0 || entry.winner === 1 || entry.winner === "draw" ? entry.winner : "draw",
+    userSeat: entry.userSeat === 0 || entry.userSeat === 1 ? entry.userSeat : null,
+    reason: entry.reason,
+    difficulty: ["easy", "medium", "hard", "veryhard", "expert"].includes(entry.difficulty) ? entry.difficulty : null,
+  };
+}
+
 io.use((socket, next) => {
-  const ip = socket.handshake.address || "unknown";
+  const ip = clientIp(socket.request);
+  socket.data.ip = ip;
   const count = connections.get(ip) || 0;
-  if (count >= 12) return next(new Error("Trop de connexions."));
+  if (count >= CONNECTIONS_PER_IP) return next(new Error("Trop de connexions."));
   connections.set(ip, count + 1);
   socket.on("disconnect", () => {
     const left = (connections.get(ip) || 1) - 1;
@@ -248,6 +324,8 @@ function snapshot(room, event = null) {
         : { present: false, connected: false, name: "", color: "" }
     )),
     rematch: room.rematch.slice(),
+    ready: room.ready?.slice() || [false, false],
+    accepted: room.accepted === true,
     event,
   };
 }
@@ -269,10 +347,54 @@ function clearForfeit(room, seat) {
   }
 }
 
+function broadcastQueue() {
+  const people = [...queue.values()].map((item) => ({ token: item.token, name: item.name, photo: item.photo }));
+  for (const item of queue.values()) {
+    io.to(item.socketId).emit("queue", { people: people.filter((person) => person.token !== item.token).slice(0, 40) });
+  }
+}
+
+function liveRoom(socket) {
+  const room = rooms.get(socket.data.roomCode);
+  if (!room) return null;
+  const seat = seatOf(room, socket.data.playerId);
+  if (seat < 0 || room.players[seat]?.socketId !== socket.id) return null;
+  return { room, seat };
+}
+
+function leaveRoom(socket) {
+  const live = liveRoom(socket);
+  if (!live) return;
+  const { room, seat } = live;
+  socket.leave(room.code);
+  socket.data.roomCode = "";
+  if (!room.game && seat === 0) {
+    io.to(room.code).emit("closed");
+    for (const index of [0, 1]) clearForfeit(room, index);
+    rooms.delete(room.code);
+    return;
+  }
+  if (!room.game && seat === 1) {
+    room.players[1] = null;
+    room.ready[1] = false;
+    room.accepted = false;
+    emitState(room, { type: "left" });
+    return;
+  }
+  if (room.game?.status === "playing") {
+    abandon(room.game, seat);
+    emitState(room, { type: "abandon" });
+  }
+}
+
 io.on("connection", (socket) => {
   socket.on("create", (payload = {}, ack) => {
+    payload = asObject(payload);
+    if (liveRoom(socket)) return ack?.({ ok: false, error: "Quitte d’abord la salle en cours." });
     if (rooms.size >= ROOM_LIMIT) return ack?.({ ok: false, error: "Le serveur est plein." });
-    if (limited(`${socket.id}:create`, 4, 60_000)) return ack?.({ ok: false, error: "Trop de salles créées." });
+    if (limited(`${socket.id}:create`, 4, 60_000) || limited(`${socket.data.ip}:create`, 40, 60_000)) {
+      return ack?.({ ok: false, error: "Trop de salles créées." });
+    }
     const settings = normalizeSettings({ ...payload.settings, p1Name: payload.name });
     const code = makeRoomCode(rooms);
     const room = {
@@ -290,10 +412,14 @@ io.on("connection", (socket) => {
         null,
       ],
       rematch: [false, false],
+      ready: [false, false],
+      accepted: false,
       forfeit: [null, null],
       touched: Date.now(),
+      opened: Date.now(),
     };
     rooms.set(code, room);
+    if (queue.delete(socket.id)) broadcastQueue();
     socket.join(code);
     socket.data.roomCode = code;
     socket.data.playerId = room.players[0].id;
@@ -302,17 +428,25 @@ io.on("connection", (socket) => {
   });
 
   socket.on("join", (payload = {}, ack) => {
+    payload = asObject(payload);
     if (limited(`${socket.id}:join`, 12, 60_000)) return ack?.({ ok: false, error: "Trop d'essais. Patiente un peu." });
     const code = roomCode(payload.code);
     const room = code ? rooms.get(code) : null;
     if (!room) return ack?.({ ok: false, error: "Salle introuvable." });
     const existing = seatOf(room, safePlayerId(payload.playerId, ""));
     if (existing >= 0) {
+      const holder = room.players[existing];
+      if (holder.connected && holder.socketId !== socket.id) {
+        return ack?.({ ok: false, error: "Ce joueur est déjà dans la salle." });
+      }
+      const live = liveRoom(socket);
+      if (live && live.room.code !== room.code) return ack?.({ ok: false, error: "Quitte d’abord la salle en cours." });
       attach(socket, room, existing, payload.playerId);
       ack?.({ ok: true, code });
       emitState(room, { type: "rejoin" });
       return;
     }
+    if (liveRoom(socket)) return ack?.({ ok: false, error: "Quitte d’abord la salle en cours." });
     if (room.players[1]) return ack?.({ ok: false, error: "Cette salle est complète." });
     const name = cleanName(payload.name, "Joueur 2");
     let color = payload.color;
@@ -324,24 +458,32 @@ io.on("connection", (socket) => {
     }
     room.settings = { ...room.settings, p2Name: name, p2Color: color };
     room.players[1] = { id: safePlayerId(payload.playerId, socket.id), name, color, socketId: socket.id, connected: true };
-    room.game = createGame(room.settings, 0);
+    room.ready[1] = false;
+    room.accepted = false;
+    if (queue.delete(socket.id)) broadcastQueue();
     attach(socket, room, 1, room.players[1].id);
     ack?.({ ok: true, code });
-    emitState(room, { type: "start" });
+    emitState(room, { type: "joined" });
   });
 
   socket.on("rejoin", (payload = {}, ack) => {
+    payload = asObject(payload);
     if (limited(`${socket.id}:join`, 12, 60_000)) return ack?.({ ok: false });
     const code = roomCode(payload.code);
     const room = code ? rooms.get(code) : null;
     const seat = room ? seatOf(room, safePlayerId(payload.playerId, "")) : -1;
     if (!room || seat < 0) return ack?.({ ok: false });
+    const holder = room.players[seat];
+    if (holder.connected && holder.socketId !== socket.id) return ack?.({ ok: false });
+    const live = liveRoom(socket);
+    if (live && live.room.code !== room.code) return ack?.({ ok: false });
     attach(socket, room, seat, payload.playerId);
     ack?.({ ok: true, code: room.code });
     emitState(room, { type: "rejoin" });
   });
 
   socket.on("move", (move, ack) => {
+    if (limited(`${socket.id}:move`, 300, 60_000)) return ack?.({ ok: false, error: "Trop de coups." });
     const room = rooms.get(socket.data.roomCode);
     const seat = room ? seatOf(room, socket.data.playerId) : -1;
     const play = asMove(move);
@@ -378,26 +520,149 @@ io.on("connection", (socket) => {
     }
   });
 
-  socket.on("leave", () => {
+  socket.on("present", () => {
     const room = rooms.get(socket.data.roomCode);
-    if (!room) return;
-    const seat = seatOf(room, socket.data.playerId);
-    if (seat === 0 && !room.players[1]) {
-      rooms.delete(room.code);
-      return;
-    }
-    if (seat >= 0 && room.game?.status === "playing") {
-      abandon(room.game, seat);
-      emitState(room, { type: "abandon" });
-    }
+    const seat = room ? seatOf(room, socket.data.playerId) : -1;
+    if (!room || seat < 0 || room.game || limited(`${socket.id}:present`, 40, 60_000)) return;
+    room.ready[seat] = !room.ready[seat];
+    emitState(room, { type: "present" });
   });
 
+  socket.on("accept", () => {
+    const room = rooms.get(socket.data.roomCode);
+    const seat = room ? seatOf(room, socket.data.playerId) : -1;
+    if (!room || seat !== 1 || room.game || !room.players[1] || limited(`${socket.id}:accept`, 20, 60_000)) return;
+    room.accepted = true;
+    emitState(room, { type: "accept" });
+  });
+
+  socket.on("table", (patch = {}) => {
+    patch = asObject(patch);
+    const room = rooms.get(socket.data.roomCode);
+    const seat = room ? seatOf(room, socket.data.playerId) : -1;
+    if (!room || seat !== 0 || room.game || limited(`${socket.id}:table`, 20, 60_000)) return;
+    const next = { ...room.settings };
+    if (patch.timeMode === "none" || patch.timeMode === "global") next.timeMode = patch.timeMode;
+    if (Number.isFinite(Number(patch.timeLimit))) next.timeLimit = Number(patch.timeLimit);
+    if (Number.isFinite(Number(patch.scoreLimit))) next.scoreLimit = Number(patch.scoreLimit);
+    room.settings = normalizeSettings(next);
+    room.accepted = false;
+    emitState(room, { type: "settings" });
+  });
+
+  socket.on("launch", () => {
+    const room = rooms.get(socket.data.roomCode);
+    const seat = room ? seatOf(room, socket.data.playerId) : -1;
+    if (!room || seat !== 0 || room.game || limited(`${socket.id}:launch`, 8, 60_000)) return;
+    if (!room.players[1]?.connected || !room.ready[0] || !room.ready[1]) return;
+    room.game = createGame(room.settings, 0);
+    emitState(room, { type: "start" });
+  });
+
+  socket.on("queue-join", (payload = {}) => {
+    payload = asObject(payload);
+    if (limited(`${socket.id}:queue`, 20, 60_000)) return;
+    const live = liveRoom(socket);
+    if (live?.room.game) {
+      const people = [...queue.values()].filter((item) => item.socketId !== socket.id).slice(0, 40);
+      socket.emit("queue", { people: people.map((item) => ({ token: item.token, name: item.name, photo: item.photo })) });
+      return;
+    }
+    if (live) leaveRoom(socket);
+    if (queue.size >= QUEUE_LIMIT && !queue.has(socket.id)) return;
+    const name = cleanName(payload.name, "Joueur");
+    const photo = PHOTO_URL.test(payload.photo) ? payload.photo : "";
+    const current = queue.get(socket.id);
+    queue.set(socket.id, {
+      token: current?.token || makeRoomCode(new Set([...queue.values()].map((item) => `EGD-${item.token}`))).slice(4),
+      id: safePlayerId(payload.playerId, socket.id),
+      name,
+      photo,
+      settings: normalizeSettings(payload.settings || {}),
+      socketId: socket.id,
+    });
+    broadcastQueue();
+  });
+
+  socket.on("queue-leave", () => {
+    if (!queue.delete(socket.id)) return;
+    broadcastQueue();
+  });
+
+  socket.on("invite", (payload = {}) => {
+    payload = asObject(payload);
+    if (limited(`${socket.id}:invite`, 8, 60_000)) return;
+    const token = queueToken(payload.token);
+    const host = queue.get(socket.id);
+    const guest = token ? [...queue.values()].find((item) => item.token === token && item.socketId !== socket.id) : null;
+    if (!host || !guest) return;
+    io.to(guest.socketId).emit("invite", { from: host.name, token: host.token });
+  });
+
+  socket.on("invite-answer", (payload = {}) => {
+    payload = asObject(payload);
+    if (!payload.yes || limited(`${socket.id}:invite-answer`, 6, 60_000)) return;
+    const token = queueToken(payload.token);
+    const guest = queue.get(socket.id);
+    const host = token ? [...queue.values()].find((item) => item.token === token) : null;
+    const hostSocket = host ? io.sockets.sockets.get(host.socketId) : null;
+    if (!guest || !host || !hostSocket || host.socketId === socket.id) return;
+    if (liveRoom(socket)?.room.game || liveRoom(hostSocket)?.room.game) {
+      socket.emit("notice", "Tu es déjà dans une partie.");
+      return;
+    }
+    if (rooms.size >= ROOM_LIMIT || limited(`${socket.data.ip}:create`, 40, 60_000)) {
+      socket.emit("notice", "La table n’a pas pu s’ouvrir.");
+      return;
+    }
+    if (liveRoom(socket)) leaveRoom(socket);
+    if (liveRoom(hostSocket)) leaveRoom(hostSocket);
+    const settings = normalizeSettings({ ...host.settings, p1Name: host.name, p2Name: guest.name });
+    if (settings.p2Color === settings.p1Color) {
+      settings.p2Color = ["red", "blue", "black", "green", "purple", "orange"].find((item) => item !== settings.p1Color);
+    }
+    const code = makeRoomCode(rooms);
+    const room = {
+      code,
+      settings,
+      game: null,
+      players: [
+        { id: host.id, name: host.name, color: settings.p1Color, socketId: host.socketId, connected: true },
+        { id: guest.id, name: guest.name, color: settings.p2Color, socketId: guest.socketId, connected: true },
+      ],
+      rematch: [false, false],
+      ready: [false, false],
+      accepted: false,
+      forfeit: [null, null],
+      touched: Date.now(),
+      opened: Date.now(),
+    };
+    rooms.set(code, room);
+    queue.delete(host.socketId);
+    queue.delete(guest.socketId);
+    attach(hostSocket, room, 0, host.id);
+    attach(socket, room, 1, guest.id);
+    broadcastQueue();
+    emitState(room, { type: "joined" });
+  });
+
+  socket.on("leave", () => leaveRoom(socket));
+
   socket.on("disconnect", () => {
+    if (queue.delete(socket.id)) broadcastQueue();
     const room = rooms.get(socket.data.roomCode);
     if (!room) return;
     const seat = seatOf(room, socket.data.playerId);
     if (seat < 0 || room.players[seat].socketId !== socket.id) return;
+    if (!room.game && seat === 1) {
+      room.players[1] = null;
+      room.ready[1] = false;
+      room.accepted = false;
+      emitState(room, { type: "left" });
+      return;
+    }
     room.players[seat].connected = false;
+    if (!room.game) room.ready[seat] = false;
     emitState(room, { type: "presence" });
     if (room.game?.status === "playing") {
       clearForfeit(room, seat);
@@ -444,10 +709,17 @@ setInterval(() => {
       room.clockAt = now;
     }
     const empty = room.players.every((player) => !player?.connected);
+    if (!room.game && now - (room.opened || room.touched) > WAITING_ROOM_MS) {
+      io.to(code).emit("closed");
+      rooms.delete(code);
+      continue;
+    }
     if (empty && now - room.touched > 10 * 60 * 1000) rooms.delete(code);
   }
   for (const [key, times] of hits) {
-    if (!times.some((time) => now - time < 60_000)) hits.delete(key);
+    const fresh = times.filter((time) => now - time < 60 * 60 * 1000);
+    if (!fresh.length) hits.delete(key);
+    else if (fresh.length !== times.length) hits.set(key, fresh);
   }
 }, 200);
 

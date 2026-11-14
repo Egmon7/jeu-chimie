@@ -45,7 +45,7 @@
         <div class="mode-list" id="mode-home">
           <button type="button" class="mode" data-open-hub="play">
             <strong>Jouer</strong>
-            <span>Robot, même écran et en ligne.</span>
+            <span>Robot, écran, ligne et recherche.</span>
           </button>
           <button type="button" class="mode" data-open-hub="competitions">
             <strong>Compétitions</strong>
@@ -65,13 +65,17 @@
             <strong>Robot</strong>
             <span>Contre un robot.</span>
           </button>
+          <button type="button" class="mode" id="go-online">
+            <strong>Jouer à 2 en ligne</strong>
+            <span>Une salle privée, un code.</span>
+          </button>
           <button type="button" class="mode" id="go-local">
             <strong>Multijoueurs</strong>
             <span>Même écran, deux stylos.</span>
           </button>
-          <button type="button" class="mode" id="go-online">
-            <strong>Jouer à 2 en ligne</strong>
-            <span>Une salle privée, un code.</span>
+          <button type="button" class="mode" id="go-find">
+            <strong>Trouver une personne</strong>
+            <span>Quelqu’un de connecté, pour jouer.</span>
           </button>
         </div>
         <div class="mode-list" data-hub-panel="challenges" hidden>
@@ -260,40 +264,53 @@
     </section>
 
     <section id="screen-online" class="screen" hidden>
-      <div class="sheet narrow">
+      <div class="sheet online-board">
         <p class="eyebrow">À distance</p>
         <h1>Jouer en ligne</h1>
-        <p class="lead" id="online-lead">Créez une salle privée, ou rejoignez-en une avec le code.</p>
-        <button type="button" class="btn primary xl" id="create-open">Créer une partie</button>
-        <form id="join-form" class="join">
-          <h2>Rejoindre</h2>
-          <label>Votre nom <input id="join-name" maxlength="18" value="Joueur 2" autocomplete="off" required></label>
-          <label>Code <input id="join-code" maxlength="12" placeholder="EGD-K7MQ2P" autocapitalize="characters" required></label>
-          <p class="hint">Votre couleur</p>
-          <div class="swatches" data-field="joinColor">
-            <button type="button" data-value="red" aria-label="Rouge" aria-pressed="true"></button>
-            <button type="button" data-value="blue" aria-label="Bleu"></button>
-            <button type="button" data-value="black" aria-label="Noir"></button>
-            <button type="button" data-value="green" aria-label="Vert"></button>
-            <button type="button" data-value="orange" aria-label="Orange"></button>
+        <div class="online-split">
+          <div class="online-card">
+            <h2>Créer une partie</h2>
+            <p>Tu règles d’abord la feuille, le temps et les stylos. Le code vient après.</p>
+            <button type="button" class="btn primary slim" id="create-open">Créer une partie</button>
           </div>
-          <button type="submit" class="btn primary">Rejoindre la salle</button>
-        </form>
-        <button type="button" class="btn" data-home>Retour</button>
+          <form id="join-form" class="online-card">
+            <h2>Rejoindre la salle</h2>
+            <label>Votre nom <input id="join-name" maxlength="18" autocomplete="name" required></label>
+            <label>Code de l’ami <input id="join-code" maxlength="12" placeholder="EGD-K7MQ2P" autocapitalize="characters" required></label>
+            <button type="submit" class="btn primary slim">Rejoindre</button>
+          </form>
+        </div>
+        <button type="button" class="btn slim" data-home>Retour</button>
+      </div>
+    </section>
+
+    <section id="screen-find" class="screen" hidden>
+      <div class="sheet narrow">
+        <p class="eyebrow">En ligne</p>
+        <h1>Personnes connectées</h1>
+        <p class="lead">Choisis quelqu’un qui attend. Tu règles la table, l’autre accepte.</p>
+        <div id="find-list" class="find-list"></div>
+        <button type="button" class="btn" id="find-back">Retour</button>
       </div>
     </section>
 
     <section id="screen-lobby" class="screen" hidden>
       <div class="sheet narrow lobby">
         <p class="eyebrow">Salle privée</p>
-        <h1>Donnez ce code</h1>
+        <h1>Avant la table</h1>
+        <p id="lobby-rules"></p>
         <p id="lobby-code" class="code">EGD-0000</p>
         <p id="lobby-status">En attente d’un adversaire…</p>
-        <div class="form-actions">
-          <button type="button" class="btn" id="copy-code">Copier le code</button>
-          <button type="button" class="btn" id="copy-link">Copier le lien</button>
+        <div id="lobby-seats" class="lobby-seats"></div>
+        <div class="lobby-actions" id="lobby-share">
+          <button type="button" class="btn slim" id="copy-code">Copier le code</button>
         </div>
-        <button type="button" class="btn" id="lobby-cancel">Annuler</button>
+        <div class="lobby-actions">
+          <button type="button" class="btn slim" id="lobby-present" aria-pressed="false">Je suis là</button>
+          <button type="button" class="btn slim" id="lobby-accept" hidden>J’accepte</button>
+          <button type="button" class="btn slim primary" id="lobby-launch" hidden>Lancer</button>
+          <button type="button" class="btn slim" id="lobby-cancel">Quitter</button>
+        </div>
       </div>
     </section>
 
