@@ -53,7 +53,7 @@
           </button>
           <button type="button" class="mode" data-open-hub="challenges">
             <strong>Défis</strong>
-            <span>Défis quotidiens, XP et séries.</span>
+            <span>Points, séries et parties contre le robot.</span>
           </button>
           <button type="button" class="mode" data-open-hub="profiles">
             <strong>Profils</strong>
@@ -79,14 +79,9 @@
           </button>
         </div>
         <div class="mode-list" data-hub-panel="challenges" hidden>
-          <button type="button" class="mode" id="go-daily" data-soon>
-            <strong>Défis quotidiens</strong>
-            <span>Bientôt disponible.</span>
-          </button>
-          <button type="button" class="mode" id="go-streak" data-soon>
-            <strong>XP et séries</strong>
-            <span>Bientôt disponible.</span>
-          </button>
+          <p class="challenge-lead">Chaque défi réussi une fois ajoute ses points à l’XP, contre le robot.</p>
+          <p id="challenge-status" class="challenge-status" aria-live="polite"></p>
+          <div id="challenge-list" class="challenge-list"></div>
         </div>
         <div class="mode-list" data-hub-panel="competitions" hidden>
           <button type="button" class="mode" id="go-tourney-4" data-soon>
@@ -275,6 +270,7 @@
           </div>
           <form id="join-form" class="online-card">
             <h2>Rejoindre la salle</h2>
+            <p id="online-lead" hidden></p>
             <label>Votre nom <input id="join-name" maxlength="18" autocomplete="name" required></label>
             <label>Code de l’ami <input id="join-code" maxlength="12" placeholder="EGD-K7MQ2P" autocapitalize="characters" required></label>
             <button type="submit" class="btn primary slim">Rejoindre</button>
@@ -299,8 +295,8 @@
         <p class="eyebrow">Salle privée</p>
         <h1>Avant la table</h1>
         <p id="lobby-rules"></p>
-        <p id="lobby-code" class="code">EGD-0000</p>
-        <p id="lobby-status">En attente d’un adversaire…</p>
+        <p id="lobby-code" class="code">…</p>
+        <p id="lobby-status">Reprise de la salle…</p>
         <div id="lobby-seats" class="lobby-seats"></div>
         <div class="lobby-actions" id="lobby-share">
           <button type="button" class="btn slim" id="copy-code">Copier le code</button>
@@ -382,10 +378,11 @@
         <h1>Profil</h1>
         <div class="photo-pick">
           <img id="profile-photo" class="profile-photo" alt="" hidden>
-          <label class="btn">
-            Choisir une photo
+          <label class="btn" id="photo-btn">
+            <span id="photo-label">Choisir une photo</span>
             <input id="profile-file" type="file" accept="image/jpeg,image/png,image/webp" hidden>
           </label>
+          <p id="photo-status" class="photo-status" aria-live="polite"></p>
         </div>
         <label>Nom <input id="profile-name" type="text" maxlength="40" autocomplete="name" placeholder="Ton nom"></label>
         <label>E-mail <input id="profile-email" type="email" maxlength="80" autocomplete="email" placeholder="ton@email"></label>

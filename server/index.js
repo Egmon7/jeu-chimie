@@ -66,7 +66,7 @@ app.use((req, res, next) => {
     "script-src 'self'",
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
     "font-src 'self' https://fonts.gstatic.com",
-    "img-src 'self' data: https://res.cloudinary.com",
+    "img-src 'self' data: blob: https://res.cloudinary.com",
     "connect-src 'self' https://api.cloudinary.com",
     "frame-ancestors 'none'",
     "base-uri 'self'",
@@ -288,6 +288,9 @@ function validGame(entry) {
     size: entry.size,
     names: entry.names.slice(0, 2).map((name) => cleanName(name, "Joueur")),
     scores,
+    durationMs: Number.isInteger(Number(entry.durationMs)) && Number(entry.durationMs) > 0 && Number(entry.durationMs) < 6 * 60 * 60 * 1000 ? Number(entry.durationMs) : null,
+    behind: entry.behind === true,
+    clean: entry.clean === true,
     winner: entry.winner === 0 || entry.winner === 1 || entry.winner === "draw" ? entry.winner : "draw",
     userSeat: entry.userSeat === 0 || entry.userSeat === 1 ? entry.userSeat : null,
     reason: entry.reason,
@@ -389,6 +392,7 @@ function leaveRoom(socket) {
 
 io.on("connection", (socket) => {
   socket.on("create", (payload = {}, ack) => {
+    try {
     payload = asObject(payload);
     if (liveRoom(socket)) return ack?.({ ok: false, error: "Quitte d’abord la salle en cours." });
     if (rooms.size >= ROOM_LIMIT) return ack?.({ ok: false, error: "Le serveur est plein." });
@@ -425,9 +429,13 @@ io.on("connection", (socket) => {
     socket.data.playerId = room.players[0].id;
     ack?.({ ok: true, code });
     emitState(room, { type: "created" });
+    } catch {
+      ack?.({ ok: false, error: "La salle n’a pas pu s’ouvrir." });
+    }
   });
 
   socket.on("join", (payload = {}, ack) => {
+    try {
     payload = asObject(payload);
     if (limited(`${socket.id}:join`, 12, 60_000)) return ack?.({ ok: false, error: "Trop d'essais. Patiente un peu." });
     const code = roomCode(payload.code);
@@ -464,6 +472,9 @@ io.on("connection", (socket) => {
     attach(socket, room, 1, room.players[1].id);
     ack?.({ ok: true, code });
     emitState(room, { type: "joined" });
+    } catch {
+      ack?.({ ok: false, error: "Impossible de rejoindre cette salle." });
+    }
   });
 
   socket.on("rejoin", (payload = {}, ack) => {
@@ -474,7 +485,13 @@ io.on("connection", (socket) => {
     const seat = room ? seatOf(room, safePlayerId(payload.playerId, "")) : -1;
     if (!room || seat < 0) return ack?.({ ok: false });
     const holder = room.players[seat];
-    if (holder.connected && holder.socketId !== socket.id) return ack?.({ ok: false });
+    if (holder.socketId && holder.socketId !== socket.id) {
+      const previous = io.sockets.sockets.get(holder.socketId);
+      if (previous) {
+        previous.data.roomCode = "";
+        previous.leave(room.code);
+      }
+    }
     const live = liveRoom(socket);
     if (live && live.room.code !== room.code) return ack?.({ ok: false });
     attach(socket, room, seat, payload.playerId);
@@ -654,25 +671,28 @@ io.on("connection", (socket) => {
     if (!room) return;
     const seat = seatOf(room, socket.data.playerId);
     if (seat < 0 || room.players[seat].socketId !== socket.id) return;
-    if (!room.game && seat === 1) {
-      room.players[1] = null;
-      room.ready[1] = false;
-      room.accepted = false;
-      emitState(room, { type: "left" });
-      return;
-    }
     room.players[seat].connected = false;
-    if (!room.game) room.ready[seat] = false;
+    room.touched = Date.now();
     emitState(room, { type: "presence" });
-    if (room.game?.status === "playing") {
-      clearForfeit(room, seat);
-      room.forfeit[seat] = setTimeout(() => {
-        if (!room.players[seat]?.connected && room.game?.status === "playing") {
-          abandon(room.game, seat);
-          emitState(room, { type: "forfeit" });
-        }
-      }, 60000);
-    }
+    clearForfeit(room, seat);
+    const wait = room.game?.status === "playing" ? 60000 : 20000;
+    room.forfeit[seat] = setTimeout(() => {
+      const player = room.players[seat];
+      if (!player || player.connected || player.socketId !== socket.id) return;
+      if (room.game?.status === "playing") {
+        abandon(room.game, seat);
+        emitState(room, { type: "forfeit" });
+        return;
+      }
+      room.ready[seat] = false;
+      if (seat === 1) {
+        room.players[1] = null;
+        room.accepted = false;
+        emitState(room, { type: "left" });
+        return;
+      }
+      emitState(room, { type: "presence" });
+    }, wait);
   });
 });
 

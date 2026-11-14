@@ -428,6 +428,8 @@ body[data-page="play"] #screen-game {
 }
 .photo-pick { display: grid; justify-items: center; gap: 10px; margin-bottom: 16px; }
 .photo-pick input { display: none; }
+.photo-status, .challenge-status { min-height: 1.2em; margin: 0; color: #9aa8ba; font-size: 0.86rem; }
+.challenge-status { text-align: left; }
 .rank-wrap h2 { margin: 0 0 12px; }
 .rank-you, .podium-card, .rank-row {
   background: #1c2a29;
@@ -491,9 +493,9 @@ body[data-page="play"] #screen-game {
   padding: 12px 8px 14px;
   border-radius: 8px 8px 3px 3px;
 }
-#rank-top .podium-card.rank-1 { height: 196px; }
-#rank-top .podium-card.rank-2 { height: 164px; }
-#rank-top .podium-card.rank-3 { height: 148px; }
+#rank-top .podium-card.rank-1 { min-height: 210px; height: auto; }
+#rank-top .podium-card.rank-2 { min-height: 184px; height: auto; }
+#rank-top .podium-card.rank-3 { min-height: 168px; height: auto; }
 #rank-top .podium-card strong { flex: none; font-size: 0.92rem; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #rank-top .podium-level,
 #rank-top .podium-xp { margin: 0; color: #d5deea; font-size: 0.75rem; }
@@ -1093,8 +1095,33 @@ body[data-page="history"] .btn.primary {
 .lobby-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
 #lobby-present { cursor: pointer; }
 #lobby-present[aria-pressed="true"] { background: #f2f4f7; color: #0e1616; }
+.challenge-lead { margin: 0 0 4px; color: #9aa8ba; text-align: left; }
+.challenge-list { display: grid; width: 100%; grid-template-columns: 1fr 1fr; gap: 8px; }
+.challenge-card {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 2px 8px;
+  margin: 0;
+  padding: 10px 12px;
+  text-align: left;
+  background: #1c2a29;
+  color: #f4f6f8;
+  border: 1px solid #2a3a3a;
+  border-radius: 10px;
+  font: inherit;
+  cursor: pointer;
+  width: 100%;
+}
+button.challenge-card:hover,
+button.challenge-card:focus-visible { border-color: #f2f4f7; }
+.challenge-card p, .challenge-card em { grid-column: 1 / -1; margin: 0; color: #9aa8ba; font-size: 0.86rem; font-style: normal; }
+.challenge-card.reached { outline: 1px solid #e7c56a; }
+.challenge-card.reached em { color: #e7c56a; }
+.is-busy { opacity: 0.6; pointer-events: none; }
 @media (max-width: 700px) {
   .online-split { grid-template-columns: 1fr; }
+  .challenge-list, .find-list { grid-template-columns: 1fr; }
+  #rank-top { grid-template-columns: 1fr; grid-template-areas: "first" "second" "third"; }
 }
 .find-list { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 16px 0; }
 .find-card {

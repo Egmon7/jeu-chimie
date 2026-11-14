@@ -134,8 +134,12 @@ function show(id, historyMode = "push") {
   const url = page === "home"
     ? `${location.pathname}${location.search}`
     : `${location.pathname}${location.search}#${page}`;
-  if (historyMode === "replace" || history.state?.page === page) history.replaceState({ page }, "", url);
-  else history.pushState({ page }, "", url);
+  const entry = { page };
+  if (page === "online" || page === "find" || page === "lobby" || (page === "setup" && app.formMode === "online") || (page === "game" && app.mode === "online")) {
+    entry.flow = "online";
+  }
+  if (historyMode === "replace" || history.state?.page === page) history.replaceState(entry, "", url);
+  else history.pushState(entry, "", url);
 }
 
 function closeGameMenu() {
@@ -387,16 +391,31 @@ function openSetup(mode, historyMode = "push") {
   $("p1Name").value = mode === "online" ? (loadProfile().name || "") : "";
   $("p2Name").value = "";
   $("setup-go").textContent = mode === "online" ? "Créer la salle" : "Lancer la partie";
-  show("screen-setup", historyMode);
+  show("screen-setup", historyMode === "skip" ? "skip" : mode === "online" ? "replace" : historyMode);
 }
 
 const CLOUD_NAME = "ka4h4lpk";
 const CLOUD_PRESET = "jeu-chimie";
 const CLOUD_PHOTO = /^https:\/\/res\.cloudinary\.com\/ka4h4lpk\/image\/upload\/[A-Za-z0-9_./%-]{1,360}$/;
 const PROFILE_PHOTO_MAX = 96;
+const FACE_ICON = `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="3.2"></circle><path d="M5 19c1.4-3 3.6-4.5 7-4.5S17.6 16 19 19"></path></svg>`;
 
-function photoView(url) {
-  return url.replace("/image/upload/", "/image/upload/c_fill,g_auto,w_192,h_192/");
+function photoView(url, size = 192) {
+  return url.replace("/image/upload/", `/image/upload/c_fill,g_auto,f_auto,q_auto,w_${size},h_${size}/`);
+}
+
+function faceMarkup(photo, eager = false) {
+  if (!CLOUD_PHOTO.test(photo)) return FACE_ICON;
+  const wait = eager ? `fetchpriority="high"` : `loading="eager"`;
+  return `<img src="${photoView(photo, 96)}" alt="" width="96" height="96" decoding="async" ${wait} referrerpolicy="no-referrer">`;
+}
+
+function bindFaceImages(root) {
+  root?.querySelectorAll(".face img").forEach((img) => {
+    img.addEventListener("error", () => {
+      img.replaceWith(document.createRange().createContextualFragment(FACE_ICON));
+    }, { once: true });
+  });
 }
 
 function fillProfileForm(profile) {
@@ -411,7 +430,23 @@ function fillProfileForm(profile) {
   photo.style.height = `${PROFILE_PHOTO_MAX}px`;
 }
 
+async function shrinkPhoto(file) {
+  const bitmap = await createImageBitmap(file);
+  const max = 320;
+  const scale = Math.min(1, max / Math.max(bitmap.width, bitmap.height));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+  canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+  canvas.getContext("2d").drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+  bitmap.close?.();
+  const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.72));
+  if (!blob) throw new Error("photo");
+  return blob;
+}
+
 async function uploadProfilePhoto(file) {
+  const button = $("photo-btn");
+  const label = $("photo-label");
   if (!["image/jpeg", "image/png", "image/webp"].includes(file.type)) {
     toast("Choisis une image jpg, png ou webp.");
     return;
@@ -420,24 +455,43 @@ async function uploadProfilePhoto(file) {
     toast("La photo doit rester sous 2 Mo.");
     return;
   }
-  const body = new FormData();
-  body.append("file", file);
-  body.append("upload_preset", CLOUD_PRESET);
-  toast("Envoi de la photo…");
+  const photo = $("profile-photo");
+  const status = $("photo-status");
+  const previous = photo.dataset.full || "";
+  const preview = URL.createObjectURL(file);
+  photo.hidden = false;
+  photo.src = preview;
+  photo.style.width = `${PROFILE_PHOTO_MAX}px`;
+  photo.style.height = `${PROFILE_PHOTO_MAX}px`;
+  label.textContent = "Préparation…";
+  if (status) status.textContent = "Aperçu affiché. La photo est réduite avant l’envoi.";
+  await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  button.classList.add("is-busy");
+  label.textContent = "Envoi…";
   try {
+    const blob = file.type === "image/jpeg" && file.size <= 90_000 ? file : await shrinkPhoto(file);
+    const body = new FormData();
+    body.append("file", blob, "photo.jpg");
+    body.append("upload_preset", CLOUD_PRESET);
     const res = await fetch(`https://api.cloudinary.com/v1_1/${CLOUD_NAME}/image/upload`, { method: "POST", body });
     const data = await res.json();
     const url = String(data?.secure_url || "");
-    if (!res.ok || !CLOUD_PHOTO.test(url)) {
-      toast("La photo n’a pas pu partir.");
-      return;
-    }
+    if (!res.ok || !CLOUD_PHOTO.test(url)) throw new Error("photo");
     const saved = saveProfile({ ...loadProfile(), photo: url });
     fillProfileForm(saved);
     if (saved.name) syncProfile(saved);
+    if (status) status.textContent = "Photo enregistrée.";
     toast("Photo enregistrée.");
   } catch {
+    photo.src = previous ? photoView(previous) : "";
+    photo.hidden = !previous;
+    photo.dataset.full = previous;
+    if (status) status.textContent = "La photo n’a pas pu partir. Réessaie.";
     toast("La photo n’a pas pu partir.");
+  } finally {
+    URL.revokeObjectURL(preview);
+    button.classList.remove("is-busy");
+    label.textContent = "Choisir une photo";
   }
 }
 
@@ -487,9 +541,100 @@ const BADGE_GOALS = [
   { name: "Grande feuille", need: "100 maisons dans une partie", img: "img/badges/premium-badge.png", test: (row) => (Number(row.best) || 0) >= 100 },
 ];
 
-function faceMarkup(photo) {
-  if (CLOUD_PHOTO.test(photo)) return `<img src="${photoView(photo)}" alt="">`;
-  return `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="3.2"></circle><path d="M5 19c1.4-3 3.6-4.5 7-4.5S17.6 16 19 19"></path></svg>`;
+const CHALLENGES = [
+  { id: "speed", name: "Moins de 8 minutes", text: "Terminer une partie en moins de 8 minutes.", xp: 40, test: (games) => games.some((game) => game.durationMs >= 1000 && game.durationMs <= 8 * 60 * 1000) },
+  { id: "precision", name: "Précision", text: "Fermer une maison à la main, sans erreur.", xp: 50, test: (games) => games.some((game) => game.clean === true) },
+  { id: "dominate", name: "Domination", text: "Gagner en prenant au moins 10 maisons.", xp: 45, test: (games) => games.some((game) => wonGame(game) && housesOf(game) >= 10) },
+  { id: "comeback", name: "Remontée", text: "Gagner après avoir été mené au score.", xp: 60, test: (games) => games.some((game) => game.behind === true && wonGame(game)) },
+  { id: "streak", name: "Série de 3 jours", text: "Jouer trois jours de suite.", xp: 30, test: (games) => playStreak(games) >= 3 },
+  { id: "expert", name: "Expert", text: "Affronter le robot au niveau expert.", xp: 35, test: (games) => games.some((game) => game.difficulty === "expert") },
+  { id: "blank", name: "Feuille blanche", text: "Gagner sans laisser une maison à l’autre.", xp: 55, test: (games) => games.some((game) => wonGame(game) && housesOf(game, 1) === 0 && housesOf(game) > 0) },
+  { id: "week", name: "Série de 7 jours", text: "Jouer sept jours de suite.", xp: 40, test: (games) => playStreak(games) >= 7 },
+];
+
+function soloGames(games = loadHistory()) {
+  return (games || []).filter((game) => game.mode === "solo" && Number(game.userSeat) === 0);
+}
+
+function housesOf(game, seat = 0) {
+  const scores = game.scores;
+  const value = Array.isArray(scores) ? scores[seat] : scores?.[seat];
+  const n = Number(value);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function wonGame(game) {
+  return String(game.winner) === "0";
+}
+
+function playStreak(games) {
+  const keys = [...new Set(soloGames(games).map((game) => new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Europe/Paris",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date(game.at))))].sort();
+  let best = 0;
+  let run = 0;
+  let prev = null;
+  for (const key of keys) {
+    const [year, month, day] = key.split("-").map(Number);
+    const cur = Date.UTC(year, month - 1, day);
+    run = prev != null && cur - prev === 86400000 ? run + 1 : 1;
+    prev = cur;
+    best = Math.max(best, run);
+  }
+  return best;
+}
+
+function earnedChallengeIds(games = loadHistory()) {
+  const rows = soloGames(games);
+  return new Set(CHALLENGES.filter((item) => item.test(rows)).map((item) => item.id));
+}
+
+function challengeBonus(games = loadHistory()) {
+  const earned = earnedChallengeIds(games);
+  return CHALLENGES.reduce((sum, item) => sum + (earned.has(item.id) ? item.xp : 0), 0);
+}
+
+function challengeSummary(rows) {
+  const earned = CHALLENGES.filter((item) => item.test(rows));
+  const xp = earned.reduce((sum, item) => sum + item.xp, 0);
+  const n = earned.length;
+  return `${n} atteint${n > 1 ? "s" : ""} sur ${CHALLENGES.length} · +${xp} XP`;
+}
+
+function renderChallenges() {
+  const box = $("challenge-list");
+  if (!box) return;
+  const rows = soloGames();
+  box.innerHTML = CHALLENGES.map((item) => {
+    const done = item.test(rows);
+    return `<button type="button" class="challenge-card${done ? " reached" : ""}" data-challenge="${esc(item.id)}"><strong>${esc(item.name)}</strong><span>+${item.xp} XP</span><p>${esc(item.text)}</p><em>${done ? "Atteint · rejouer" : "Entrer"}</em></button>`;
+  }).join("");
+  const status = $("challenge-status");
+  if (status) status.textContent = challengeSummary(rows);
+}
+
+function startChallenge(id) {
+  const item = CHALLENGES.find((entry) => entry.id === id);
+  if (!item) return;
+  const name = loadProfile().name;
+  if (!name) {
+    toast("Écris d’abord ton nom de profil.");
+    openProfile();
+    return;
+  }
+  const currentLimit = Number(app.prefs.scoreLimit) || 0;
+  const settings = normalizeSettings({
+    ...app.prefs,
+    p1Name: name,
+    p2Name: "Robot",
+    closeMode: item.id === "precision" ? "hand" : app.prefs.closeMode,
+    difficulty: item.id === "expert" ? "expert" : app.prefs.difficulty,
+    scoreLimit: item.id === "dominate" && currentLimit > 0 && currentLimit < 10 ? 10 : currentLimit,
+  });
+  startMatch(settings, "solo");
 }
 
 function renderProgress(rows) {
@@ -552,9 +697,10 @@ function paintBoard() {
     const card = document.createElement("article");
     const rank = Number(row.rank);
     card.className = `podium-card rank-${rank}${row.you ? " you" : ""}`;
-    card.innerHTML = `<img class="podium-medal" src="img/medaille-${rank}.png" alt=""><span class="face">${faceMarkup(row.photo)}</span>${row.you ? `<em class="you-tag">Toi</em>` : ""}<strong>${esc(row.name)}</strong><p class="podium-xp">${Number(row.xp) || 0} XP</p>`;
+    card.innerHTML = `<img class="podium-medal" src="img/medaille-${rank}.png" alt=""><span class="face">${faceMarkup(row.photo, true)}</span>${row.you ? `<em class="you-tag">Toi</em>` : ""}<strong>${esc(row.name)}</strong><p class="podium-xp">${Number(row.xp) || 0} XP</p>`;
     top.append(card);
   }
+  bindFaceImages(top);
   if (query && !rows.length) {
     const empty = document.createElement("li");
     empty.className = "rank-row";
@@ -564,9 +710,10 @@ function paintBoard() {
   for (const row of rest) {
     const item = document.createElement("li");
     item.className = row.you ? "rank-row you" : "rank-row";
-    item.innerHTML = `<span class="rank-num">${Number(row.rank)}</span><span class="face">${faceMarkup(row.photo)}</span><strong>${esc(row.name)}</strong>${row.you ? `<em class="you-tag">Toi</em>` : ""}<span class="rank-points">${Number(row.xp) || 0} XP</span>`;
+    item.innerHTML = `<span class="rank-num">${Number(row.rank)}</span><span class="face">${faceMarkup(row.photo, true)}</span><strong>${esc(row.name)}</strong>${row.you ? `<em class="you-tag">Toi</em>` : ""}<span class="rank-points">${Number(row.xp) || 0} XP</span>`;
     list.append(item);
   }
+  bindFaceImages(list);
 }
 
 function scrollToMyRank() {
@@ -588,9 +735,16 @@ function renderBadgeCatalog() {
 }
 
 async function loadRanking() {
-  const rows = await sendJson(`/api/ranking?player=${encodeURIComponent(playerId())}`, "GET");
-  const list = Array.isArray(rows) ? rows : null;
-  if (!$("screen-rank").hidden) renderBoard(list);
+  const count = $("rank-count");
+  if (count && !rankCache) count.textContent = "Chargement du classement…";
+  try {
+    const rows = await sendJson(`/api/ranking?player=${encodeURIComponent(playerId())}`, "GET");
+    const list = Array.isArray(rows) ? rows : null;
+    if (!$("screen-rank").hidden) renderBoard(list);
+    if (!list && count) count.textContent = "Le classement n’a pas pu se charger.";
+  } catch {
+    if (!$("screen-rank").hidden && count) count.textContent = "Le classement n’a pas pu se charger.";
+  }
 }
 
 function progressFromHistory(games) {
@@ -609,6 +763,7 @@ function progressFromHistory(games) {
     if (win) stats.wins += 1;
     if (win && per === 10) stats.expertWins += 1;
   }
+  stats.xp += challengeBonus(games);
   return stats;
 }
 
@@ -674,6 +829,11 @@ function startMatch(settings, mode) {
   ];
   app.board.clearAnims();
   resetSheetZoom();
+  app.startedAt = Date.now();
+  app.wasBehind = false;
+  app.handCloses = 0;
+  app.traceFaults = 0;
+  app.freshChallenges = [];
   show("screen-game");
   paintMatch();
   showModeReminder();
@@ -906,6 +1066,7 @@ function paintMatch() {
 
 function refreshHud() {
   const game = app.game;
+  if (app.mode === "solo" && game && game.scores[1] > game.scores[0]) app.wasBehind = true;
   app.players.forEach((player, index) => {
     const card = $(`p${index}-card`);
     card.style.setProperty("--pen", displayColor(player.color, app.prefs.theme));
@@ -1164,7 +1325,7 @@ async function pullProfile() {
     }
     if (!profile.name) return;
     saveProfile(profile);
-    if (!$("screen-profile").hidden) fillProfileForm(loadProfile());
+    if (!$("screen-profile").hidden && !$("photo-btn")?.classList.contains("is-busy")) fillProfileForm(loadProfile());
   } catch {
     /* le profil reste dans le navigateur */
   }
@@ -1177,15 +1338,18 @@ function syncGame(entry) {
 async function pullHistory() {
   try {
     const games = await sendJson(`/api/games/${playerId()}`, "GET");
-    if (!Array.isArray(games)) return;
+    if (!Array.isArray(games)) return false;
     if (!games.length) {
       loadHistory().forEach((entry) => syncGame(entry));
-      return;
+      return true;
     }
     replaceHistory(games);
     if (!$("screen-history").hidden) renderHistory();
+    const panel = document.querySelector("[data-hub-panel=challenges]");
+    if (panel && !panel.hidden) renderChallenges();
+    return true;
   } catch {
-    /* l'historique reste dans le navigateur */
+    return false;
   }
 }
 
@@ -1194,6 +1358,7 @@ function recordGame() {
   app.recorded = true;
   const game = app.game;
   const userSeat = app.mode === "local" ? null : app.mode === "online" ? app.seat : 0;
+  const before = earnedChallengeIds();
   const entry = {
     id: crypto.randomUUID(),
     at: Date.now(),
@@ -1205,8 +1370,12 @@ function recordGame() {
     userSeat,
     reason: game.reason,
     difficulty: app.mode === "solo" ? app.prefs.difficulty : null,
+    durationMs: app.startedAt ? Math.max(0, Date.now() - app.startedAt) : 0,
+    behind: app.wasBehind === true,
+    clean: app.prefs.closeMode === "hand" && app.handCloses > 0 && !app.traceFaults,
   };
   pushHistory(entry);
+  app.freshChallenges = CHALLENGES.filter((item) => earnedChallengeIds().has(item.id) && !before.has(item.id));
   syncGame(entry);
   if (game.winner === "draw") app.sounds.tap();
   else if (userSeat == null || game.winner === userSeat) app.sounds.win();
@@ -1224,7 +1393,9 @@ function resultCopy() {
   if (game.reason === "board" && game.settings.scoreLimit > 0) {
     because = "La feuille est pleine avant l’objectif. Le plus grand score gagne.";
   }
-  const text = `${app.players[0].name} ${game.scores[0]}  ·  ${game.scores[1]} ${app.players[1].name}\n${because}`;
+  const earned = app.freshChallenges || [];
+  const extra = earned.length ? `\n${earned.map((item) => `${item.name} · +${item.xp} XP`).join("\n")}` : "";
+  const text = `${app.players[0].name} ${game.scores[0]}  ·  ${game.scores[1]} ${app.players[1].name}\n${because}${extra}`;
   return { title, text, celebrate: title === "Victoire" || (app.mode === "local" && title !== "Égalité") };
 }
 
@@ -1268,21 +1439,43 @@ function rematch() {
   saveMatch();
 }
 
+function dropOnlineRoom() {
+  const joined = app.mode === "online" || Boolean(sessionStorage.getItem("egmon-room"));
+  app.ignoreOnline = true;
+  app.holdRejoin = false;
+  if (joined) app.socket?.emit("leave");
+  try { sessionStorage.removeItem("egmon-room"); } catch { /* ignore */ }
+  app.mode = null;
+  app.game = null;
+  app.roomCode = null;
+}
+
+function leaveOnlineScreen() {
+  dropOnlineRoom();
+  hideOverlay();
+  if (history.state?.flow === "online") {
+    history.back();
+    return;
+  }
+  show("screen-modes", "replace");
+}
+
 function goHome() {
   try { sessionStorage.removeItem(MATCH_KEY); } catch { /* ignore */ }
+  const online = app.mode === "online" || history.state?.flow === "online";
   if (app.mode === "online" && app.game?.status === "playing") {
     app.game.winner = 1 - app.seat;
     app.game.reason = "abandon";
     app.game.status = "finished";
     recordGame();
   }
-  app.ignoreOnline = true;
-  if (app.mode === "online") app.socket?.emit("leave");
+  if (online) dropOnlineRoom();
+  else app.ignoreOnline = true;
   app.game = null;
   app.paused = false;
   app.mode = null;
   hideOverlay();
-  show("screen-home");
+  show("screen-home", online ? "replace" : "push");
 }
 
 function confirmAbandon() {
@@ -1354,14 +1547,38 @@ function ensureSocket() {
   if (!window.io) return null;
   if (app.socket) return app.socket;
   app.socket = window.io({ autoConnect: false });
-  app.socket.on("connect_error", () => toast("Serveur injoignable. Lancez npm start."));
+  app.socket.on("connect", () => {
+    clearTimeout(app.reconnectNote);
+    if (app.holdRejoin || app.ignoreOnline) return;
+    const saved = sessionStorage.getItem("egmon-room");
+    if (!saved) return;
+    try {
+      const { code } = JSON.parse(saved);
+      if (!code) return;
+      const tryRejoin = (attempt) => {
+        app.socket.emit("rejoin", { playerId: playerId(), code }, (res) => {
+          if (res?.ok || app.ignoreOnline) return;
+          if (attempt < 2) {
+            window.setTimeout(() => tryRejoin(attempt + 1), 500);
+            return;
+          }
+          try { sessionStorage.removeItem("egmon-room"); } catch { /* ignore */ }
+          if (!$("screen-lobby").hidden || !$("screen-game").hidden) {
+            toast("La salle n’est plus ouverte.");
+            leaveOnlineScreen();
+          }
+        });
+      };
+      tryRejoin(0);
+    } catch {
+      sessionStorage.removeItem("egmon-room");
+    }
+  });
   app.socket.on("state", (msg) => onOnlineState(msg));
   app.socket.on("closed", () => {
     if (app.ignoreOnline) return;
     toast("Le créateur a quitté la salle.");
-    sessionStorage.removeItem("egmon-room");
-    app.mode = null;
-    show("screen-modes");
+    leaveOnlineScreen();
   });
   app.socket.on("notice", (text) => {
     if (text === "La table n’a pas pu s’ouvrir." || text === "Tu es déjà dans une partie.") toast(text);
@@ -1379,8 +1596,22 @@ function ensureSocket() {
       onYes: () => app.socket.emit("invite-answer", { token, yes: true }),
     });
   });
-  app.socket.on("disconnect", () => {
-    if (app.mode === "online") toast("Connexion interrompue.");
+  app.socket.on("disconnect", (reason) => {
+    if (reason === "io client disconnect" || app.ignoreOnline) return;
+    const playing = app.mode === "online" && !$("screen-game").hidden;
+    const waiting = !$("screen-lobby").hidden;
+    if (!playing && !waiting) return;
+    clearTimeout(app.reconnectNote);
+    app.reconnectNote = setTimeout(() => {
+      if (app.socket?.connected || app.ignoreOnline) return;
+      if (playing && !$("screen-game").hidden) {
+        const banner = $("conn-banner");
+        banner.hidden = false;
+        banner.textContent = "Connexion coupée. Retour en cours…";
+        return;
+      }
+      if (!$("screen-lobby").hidden) $("lobby-status").textContent = "Connexion coupée. Retour en cours…";
+    }, 1500);
   });
   return app.socket;
 }
@@ -1398,23 +1629,38 @@ function loadSocketScript() {
   return loadSocketScript.pending;
 }
 
+let socketReady = null;
+
 function connectSocket() {
   return loadSocketScript().then(() => {
-  const socket = ensureSocket();
-  if (!socket) return Promise.reject(new Error("offline"));
-  if (socket.connected) return Promise.resolve();
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error("timeout")), 4000);
-    socket.once("connect", () => {
-      clearTimeout(timer);
-      resolve();
+    const socket = ensureSocket();
+    if (!socket) return Promise.reject(new Error("offline"));
+    if (socket.connected) return Promise.resolve();
+    if (socketReady) return socketReady;
+    socketReady = new Promise((resolve, reject) => {
+      const finish = (ok) => {
+        clearTimeout(timer);
+        socket.off("connect", onConnect);
+        socketReady = null;
+        if (ok) resolve();
+        else reject(new Error("offline"));
+      };
+      const onConnect = () => finish(true);
+      const timer = setTimeout(() => finish(false), 10000);
+      socket.on("connect", onConnect);
+      if (socket.disconnected) socket.connect();
     });
-    socket.once("connect_error", () => {
-      clearTimeout(timer);
-      reject(new Error("offline"));
-    });
-    socket.connect();
+    return socketReady;
   });
+}
+
+function emitAck(event, payload) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("timeout")), 8000);
+    app.socket.emit(event, payload, (res) => {
+      clearTimeout(timer);
+      resolve(res);
+    });
   });
 }
 
@@ -1423,7 +1669,16 @@ function onOnlineState(msg) {
   app.mode = "online";
   app.roomCode = msg.code;
   app.seat = msg.you;
-  sessionStorage.setItem("egmon-room", JSON.stringify({ code: msg.code, playerId: playerId() }));
+  sessionStorage.setItem("egmon-room", JSON.stringify({
+    code: msg.code,
+    playerId: playerId(),
+    you: msg.you,
+    settings: msg.settings,
+    seats: msg.seats,
+    ready: msg.ready,
+    accepted: msg.accepted === true,
+    playing: Boolean(msg.game),
+  }));
   app.players = [0, 1].map((index) => {
     const seat = msg.seats[index] || {};
     return {
@@ -1458,7 +1713,7 @@ function onOnlineState(msg) {
   }
   if (!msg.game) {
     renderLobby(msg);
-    show("screen-lobby");
+    show("screen-lobby", "replace");
     return;
   }
   const event = msg.event || {};
@@ -1470,7 +1725,7 @@ function onOnlineState(msg) {
     hideOverlay();
     resetSheetZoom();
   }
-  show("screen-game");
+  show("screen-game", "replace");
   paintMatch();
   if (event.type === "move" || event.type === "timeout") {
     app.board.animate(event.move, event.result);
@@ -1531,13 +1786,54 @@ function renderLobby(msg) {
   $("lobby-launch").disabled = !ready;
 }
 
+function readRoomSnap() {
+  try {
+    const snap = JSON.parse(sessionStorage.getItem("egmon-room") || "null");
+    return snap?.code ? snap : null;
+  } catch {
+    return null;
+  }
+}
+
+function resumeSavedRoom() {
+  const snap = readRoomSnap();
+  if (!snap) return false;
+  app.ignoreOnline = false;
+  app.mode = "online";
+  app.roomCode = snap.code;
+  app.seat = Number(snap.you) || 0;
+  if (snap.playing) {
+    show("screen-game", "skip");
+    const banner = $("conn-banner");
+    banner.hidden = false;
+    banner.textContent = "Reprise de la partie…";
+  } else {
+    renderLobby({
+      code: snap.code,
+      you: app.seat,
+      settings: snap.settings || {},
+      seats: Array.isArray(snap.seats) ? snap.seats : [],
+      ready: Array.isArray(snap.ready) ? snap.ready : [false, false],
+      accepted: snap.accepted === true,
+    });
+    $("lobby-status").textContent = "Reprise de la salle…";
+    show("screen-lobby", "skip");
+  }
+  connectSocket().catch(() => {
+    if (!$("screen-lobby").hidden) $("lobby-status").textContent = "Connexion coupée. La salle est gardée.";
+    toast("La connexion a sauté. Réessaie dans un instant.");
+  });
+  return true;
+}
+
 function renderFind(people) {
   const list = $("find-list");
   if (!people.length) {
     list.innerHTML = `<p class="empty">Personne d’autre n’attend pour le moment.</p>`;
     return;
   }
-  list.innerHTML = people.map((person) => `<button type="button" class="find-card" data-token="${esc(person.token)}"><span class="face">${faceMarkup(person.photo)}</span><strong>${esc(person.name)}</strong></button>`).join("");
+  list.innerHTML = people.map((person) => `<button type="button" class="find-card" data-token="${esc(person.token)}"><span class="face">${faceMarkup(person.photo, true)}</span><strong>${esc(person.name)}</strong></button>`).join("");
+  bindFaceImages(list);
 }
 
 async function enterQueue() {
@@ -1545,7 +1841,8 @@ async function enterQueue() {
   try {
     await connectSocket();
   } catch {
-    toast("Le mode en ligne a besoin du serveur : npm start.");
+    $("find-list").innerHTML = `<p class="empty">La liste n’a pas pu se charger. Réessaie.</p>`;
+    toast("La liste des joueurs est indisponible. Réessaie.");
     return;
   }
   if ($("screen-find").hidden) return;
@@ -1567,34 +1864,62 @@ function finishOnline() {
 async function createOnlineRoom(settings) {
   const name = settings?.p1Name || loadProfile().name || "Joueur";
   const chosen = { ...app.prefs, ...settings, p1Name: name };
+  const button = $("setup-go");
+  if (button?.disabled) return;
+  if (button) {
+    button.disabled = true;
+    button.textContent = "Ouverture…";
+  }
   app.ignoreOnline = false;
+  app.holdRejoin = true;
   try {
     await connectSocket();
+    app.socket.emit("leave");
+    let res = await emitAck("create", { playerId: playerId(), name, settings: chosen });
+    if (!res?.ok && res?.error === "Quitte d’abord la salle en cours.") {
+      app.socket.emit("leave");
+      res = await emitAck("create", { playerId: playerId(), name, settings: chosen });
+    }
+    if (!res?.ok) toast(res?.error || "La salle n’a pas pu s’ouvrir. Réessaie.");
   } catch {
-    toast("Le mode en ligne a besoin du serveur : npm start.");
-    return;
+    toast("La salle n’a pas pu s’ouvrir. Réessaie.");
+  } finally {
+    app.holdRejoin = false;
+    if (button) {
+      button.disabled = false;
+      button.textContent = "Créer la salle";
+    }
   }
-  app.socket.emit("create", { playerId: playerId(), name, settings: chosen }, (res) => {
-    if (!res?.ok) toast(res?.error || "Impossible de créer la salle.");
-  });
 }
 
 async function joinRoom(code, color) {
+  const button = $("join-form")?.querySelector("[type=submit]");
+  if (button?.disabled) return;
+  if (button) {
+    button.disabled = true;
+    button.textContent = "Entrée…";
+  }
   app.ignoreOnline = false;
+  app.holdRejoin = true;
   try {
     await connectSocket();
+    app.socket.emit("leave");
+    const res = await emitAck("join", {
+      playerId: playerId(),
+      name: $("join-name").value,
+      code,
+      color,
+    });
+    if (!res?.ok) toast(res?.error || "Impossible de rejoindre. Réessaie.");
   } catch {
-    toast("Le mode en ligne a besoin du serveur : npm start.");
-    return;
+    toast("Impossible de rejoindre. Réessaie.");
+  } finally {
+    app.holdRejoin = false;
+    if (button) {
+      button.disabled = false;
+      button.textContent = "Rejoindre";
+    }
   }
-  app.socket.emit("join", {
-    playerId: playerId(),
-    name: $("join-name").value,
-    code,
-    color,
-  }, (res) => {
-    if (!res?.ok) toast(res?.error || "Impossible de rejoindre.");
-  });
 }
 
 function renderHistory() {
@@ -1667,6 +1992,20 @@ function openHub(name) {
     panel.hidden = panel.dataset.hubPanel !== next;
   });
   $("modes-title").textContent = HUB_TITLES[next] || "Commencez";
+  if (next === "challenges") {
+    renderChallenges();
+    const status = $("challenge-status");
+    const panel = document.querySelector("[data-hub-panel=challenges]");
+    const wait = window.setTimeout(() => {
+      if (status && panel && !panel.hidden) status.textContent = "Mise à jour des défis…";
+    }, 400);
+    pullHistory().then((ok) => {
+      window.clearTimeout(wait);
+      if (!panel || panel.hidden) return;
+      renderChallenges();
+      if (!ok && status) status.textContent = `${challengeSummary(soloGames())} · affichés depuis cet appareil`;
+    });
+  }
 }
 
 function bind() {
@@ -1712,10 +2051,6 @@ function bind() {
     }
     if (event.target.closest("[data-soon]")) soon();
     if (event.target.closest("[data-home]")) {
-      if (savedHub()) {
-        show("screen-modes");
-        return;
-      }
       if (history.state?.page && history.state.page !== "home") history.back();
       else goHome();
     }
@@ -1842,17 +2177,19 @@ function bind() {
     joinRoom(code, app.prefs.p2Color);
   });
   $("copy-code").addEventListener("click", () => copyText(app.roomCode || $("lobby-code").textContent));
-  $("lobby-cancel").addEventListener("click", () => {
-    app.ignoreOnline = true;
-    app.socket?.emit("leave");
-    sessionStorage.removeItem("egmon-room");
-    app.mode = null;
-    show("screen-modes");
-  });
+  $("lobby-cancel").addEventListener("click", () => leaveOnlineScreen());
   $("lobby-present").addEventListener("click", () => app.socket?.emit("present"));
   $("lobby-accept").addEventListener("click", () => app.socket?.emit("accept"));
   $("lobby-launch").addEventListener("click", () => app.socket?.emit("launch"));
-  $("find-back").addEventListener("click", () => show("screen-modes"));
+  $("find-back").addEventListener("click", () => {
+    if (history.state?.page === "find") history.back();
+    else show("screen-modes", "replace");
+  });
+  $("challenge-list").addEventListener("click", (event) => {
+    const card = event.target.closest("[data-challenge]");
+    if (!card) return;
+    startChallenge(card.dataset.challenge);
+  });
   $("find-list").addEventListener("click", (event) => {
     const card = event.target.closest("[data-token]");
     if (!card) return;
@@ -1899,6 +2236,7 @@ function bind() {
     app.board.setTracing(false);
     if (!app.game || app.game.status !== "playing") return;
     if (fault) {
+      app.traceFaults = (app.traceFaults || 0) + 1;
       toast("Le trait dépasse une case.");
       syncTrace();
       return;
@@ -1914,6 +2252,7 @@ function bind() {
       syncTrace();
       return;
     }
+    app.handCloses = (app.handCloses || 0) + 1;
     app.sounds.box();
     popScore(result.player);
     if (result.eaten) popScore(1 - result.player);
@@ -1926,47 +2265,59 @@ function bind() {
 
   const params = new URLSearchParams(location.search);
   const room = params.get("room");
+  const resumed = !room && resumeSavedRoom();
   if (room) {
     $("join-code").value = room.toUpperCase();
-    $("online-lead").textContent = "Une invitation est prête. Choisissez votre stylo, puis entrez.";
-    show("screen-online");
-  } else {
-    const saved = sessionStorage.getItem("egmon-room");
-    if (saved) {
-      try {
-        const { code } = JSON.parse(saved);
-        app.ignoreOnline = false;
-        connectSocket().then(() => {
-          app.socket.emit("rejoin", { playerId: playerId(), code }, (res) => {
-            if (!res?.ok) sessionStorage.removeItem("egmon-room");
-          });
-        }).catch(() => {});
-      } catch {
-        sessionStorage.removeItem("egmon-room");
-      }
+    const lead = $("online-lead");
+    if (lead) {
+      lead.hidden = false;
+      lead.textContent = "Une invitation est prête. Entre le code, puis rejoins.";
     }
+    show("screen-online");
   }
 
   const opened = (location.hash || "#home").slice(1);
-  const first = SCREEN_BY_PAGE[opened] ? opened : "home";
+  const first = resumed
+    ? (readRoomSnap()?.playing ? "game" : "lobby")
+    : (SCREEN_BY_PAGE[opened] ? opened : "home");
   history.replaceState(
-    { page: first },
+    { page: first, ...(first === "lobby" || (first === "game" && resumed) ? { flow: "online" } : {}) },
     "",
     first === "home" ? `${location.pathname}${location.search}` : `${location.pathname}${location.search}#${first}`,
   );
-  if (first === "history") renderHistory();
-  if (first === "game") {
-    if (!restoreMatch()) show("screen-home", "replace");
-  } else if (first === "setup") {
-    openSetup(sessionStorage.getItem("egmon-setup-mode") || "solo", "skip");
-  } else if (first !== "home") {
-    show(SCREEN_BY_PAGE[first], "skip");
+  if (!resumed && !room) {
+    if (first === "history") renderHistory();
+    if (first === "game") {
+      if (!restoreMatch()) show("screen-home", "replace");
+    } else if (first === "setup") {
+      openSetup(sessionStorage.getItem("egmon-setup-mode") || "solo", "skip");
+    } else if (first === "lobby") {
+      show("screen-modes", "replace");
+    } else if (first !== "home") {
+      show(SCREEN_BY_PAGE[first], "skip");
+    }
   }
   window.addEventListener("popstate", (event) => {
     const page = event.state?.page || "home";
+    if (page !== "lobby" && page !== "game" && (app.mode === "online" || sessionStorage.getItem("egmon-room"))) {
+      dropOnlineRoom();
+    }
+    if ((page === "lobby" || (page === "game" && event.state?.flow === "online")) && !sessionStorage.getItem("egmon-room")) {
+      show("screen-modes", "replace");
+      return;
+    }
     if (page === "history") renderHistory();
+    if (page === "lobby" && readRoomSnap() && !readRoomSnap().playing) {
+      resumeSavedRoom();
+      return;
+    }
     if (page === "game") {
-      if (!restoreMatch()) show("screen-home", "replace");
+      if (restoreMatch()) return;
+      if (readRoomSnap()?.playing) {
+        resumeSavedRoom();
+        return;
+      }
+      show("screen-home", "replace");
       return;
     }
     if (page === "setup") {
