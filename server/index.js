@@ -321,10 +321,16 @@ function snapshot(room, event = null) {
     code: room.code,
     settings: room.settings,
     game: room.game,
-    seats: room.players.map((player) => (
+    seats: room.players.map((player, index) => (
       player
-        ? { name: player.name, color: player.color, connected: player.connected, present: true }
-        : { present: false, connected: false, name: "", color: "" }
+        ? {
+          name: player.name,
+          color: player.color,
+          connected: player.connected,
+          present: true,
+          forfeitAt: player.connected === false ? (room.forfeitAt?.[index] || null) : null,
+        }
+        : { present: false, connected: false, name: "", color: "", forfeitAt: null }
     )),
     rematch: room.rematch.slice(),
     ready: room.ready?.slice() || [false, false],
@@ -369,6 +375,8 @@ function claim(socket) {
 }
 
 function clearForfeit(room, seat) {
+  if (!room.forfeitAt) room.forfeitAt = [null, null];
+  room.forfeitAt[seat] = null;
   if (room.forfeit[seat]) {
     clearTimeout(room.forfeit[seat]);
     room.forfeit[seat] = null;
@@ -444,6 +452,7 @@ io.on("connection", (socket) => {
       ready: [false, false],
       accepted: false,
       forfeit: [null, null],
+      forfeitAt: [null, null],
       touched: Date.now(),
       opened: Date.now(),
     };
@@ -677,6 +686,7 @@ io.on("connection", (socket) => {
       ready: [false, false],
       accepted: false,
       forfeit: [null, null],
+      forfeitAt: [null, null],
       touched: Date.now(),
       opened: Date.now(),
     };
@@ -701,6 +711,8 @@ io.on("connection", (socket) => {
     clearForfeit(room, seat);
     if (room.game?.status === "playing") {
       room.players[seat].connected = false;
+      if (!room.forfeitAt) room.forfeitAt = [null, null];
+      room.forfeitAt[seat] = Date.now() + 60_000;
       emitState(room, { type: "presence" });
       room.forfeit[seat] = setTimeout(() => {
         const player = room.players[seat];

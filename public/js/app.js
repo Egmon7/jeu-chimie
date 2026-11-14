@@ -1143,6 +1143,25 @@ function updateTimers() {
       $(`p${index}-time`).textContent = formatClock(turnMs);
     }
   });
+  paintDisconnectBanner();
+}
+
+function paintDisconnectBanner() {
+  const banner = $("conn-banner");
+  if (!banner || $("screen-game").hidden || app.mode !== "online") return;
+  const own = app.selfBackAt && !app.socket?.connected ? app.selfBackAt : 0;
+  const foe = app.foeBackAt || 0;
+  const deadline = own || foe;
+  if (!deadline) return;
+  const left = Math.max(0, deadline - Date.now());
+  const clock = formatClock(left);
+  const text = own
+    ? (left > 0 ? `Connexion coupée. Reviens dans ${clock}.` : "Connexion coupée. La partie est perdue.")
+    : (left > 0
+      ? `${app.players[1 - app.seat]?.name || "L’adversaire"} est déconnecté. Abandon dans ${clock}.`
+      : `${app.players[1 - app.seat]?.name || "L’adversaire"} est déconnecté. Abandon…`);
+  banner.hidden = false;
+  if (banner.textContent !== text) banner.textContent = text;
 }
 
 function hideOverlay() {
@@ -1584,6 +1603,7 @@ function ensureSocket() {
   app.socket = window.io({ autoConnect: false });
   app.socket.on("connect", () => {
     clearTimeout(app.reconnectNote);
+    app.selfBackAt = null;
     if (app.ignoreOnline) return;
     if (app.holdRejoin) {
       app.rejoinAfterHold = true;
@@ -1618,13 +1638,12 @@ function ensureSocket() {
     const playing = app.mode === "online" && !$("screen-game").hidden;
     const waiting = !$("screen-lobby").hidden;
     if (!playing && !waiting) return;
+    if (playing) app.selfBackAt = Date.now() + 60_000;
     clearTimeout(app.reconnectNote);
     app.reconnectNote = setTimeout(() => {
       if (app.socket?.connected || app.ignoreOnline) return;
       if (playing && !$("screen-game").hidden) {
-        const banner = $("conn-banner");
-        banner.hidden = false;
-        banner.textContent = "Connexion coupée. Retour en cours…";
+        paintDisconnectBanner();
         return;
       }
       if (!$("screen-lobby").hidden) $("lobby-status").textContent = "Connexion coupée. Retour en cours…";
@@ -1739,14 +1758,13 @@ function onOnlineState(msg) {
       at: performance.now(),
     };
   }
-  const foe = app.players[1 - app.seat];
-  const banner = $("conn-banner");
-  if (msg.game && foe && foe.connected === false) {
-    banner.hidden = false;
-    banner.textContent = "Adversaire déconnecté. La partie lui sera perdue après une minute.";
-  } else {
-    banner.hidden = true;
-  }
+  const foeSeat = msg.seats?.[1 - app.seat];
+  app.selfBackAt = null;
+  app.foeBackAt = msg.game?.status === "playing" && foeSeat?.connected === false && Number(foeSeat.forfeitAt) > 0
+    ? Number(foeSeat.forfeitAt)
+    : null;
+  if (!app.foeBackAt) $("conn-banner").hidden = true;
+  else paintDisconnectBanner();
   if (!msg.game) {
     renderLobby(msg);
     show("screen-lobby", "replace");
@@ -2058,6 +2076,12 @@ function openHub(name) {
 }
 
 function bind() {
+  $("app-dialog").addEventListener("click", (event) => {
+    if (event.target === $("app-dialog")) $("app-dialog").hidden = true;
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !$("app-dialog").hidden) $("app-dialog").hidden = true;
+  });
   document.body.addEventListener("click", (event) => {
     if (!$("game-menu").hidden && !event.target.closest(".game-tools")) closeGameMenu();
     const groupBtn = event.target.closest("[data-field] [data-value]");

@@ -363,13 +363,16 @@ body[data-page="play"] #screen-game {
   padding: 8px 12px;
   border-radius: 10px;
   background: rgba(196, 73, 44, 0.12);
+  font-variant-numeric: tabular-nums;
 }
-.overlay.page-dialog { position: fixed; z-index: 30; background: rgba(8, 12, 12, 0.62); }
+.overlay.page-dialog { position: fixed; z-index: 30; overflow: auto; background: rgba(8, 12, 12, 0.62); }
 .overlay.page-dialog .dialog {
   background: #1c2a29;
   color: #f4f6f8;
   border: 1px solid #2a3a3a;
   box-shadow: none;
+  max-height: calc(100dvh - 48px);
+  overflow: auto;
 }
 .overlay.page-dialog .btn { color: #f4f6f8; border-color: #2a3a3a; background: #1c2a29; }
 .overlay.page-dialog .btn.primary { background: #f2f4f7; color: #0e1616; border-color: transparent; }
