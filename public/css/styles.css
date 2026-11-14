@@ -1121,7 +1121,6 @@ button.challenge-card:focus-visible { border-color: #f2f4f7; }
 @media (max-width: 700px) {
   .online-split { grid-template-columns: 1fr; }
   .challenge-list, .find-list { grid-template-columns: 1fr; }
-  #rank-top { grid-template-columns: 1fr; grid-template-areas: "first" "second" "third"; }
 }
 .find-list { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 16px 0; }
 .find-card {

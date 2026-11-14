@@ -121,8 +121,10 @@ function show(id, historyMode = "push") {
     app.socket?.emit("queue-leave");
   }
   if (id === "screen-online") {
-    const name = loadProfile().name;
+    const name = (loadProfile().name || "").trim();
+    const label = $("join-name").closest("label");
     if (name) $("join-name").value = name;
+    if (label) label.hidden = Boolean(name);
   }
   if (id === "screen-find") enterQueue();
   if (id === "screen-progress") loadProgress();
@@ -321,6 +323,12 @@ function syncFormBits() {
   document.querySelectorAll("[data-show]").forEach((el) => {
     el.hidden = !el.dataset.show.split(" ").includes(app.formMode);
   });
+  const profileName = (loadProfile().name || "").trim();
+  const ownName = $("p1Name")?.closest("[data-show]");
+  if (ownName && profileName && !ownName.hidden) {
+    ownName.hidden = true;
+    $("p1Name").value = profileName;
+  }
   const titles = {
     solo: ["Robot", "Réglez la feuille, puis affrontez un robot."],
     local: ["Multijoueurs", "Même écran, deux stylos."],
@@ -388,7 +396,7 @@ function openSetup(mode, historyMode = "push") {
   app.formMode = mode;
   try { sessionStorage.setItem("egmon-setup-mode", mode); } catch { /* ignore */ }
   fillForm(app.prefs);
-  $("p1Name").value = mode === "online" ? (loadProfile().name || "") : "";
+  $("p1Name").value = (loadProfile().name || "").trim();
   $("p2Name").value = "";
   $("setup-go").textContent = mode === "online" ? "Créer la salle" : "Lancer la partie";
   show("screen-setup", historyMode === "skip" ? "skip" : mode === "online" ? "replace" : historyMode);
@@ -2193,6 +2201,7 @@ function bind() {
     event.preventDefault();
     const { settings, opponent } = readSettingsFromForm();
     const needSecond = app.formMode === "local" || opponent === "local";
+    if (!$("p1Name").value.trim()) $("p1Name").value = (loadProfile().name || "").trim();
     const missing = !$("p1Name").value.trim() ? $("p1Name") : needSecond && !$("p2Name").value.trim() ? $("p2Name") : null;
     if (missing) {
       toast("Écris le nom des joueurs pour cette partie.");

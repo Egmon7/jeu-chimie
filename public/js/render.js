@@ -48,10 +48,12 @@ export class BoardView {
   clearAnims() {
     this.anims = [];
     this.hover = null;
+    this.lastPlay = null;
   }
 
   animate(move, result) {
     const now = performance.now();
+    if (result?.player != null) this.lastPlay = { r: move.r, c: move.c, player: result.player };
     this.anims.push({
       kind: "dot",
       r: move.r,
@@ -363,6 +365,7 @@ export class BoardView {
 
     this.marks(ctx, now);
     this.placedDots(ctx, now);
+    this.drawLast(ctx, now);
     this.drawGuide(ctx);
     this.drawTrace(ctx);
 
@@ -488,6 +491,22 @@ export class BoardView {
         this.paintDot(c, r, this.colors[owner], 1, scale);
       }
     }
+  }
+
+  drawLast(ctx, now) {
+    const mark = this.lastPlay;
+    if (!mark || !this.geom || mark.player == null) return;
+    const [x, y] = this.point(mark.c, mark.r);
+    const wave = 0.5 + 0.5 * Math.sin(now / 160);
+    const radius = Math.max(11, this.geom.cell * 0.46);
+    ctx.save();
+    ctx.strokeStyle = this.colors[mark.player] || "#e7c56a";
+    ctx.globalAlpha = 0.45 + 0.55 * wave;
+    ctx.lineWidth = Math.max(2.5, this.geom.cell * 0.1);
+    ctx.beginPath();
+    ctx.arc(x, y, radius, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
   }
 
   paintDot(c, r, color, alpha, scale) {
