@@ -1,4 +1,4 @@
-import { COLORS, enclosures } from "./engine.js";
+import { COLORS, catchLoops, enclosures } from "./engine.js";
 
 export function displayColor(key, theme) {
   if (key === "black" && theme === "dark") return "#e7e9ee";
@@ -20,6 +20,11 @@ export class BoardView {
     this.geom = null;
     this.canPlay = () => false;
     this.onMove = () => {};
+    this.onTrace = () => {};
+    this.tracing = false;
+    this.trace = [];
+    this.traceFault = false;
+    this.traceId = null;
     this.onPointer = this.onPointer.bind(this);
     canvas.addEventListener("pointerdown", this.onPointer);
     canvas.addEventListener("pointermove", this.onPointer);
@@ -27,6 +32,7 @@ export class BoardView {
     canvas.addEventListener("pointercancel", this.onPointer);
     canvas.addEventListener("pointerleave", (event) => {
       this.hover = null;
+      if (this.traceId != null) return;
       this.press = null;
       this.pointers.delete(event.pointerId);
     });
@@ -122,7 +128,147 @@ export class BoardView {
     return best;
   }
 
+  setTracing(on) {
+    this.tracing = on;
+    this.trace = [];
+    this.traceFault = false;
+    this.traceId = null;
+    this.press = null;
+    this.canvas.style.touchAction = on ? "none" : "pan-x pan-y";
+  }
+
+  targetSet() {
+    const set = new Set();
+    if (!this.game) return set;
+    for (const loop of catchLoops(this.game, this.game.current)) {
+      for (const dot of loop) set.add(`${dot.r},${dot.c}`);
+    }
+    return set;
+  }
+
+  ownDot(hit) {
+    if (!hit || !this.game) return false;
+    if (this.targets && !this.targets.has(`${hit.r},${hit.c}`)) return false;
+    const player = this.game.current;
+    return this.game.dots[hit.r]?.[hit.c] === player && this.game.framed[hit.r][hit.c] == null;
+  }
+
+  hitOwn(x, y) {
+    const game = this.game;
+    if (!game || !this.geom) return null;
+    this.targets = this.targetSet();
+    const limit = Math.max(20, this.geom.cell * 0.85);
+    let best = null;
+    let bestDist = limit;
+    for (const key of this.targets) {
+      const [r, c] = key.split(",").map(Number);
+      const [px, py] = this.point(c, r);
+      const dist = Math.hypot(x - px, y - py);
+      if (dist < bestDist) {
+        bestDist = dist;
+        best = { r, c };
+      }
+    }
+    return best;
+  }
+
+  pushTrace(hit) {
+    if (!this.ownDot(hit)) return;
+    const last = this.trace[this.trace.length - 1];
+    if (!last) {
+      this.trace.push(hit);
+      return;
+    }
+    if (last.r === hit.r && last.c === hit.c) return;
+    const start = this.trace[0];
+    if (this.trace.length >= 4 && hit.r === start.r && hit.c === start.c) return;
+    const walked = this.walkOwn(last, hit);
+    if (!walked) return;
+    for (const dot of walked) {
+      const prev = this.trace[this.trace.length - 1];
+      if (prev.r === dot.r && prev.c === dot.c) continue;
+      if (this.trace.length >= 4 && dot.r === start.r && dot.c === start.c) return;
+      this.trace.push(dot);
+    }
+  }
+
+  walkOwn(from, to) {
+    const path = [];
+    let cur = from;
+    for (let n = 0; n < 64; n += 1) {
+      if (cur.r === to.r && cur.c === to.c) return path;
+      const step = Math.max(Math.abs(cur.r - to.r), Math.abs(cur.c - to.c));
+      if (step === 1) {
+        path.push({ r: to.r, c: to.c });
+        return path;
+      }
+      const next = this.onlyStep(cur, to);
+      if (!next) return null;
+      path.push(next);
+      cur = next;
+    }
+    return null;
+  }
+
+  onlyStep(from, to) {
+    const game = this.game;
+    const player = game.current;
+    const prev = Math.max(Math.abs(from.r - to.r), Math.abs(from.c - to.c));
+    let best = null;
+    for (let dr = -1; dr <= 1; dr += 1) {
+      for (let dc = -1; dc <= 1; dc += 1) {
+        if (!dr && !dc) continue;
+        const r = from.r + dr;
+        const c = from.c + dc;
+        if (this.targets && !this.targets.has(`${r},${c}`)) continue;
+        if (game.dots[r]?.[c] !== player || game.framed[r]?.[c] != null) continue;
+        const dist = Math.max(Math.abs(r - to.r), Math.abs(c - to.c));
+        if (dist >= prev) continue;
+        if (best) return null;
+        best = { r, c };
+      }
+    }
+    return best;
+  }
+
+  finishTrace() {
+    const trace = this.trace.slice();
+    const fault = this.traceFault;
+    this.trace = [];
+    this.traceFault = false;
+    if (!trace.length) return;
+    const start = trace[0];
+    const last = trace[trace.length - 1];
+    const closed = trace.length >= 4 && Math.max(Math.abs(last.r - start.r), Math.abs(last.c - start.c)) <= 1;
+    this.onTrace(closed && !fault ? trace : null, fault);
+  }
+
   onPointer(event) {
+    if (this.tracing) {
+      const rect = this.canvas.getBoundingClientRect();
+      const hit = this.hitOwn(event.clientX - rect.left, event.clientY - rect.top);
+      if (event.type === "pointerdown") {
+        event.preventDefault();
+        this.traceId = event.pointerId;
+        this.trace = [];
+        this.traceFault = false;
+        try { this.canvas.setPointerCapture(event.pointerId); } catch { /* le doigt est déjà parti */ }
+        this.pushTrace(hit);
+        return;
+      }
+      if (event.type === "pointermove") {
+        if (this.traceId !== event.pointerId) return;
+        this.pushTrace(hit);
+        return;
+      }
+      if (event.type === "pointerup" || event.type === "pointercancel") {
+        if (this.traceId !== event.pointerId) return;
+        this.traceId = null;
+        this.finishTrace();
+      }
+      return;
+    }
+
     const rect = this.canvas.getBoundingClientRect();
     const x = event.clientX - rect.left;
     const y = event.clientY - rect.top;
@@ -194,6 +340,8 @@ export class BoardView {
 
     this.marks(ctx, now);
     this.placedDots(ctx, now);
+    this.drawGuide(ctx);
+    this.drawTrace(ctx);
 
     if (this.hover && this.canPlay()) {
       this.paintDot(this.hover.c, this.hover.r, this.colors[game.current], 0.4, 1);
@@ -262,6 +410,44 @@ export class BoardView {
       ctx.stroke();
       ctx.restore();
     }
+  }
+
+  drawGuide(ctx) {
+    if (!this.tracing || !this.game || !this.geom) return;
+    const player = this.game.current;
+    const targets = this.targetSet();
+    this.targets = targets;
+    ctx.save();
+    ctx.strokeStyle = this.colors[player];
+    ctx.globalAlpha = 0.9;
+    ctx.lineWidth = 2;
+    const radius = Math.max(8, this.geom.cell * 0.32);
+    for (const key of targets) {
+      const [r, c] = key.split(",").map(Number);
+      const [x, y] = this.point(c, r);
+      ctx.beginPath();
+      ctx.arc(x, y, radius, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  drawTrace(ctx) {
+    if (this.trace.length < 2) return;
+    const player = this.game?.current ?? 0;
+    ctx.save();
+    ctx.beginPath();
+    this.trace.forEach((dot, index) => {
+      const [x, y] = this.point(dot.c, dot.r);
+      if (index === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    });
+    ctx.strokeStyle = this.colors[player];
+    ctx.lineWidth = Math.max(2, this.geom.cell * 0.08);
+    ctx.lineJoin = "round";
+    ctx.lineCap = "round";
+    ctx.stroke();
+    ctx.restore();
   }
 
   placedDots(ctx, now) {

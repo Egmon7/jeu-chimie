@@ -14,6 +14,13 @@ function pick(list) {
   return list[Math.floor(Math.random() * list.length)];
 }
 
+function prefer(game, a, b) {
+  const salt = game.salt || 0;
+  const ka = (a.r * 31 + a.c * 17 + salt * 13) % 97;
+  const kb = (b.r * 31 + b.c * 17 + salt * 13) % 97;
+  return ka - kb || a.c - b.c || a.r - b.r;
+}
+
 function inside(game, r, c) {
   return r >= 0 && c >= 0 && r <= game.rows && c <= game.cols;
 }
@@ -66,7 +73,7 @@ function winningMoves(game, player) {
     const da = nearestDot(victims, a.move);
     const db = nearestDot(victims, b.move);
     if (da !== db) return da - db;
-    return tightness(game, player, b.move) - tightness(game, player, a.move) || a.move.r - b.move.r || a.move.c - b.move.c;
+    return tightness(game, player, b.move) - tightness(game, player, a.move) || prefer(game, a.move, b.move);
   });
   return found;
 }
@@ -142,15 +149,24 @@ function byBuild(game, player) {
   const mine = aliveDots(game, player);
   const others = aliveDots(game, 1 - player);
   if (!mine.length && !others.length) {
-    const center = { r: Math.round(game.rows / 2), c: Math.round(game.cols / 2) };
-    return dotIsOpen(game, center) ? [center] : legalMoves(game).slice(0, 1);
+    const cr = Math.round(game.rows / 2);
+    const cc = Math.round(game.cols / 2);
+    const seeds = [];
+    for (let dr = -1; dr <= 1; dr += 1) {
+      for (let dc = -1; dc <= 1; dc += 1) {
+        const move = { r: cr + dr, c: cc + dc };
+        if (dotIsOpen(game, move)) seeds.push(move);
+      }
+    }
+    seeds.sort((a, b) => prefer(game, a, b));
+    return seeds.length ? [seeds[0]] : legalMoves(game).slice(0, 1);
   }
   const pool = new Map();
   for (const move of focus(game, player, 2)) pool.set(`${move.r},${move.c}`, move);
   for (const move of focus(game, 1 - player, 2)) pool.set(`${move.r},${move.c}`, move);
   const list = [...pool.values()];
   if (!list.length) return legalMoves(game).slice(0, 1);
-  list.sort((a, b) => buildScore(game, player, b) - buildScore(game, player, a) || a.r - b.r || a.c - b.c);
+  list.sort((a, b) => buildScore(game, player, b) - buildScore(game, player, a) || prefer(game, a, b));
   return list;
 }
 
@@ -244,7 +260,7 @@ function bestImmediate(game, player, chain) {
     const result = applyMove(copy, item.move);
     const again = copy.status === "playing" && copy.current === player ? pendingCount(copy, player) : 0;
     const value = (result.completed + result.eaten) * 10 + again;
-    if (value > bestValue) {
+    if (value > bestValue || (value === bestValue && prefer(game, item.move, best) < 0)) {
       bestValue = value;
       best = item.move;
     }
@@ -261,7 +277,7 @@ function mediumChoice(game, player) {
     const copy = cloneGame(game);
     const result = applyMove(copy, move);
     const next = result.ok && copy.status === "playing" && copy.current !== player ? pendingCount(copy, 1 - player) : 0;
-    if (next < gift) {
+    if (next < gift || (next === gift && prefer(game, move, choice) < 0)) {
       gift = next;
       choice = move;
     }
@@ -271,7 +287,7 @@ function mediumChoice(game, player) {
 
 function searchRoot(game, player, profile) {
   const ranked = consider(game, player, Math.max(profile.window + 4, 10));
-  ranked.sort((a, b) => taste(game, player, b, profile.fork) - taste(game, player, a, profile.fork) || a.r - b.r || a.c - b.c);
+  ranked.sort((a, b) => taste(game, player, b, profile.fork) - taste(game, player, a, profile.fork) || prefer(game, a, b));
   const window = ranked.slice(0, profile.window);
   let best = window[0];
   let bestValue = -Infinity;
@@ -279,7 +295,7 @@ function searchRoot(game, player, profile) {
     const copy = cloneGame(game);
     applyMove(copy, move);
     const value = search(copy, player, profile.depth - 1, profile);
-    if (value > bestValue) {
+    if (value > bestValue || (value === bestValue && prefer(game, move, best) < 0)) {
       bestValue = value;
       best = move;
     }

@@ -28,6 +28,7 @@ export function defaultSettings() {
     theme: "classic",
     difficulty: "medium",
     sound: true,
+    closeMode: "auto",
     p1Name: "Joueur 1",
     p2Name: "Joueur 2",
   };
@@ -83,6 +84,7 @@ export function normalizeSettings(input = {}) {
     theme: THEMES.includes(input.theme) ? input.theme : d.theme,
     difficulty: DIFFICULTIES.includes(input.difficulty) ? input.difficulty : d.difficulty,
     sound: input.sound !== false,
+    closeMode: input.closeMode === "hand" ? "hand" : "auto",
     p1Name: cleanName(input.p1Name, d.p1Name),
     p2Name: cleanName(input.p2Name, d.p2Name),
   };
@@ -112,10 +114,12 @@ export function createGame(settings, starter = 0) {
       timeMode: s.timeMode,
       timeLimit: s.timeLimit,
       scoreLimit: s.scoreLimit,
+      closeMode: s.closeMode,
     },
     globalRemaining: null,
     turnRemaining: null,
     turnLimit: null,
+    salt: Math.floor(Math.random() * 997),
   };
   if (s.timeMode === "global") game.globalRemaining = s.timeLimit * 1000;
   if (s.timeMode === "turn") {
@@ -305,8 +309,31 @@ function holdsInside(loop, cells) {
   return cells.some(([r, c]) => strictlyInside(loop, r, c));
 }
 
+function pruneSpurs(ring) {
+  const set = new Set(ring);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const key of [...set]) {
+      const [r, c] = key.split(",").map(Number);
+      let neighbors = 0;
+      for (let dr = -1; dr <= 1; dr += 1) {
+        for (let dc = -1; dc <= 1; dc += 1) {
+          if (!dr && !dc) continue;
+          if (set.has(`${r + dr},${c + dc}`)) neighbors += 1;
+        }
+      }
+      if (neighbors < 2) {
+        set.delete(key);
+        changed = true;
+      }
+    }
+  }
+  return set;
+}
+
 function loopAround(game, player, cells) {
-  const ring = ringOf(game, player, cells);
+  const ring = pruneSpurs(ringOf(game, player, cells));
   const traced = traceRing(ring);
   if (attachedLoop(traced) && holdsInside(traced, cells)) return traced;
   const around = angularLoop(ring, cells);
@@ -341,6 +368,29 @@ function kidsInside(game, player, loop) {
     }
   }
   return kids;
+}
+
+/** Les cadres que ce joueur peut tracer pour manger. Rien d'autre n'est visé. */
+export function catchLoops(game, player) {
+  if (!game || game.status !== "playing") return [];
+  const found = newHouses(game, player).map((house) => house.loop);
+  if (found.length) return found;
+  const { seen } = outsideSeen(game, player);
+  const loops = [];
+  for (const old of game.houses || []) {
+    if (!old.alive || old.owner === player || !old.loop?.length) continue;
+    if (!old.loop.every((dot) => seen[dot.r][dot.c] !== true)) continue;
+    const cells = old.loop.map((dot) => [dot.r, dot.c]);
+    for (const dot of old.children || []) cells.push([dot.r, dot.c]);
+    const loop = loopAround(game, player, cells);
+    if (loop.length >= 4) loops.push(loop);
+  }
+  return loops;
+}
+
+/** Vrai si ce joueur peut encore manger : une maison neuve, ou celle de l'autre déjà contournée. */
+export function canCatch(game, player) {
+  return catchLoops(game, player).length > 0;
 }
 
 function newHouses(game, player) {
@@ -469,14 +519,15 @@ function resetTurnClock(game) {
  * Pose un pointillé. Une maison fermée vaut 1 point, quel que soit le nombre d'enfants dedans.
  * Un enfant déjà mangé ne sert plus de lien. Contourner une maison retire son point.
  */
-export function applyMove(game, move) {
+export function applyMove(game, move, options = {}) {
   if (!game || game.status !== "playing" || !dotIsOpen(game, move)) {
     return { ok: false, completed: 0, captured: [], eaten: 0, player: null };
   }
   const player = game.current;
   game.dots[move.r][move.c] = player;
 
-  const houses = newHouses(game, player);
+  const manual = options.autoClose === false;
+  const houses = manual ? [] : newHouses(game, player);
   for (const house of houses) {
     game.houses.push({
       owner: player,
@@ -488,22 +539,69 @@ export function applyMove(game, move) {
     game.scores[player] += 1;
     sealHouse(game, player, house);
   }
-  const eaten = swallowHouses(game, player);
+  const eaten = manual ? 0 : swallowHouses(game, player);
   if (!houses.length && eaten > 0) game.scores[player] += eaten;
   game.movesPlayed += 1;
+  const pending = manual && canCatch(game, player);
 
   const limit = game.settings.scoreLimit;
   if (limit > 0 && game.scores[player] >= limit) {
     finish(game, player, "score");
-  } else if (legalMoves(game).length === 0 || game.movesPlayed >= game.totalDots) {
+  } else if (!pending && (legalMoves(game).length === 0 || game.movesPlayed >= game.totalDots)) {
     finishByScore(game);
-  } else if ((houses.length > 0 || eaten > 0) && game.settings.extraTurn) {
+  } else if (pending || ((houses.length > 0 || eaten > 0) && game.settings.extraTurn)) {
     resetTurnClock(game);
   } else {
     game.current = 1 - player;
     resetTurnClock(game);
   }
-  return { ok: true, completed: houses.length, captured: houses, eaten, player };
+  return { ok: true, completed: houses.length, captured: houses, eaten, pending, player };
+}
+
+/** Le joueur trace lui-même le cadre, une case à la fois, sur ses propres pointillés. */
+export function closeByHand(game, loop) {
+  if (!game || game.status !== "playing") return { ok: false, reason: "La partie est finie." };
+  const player = game.current;
+  const clean = (loop || []).map((dot) => ({ r: dot.r, c: dot.c }));
+  if (!attachedLoop(clean)) return { ok: false, reason: "Le trait dépasse une case ou ne ferme pas." };
+  for (const dot of clean) {
+    if (game.dots[dot.r]?.[dot.c] !== player || game.framed[dot.r][dot.c] != null) {
+      return { ok: false, reason: "Suivez vos pointillés, sans dépasser les cases." };
+    }
+  }
+  const children = kidsInside(game, player, clean);
+  if (!children.length) return { ok: false, reason: "Aucun enfant dans ce cadre." };
+  const key = houseKey(children);
+  if ((game.houses || []).some((house) => house.alive && house.owner === player && house.key === key)) {
+    return { ok: false, reason: "Cette maison est déjà prise." };
+  }
+  const cells = [];
+  for (let r = 0; r <= game.rows; r += 1) {
+    for (let c = 0; c <= game.cols; c += 1) {
+      if (strictlyInside(clean, r, c)) cells.push({ r, c });
+    }
+  }
+  const house = { loop: clean, children, key, cells };
+  game.houses.push({
+    owner: player,
+    loop: clean,
+    children,
+    key,
+    cells,
+    alive: true,
+  });
+  game.scores[player] += 1;
+  sealHouse(game, player, house);
+  const eaten = swallowHouses(game, player);
+  const limit = game.settings.scoreLimit;
+  if (limit > 0 && game.scores[player] >= limit) finish(game, player, "score");
+  else if (legalMoves(game).length === 0 || game.movesPlayed >= game.totalDots) finishByScore(game);
+  else if (game.settings.extraTurn) resetTurnClock(game);
+  else {
+    game.current = 1 - player;
+    resetTurnClock(game);
+  }
+  return { ok: true, completed: 1, eaten, player };
 }
 
 export function abandon(game, playerIndex) {

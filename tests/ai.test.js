@@ -55,7 +55,15 @@ const again = chooseMove(startedRing(), "medium");
 assert(again && again.r === built.r && again.c === built.c, "moyen rejoue le même coup");
 
 const opening = chooseMove(createGame({ rows: 5, cols: 5, extraTurn: true, timeMode: "none" }), "medium");
-assert(opening && opening.r === 3 && opening.c === 3, "moyen ouvre au centre");
+assert(opening && Math.max(Math.abs(opening.r - 3), Math.abs(opening.c - 3)) <= 1, "moyen ouvre près du centre");
+const other = createGame({ rows: 5, cols: 5, extraTurn: true, timeMode: "none" });
+let shifted = false;
+for (let salt = 0; salt < 40 && !shifted; salt += 1) {
+  other.salt = salt;
+  const move = chooseMove(other, "medium");
+  shifted = move && (move.r !== opening.r || move.c !== opening.c);
+}
+assert(shifted, "deux parties n'ouvrent pas toujours au même point");
 
 function mustCounter() {
   const game = createGame({ rows: 4, cols: 4, extraTurn: true, timeMode: "none" });

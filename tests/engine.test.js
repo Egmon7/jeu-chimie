@@ -1,4 +1,4 @@
-import { applyMove, createGame, enclosures, legalMoves, moveInfo, normalizeSettings, sheetHouseCap, tick } from "../public/js/engine.js";
+import { applyMove, closeByHand, createGame, enclosures, legalMoves, moveInfo, normalizeSettings, sheetHouseCap, tick } from "../public/js/engine.js";
 
 function assert(cond, message) {
   if (!cond) throw new Error(message);
@@ -200,5 +200,46 @@ for (const [r, c] of edge.slice(0, -1)) gapRing.dots[r][c] = 0;
 gapRing.current = 0;
 const gapClose = applyMove(gapRing, { r: edge.at(-1)[0], c: edge.at(-1)[1] });
 assert(gapClose.completed === 0 && enclosures(gapRing).length === 0, "un trou d'une case ne trace pas un trait sur deux cases");
+
+const spur = createGame({ rows: 4, cols: 4, extraTurn: false, timeMode: "none" });
+spur.dots[2][2] = 1;
+spur.dots[1][2] = 0;
+spur.dots[2][3] = 0;
+spur.dots[3][2] = 0;
+spur.dots[0][2] = 0;
+spur.current = 0;
+const spurClose = applyMove(spur, { r: 2, c: 1 });
+assert(spurClose.completed === 1 && spur.scores[0] === 1, "une pointe à côté n'empêche pas de marquer la maison");
+
+const hand = createGame({ rows: 4, cols: 4, extraTurn: false, timeMode: "none" });
+hand.dots[2][2] = 1;
+hand.dots[1][2] = 0;
+hand.dots[2][3] = 0;
+hand.dots[3][2] = 0;
+hand.dots[2][1] = 0;
+hand.current = 0;
+const byHand = closeByHand(hand, [
+  { r: 1, c: 2 },
+  { r: 2, c: 3 },
+  { r: 3, c: 2 },
+  { r: 2, c: 1 },
+]);
+assert(byHand.ok && hand.scores[0] === 1, "la main ferme la maison autour de l'enfant");
+assert(closeByHand(hand, [
+  { r: 1, c: 2 },
+  { r: 3, c: 2 },
+  { r: 3, c: 0 },
+  { r: 1, c: 0 },
+]).ok === false, "un trait qui saute une case est refusé");
+
+const quiet = createGame({ rows: 3, cols: 3, extraTurn: false, timeMode: "none" });
+quiet.dots[1][1] = 1;
+quiet.dots[0][1] = 0;
+quiet.dots[1][0] = 0;
+quiet.dots[1][2] = 0;
+quiet.current = 0;
+const placed = applyMove(quiet, { r: 2, c: 1 }, { autoClose: false });
+assert(placed.ok && placed.completed === 0 && quiet.scores[0] === 0, "dessiner seul ne ferme pas la maison tout seul");
+assert(placed.pending === true && quiet.current === 0, "le tour reste pour rattacher les enfants");
 
 console.log("engine ok");

@@ -81,12 +81,9 @@ h2 { margin: 0; font-size: 1.35rem; }
   font-size: 1.15rem;
 }
 .mark { width: 36px; height: 36px; }
-.mark line { stroke: var(--accent); stroke-width: 3.2; stroke-linecap: round; fill: none; }
 .mark circle { fill: var(--ink); }
-.mark line:nth-child(1) { stroke-dasharray: 40; stroke-dashoffset: 40; animation: draw 1s ease forwards; }
-.mark line:nth-child(2) { stroke-dasharray: 40; stroke-dashoffset: 40; animation: draw 1s 0.15s ease forwards; }
-.mark line:nth-child(3) { stroke: #2f6fed; stroke-dasharray: 40; stroke-dashoffset: 40; animation: draw 1s 0.3s ease forwards; }
-@keyframes draw { to { stroke-dashoffset: 0; } }
+.mark circle.mark-in { fill: #e23d3d; }
+.rule-note { margin: 8px 0 0; max-width: 62ch; color: var(--muted); font-size: 0.95rem; line-height: 1.45; }
 
 .screen { width: min(1080px, calc(100% - 32px)); margin: 0 auto; padding: 18px 0 48px; }
 .hero { max-width: 680px; padding: 28px 0 10px; }
@@ -228,6 +225,8 @@ body[data-page="play"] #screen-game {
   top: 6px;
   right: 0;
   z-index: 4;
+  display: flex;
+  gap: 8px;
 }
 .icon-btn {
   width: 36px;
@@ -300,6 +299,15 @@ body[data-page="play"] #screen-game {
   padding: 0 4px 2px;
 }
 .board-meta #turn-label { color: var(--ink); font-weight: 640; margin-right: auto; }
+#rule-chip.attach {
+  color: #e23d3d;
+  font-weight: 700;
+  animation: attach-blink 1s ease-in-out infinite;
+}
+@keyframes attach-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.15; }
+}
 .board-meta #clock { font-variant-numeric: tabular-nums; font-weight: 640; color: var(--accent); }
 .board-wrap {
   width: min(100cqw, calc(100cqh * var(--sheet-w, 9) / var(--sheet-h, 10)));
@@ -490,14 +498,15 @@ body[data-page="profile"] .brand,
 body[data-page="profile"] .text-btn,
 body[data-page="history"] .brand,
 body[data-page="history"] .text-btn { color: #d5deea; }
-body[data-page="modes"] .mark line,
-body[data-page="setup"] .mark line,
-body[data-page="profile"] .mark line,
-body[data-page="history"] .mark line { stroke: #f4f6f8; }
 body[data-page="modes"] .mark circle,
 body[data-page="setup"] .mark circle,
 body[data-page="profile"] .mark circle,
 body[data-page="history"] .mark circle { fill: #f4f6f8; }
+body[data-page="modes"] .mark circle.mark-in,
+body[data-page="setup"] .mark circle.mark-in,
+body[data-page="profile"] .mark circle.mark-in,
+body[data-page="history"] .mark circle.mark-in { fill: #e23d3d; }
+body[data-page="setup"] .rule-note { color: #9aa8ba; }
 
 #screen-home,
 #screen-modes,
@@ -512,13 +521,13 @@ body[data-page="history"] .mark circle { fill: #f4f6f8; }
 #screen-home {
   min-height: calc(100dvh - 58px);
   display: flex;
-  align-items: flex-start;
-  justify-content: center;
+  flex-direction: column;
+  align-items: center;
   position: relative;
-  padding: 16vh 16px 88px;
+  padding: 16px 16px 88px;
   box-sizing: border-box;
 }
-.home-center { text-align: center; padding: 0 24px; }
+.home-center { text-align: center; padding: 0 24px; margin: auto; }
 .home-center h1 {
   font-family: var(--font);
   font-weight: 560;
@@ -714,7 +723,6 @@ body[data-page="history"] .btn.primary {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .mark line { animation: none; stroke-dashoffset: 0; }
   .score.pop { animation: none; }
 }
 

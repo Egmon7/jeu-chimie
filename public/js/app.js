@@ -3,6 +3,8 @@ import { Sounds } from "./audio.js";
 import {
   abandon,
   applyMove,
+  canCatch,
+  closeByHand,
   createGame,
   formatClock,
   legalMoves,
@@ -186,6 +188,7 @@ function readSettingsFromForm() {
       theme: readGroup("theme"),
       difficulty: readGroup("difficulty"),
       sound: app.prefs.sound,
+      closeMode: readGroup("closeMode"),
       p1Name: $("p1Name").value,
       p2Name: soloName ? "Robot" : $("p2Name").value,
     }),
@@ -214,6 +217,7 @@ function fillForm(prefs) {
   syncPenColors("p1Color");
   setGroup("theme", prefs.theme);
   setGroup("difficulty", prefs.difficulty);
+  setGroup("closeMode", prefs.closeMode === "hand" ? "hand" : "auto");
   $("p1Name").value = prefs.p1Name || "Joueur 1";
   $("p2Name").value = !prefs.p2Name || prefs.p2Name === "Robot" ? "Joueur 2" : prefs.p2Name;
   syncFormBits();
@@ -359,7 +363,7 @@ function remember(settings) {
   app.prefs = { ...app.prefs, ...rest };
   savePrefs(app.prefs);
   applyTheme(app.prefs.theme);
-  app.sounds.enabled = app.prefs.sound !== false;
+  app.sounds.enabled = false;
 }
 
 function startMatch(settings, mode) {
@@ -386,9 +390,27 @@ function startMatch(settings, mode) {
   app.board.clearAnims();
   show("screen-game");
   paintMatch();
+  app.tracing = false;
+  app.board?.setTracing(false);
   hideOverlay();
   if (mode === "solo" && app.game.current === 1) queueAi();
   saveMatch();
+}
+
+function wantsTrace() {
+  const game = app.game;
+  if (!game || game.status !== "playing" || app.paused) return false;
+  if (game.settings.closeMode !== "hand") return false;
+  if (app.players[game.current]?.kind === "ai") return false;
+  if ($("game-overlay") && !$("game-overlay").hidden) return false;
+  return canCatch(game, game.current);
+}
+
+function syncTrace() {
+  const on = wantsTrace();
+  if (app.tracing === on) return;
+  app.tracing = on;
+  app.board?.setTracing(on);
 }
 
 function paintMatch() {
@@ -413,11 +435,22 @@ function refreshHud() {
     card.classList.toggle("active", Boolean(active));
     $(`p${index}-turn`).hidden = !active;
   });
+  syncTrace();
   if (!game) return;
   $("move-count").textContent = `${game.movesPlayed} / ${game.totalDots} points`;
-  $("rule-chip").textContent = game.settings.extraTurn
-    ? "Une maison vaut 1 point. Si tu encercles, tu rejoues."
-    : "Une maison vaut 1 point. Un point par tour.";
+  const chip = $("rule-chip");
+  const humanTurn = app.players[game.current]?.kind !== "ai";
+  const attach = game.status === "playing" && game.settings.closeMode === "hand" && humanTurn && canCatch(game, game.current);
+  if (attach) {
+    chip.textContent = "Glisse sur tes points autour des enfants.";
+    chip.classList.add("attach");
+  } else {
+    const houseRule = "1 point par maison. Encercler l’autre prend son point, et l’intérieur est fermé.";
+    chip.textContent = game.settings.extraTurn
+      ? `${houseRule} Si tu encercles, tu rejoues.`
+      : `${houseRule} Un point par tour.`;
+    chip.classList.remove("attach");
+  }
   $("pause-btn").hidden = app.mode === "online";
   const name = app.players[game.current]?.name || "";
   const mine = app.mode !== "local" && game.current === (app.mode === "online" ? app.seat : 0);
@@ -484,6 +517,7 @@ function showOverlay({ kicker, title, text, actions, celebrate = false }) {
 }
 
 function canPlay() {
+  if (app.tracing) return false;
   if ($("game-overlay") && !$("game-overlay").hidden) return false;
   if (!app.game || app.game.status !== "playing" || app.paused || app.inputLock) return false;
   if (app.mode === "online") return app.seat === app.game.current;
@@ -507,7 +541,9 @@ function tryMove(move) {
 }
 
 function playLocal(move, fromTimeout) {
-  const result = applyMove(app.game, move);
+  const human = app.players[app.game.current]?.kind !== "ai";
+  const manual = human && app.game.settings.closeMode === "hand";
+  const result = applyMove(app.game, move, { autoClose: !manual });
   if (!result.ok) return;
   app.inputLock = true;
   app.board.animate(move, result);
@@ -654,6 +690,8 @@ function rematch() {
   app.timeoutQueued = null;
   app.board.clearAnims();
   paintMatch();
+  app.tracing = false;
+  app.board?.setTracing(false);
   hideOverlay();
   if (app.mode === "solo" && app.game.current === 1) queueAi();
   saveMatch();
@@ -1004,8 +1042,11 @@ function bind() {
   $("setup-form").addEventListener("submit", (event) => {
     event.preventDefault();
     const { settings, opponent } = readSettingsFromForm();
-    if (!$("p1Name").value.trim() || ((app.formMode === "local" || opponent === "local") && !$("p2Name").value.trim())) {
+    const needSecond = app.formMode === "local" || opponent === "local";
+    const missing = !$("p1Name").value.trim() ? $("p1Name") : needSecond && !$("p2Name").value.trim() ? $("p2Name") : null;
+    if (missing) {
       toast("Écris le nom des joueurs pour cette partie.");
+      missing.focus();
       return;
     }
     if (app.formMode === "online") {
@@ -1071,6 +1112,34 @@ function bind() {
   app.board = new BoardView($("board"));
   app.board.canPlay = () => canPlay();
   app.board.onMove = (move) => tryMove(move);
+  app.board.onTrace = (loop, fault) => {
+    app.tracing = false;
+    app.board.setTracing(false);
+    if (!app.game || app.game.status !== "playing") return;
+    if (fault) {
+      toast("Le trait dépasse une case.");
+      syncTrace();
+      return;
+    }
+    if (!loop) {
+      toast("Glisse sur tes points et reviens au premier.");
+      syncTrace();
+      return;
+    }
+    const result = closeByHand(app.game, loop);
+    if (!result.ok) {
+      toast(result.reason);
+      syncTrace();
+      return;
+    }
+    app.sounds.box();
+    popScore(result.player);
+    if (result.eaten) popScore(1 - result.player);
+    refreshHud();
+    saveMatch();
+    app.inputLock = true;
+    window.setTimeout(() => afterMove(), 280);
+  };
   new ResizeObserver(() => app.board.resize()).observe($("board").parentElement);
 
   const params = new URLSearchParams(location.search);
@@ -1126,8 +1195,7 @@ function bind() {
   });
 
   applyTheme(app.prefs.theme);
-  app.sounds.enabled = app.prefs.sound !== false;
-  document.body.addEventListener("pointerdown", () => app.sounds.unlock(), { once: true });
+  app.sounds.enabled = false;
   requestAnimationFrame(loop);
   window.egmonApp = app;
 }

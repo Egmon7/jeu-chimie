@@ -19,15 +19,12 @@
 <body data-theme="classic" data-page="home">
   <header class="topbar">
     <button type="button" class="brand" id="brand">
-      <svg class="mark" viewBox="0 0 64 64" aria-hidden="true">
-        <line x1="12" y1="14" x2="50" y2="14"/>
-        <line x1="50" y1="14" x2="50" y2="50"/>
-        <line x1="12" y1="50" x2="50" y2="50"/>
-        <line x1="12" y1="14" x2="12" y2="32"/>
-        <circle cx="12" cy="14" r="3.2"/>
-        <circle cx="50" cy="14" r="3.2"/>
-        <circle cx="50" cy="50" r="3.2"/>
-        <circle cx="12" cy="50" r="3.2"/>
+        <svg class="mark" viewBox="0 0 64 64" aria-hidden="true">
+        <circle cx="16" cy="16" r="4"/>
+        <circle cx="48" cy="16" r="4"/>
+        <circle cx="48" cy="48" r="4"/>
+        <circle cx="16" cy="48" r="4"/>
+        <circle class="mark-in" cx="32" cy="32" r="4"/>
       </svg>
       <span>Jeu - chimie</span>
     </button>
@@ -78,9 +75,10 @@
         <p class="eyebrow">Nouvelle feuille</p>
         <h1 id="setup-title">Partie solo</h1>
         <p class="lead" id="setup-lead"></p>
+        <p class="rule-note">On pose un point sur les croisements. Une forme vide ne compte pas. Plusieurs points dans la même maison font toujours 1 point. Encercler la maison de l’autre prend son point, et plus personne ne joue dedans.</p>
 
         <div class="names-first">
-          <label class="name-label" data-show="solo local online custom">Ton nom
+          <label class="name-label" data-show="solo local online custom">Nom durant la partie
             <input id="p1Name" maxlength="18" placeholder="Écris ton nom" autocomplete="off">
           </label>
           <label class="name-label" data-show="local custom" hidden>Nom du second
@@ -89,15 +87,24 @@
         </div>
 
         <fieldset>
+          <legend>Encerclement</legend>
+          <div class="choices" data-field="closeMode">
+            <button type="button" data-value="hand">Dessiner seul<small>Vous tracez la maison</small></button>
+            <button type="button" data-value="auto" aria-pressed="true">Laisser le système<small>La maison se ferme seule</small></button>
+          </div>
+        </fieldset>
+
+        <fieldset>
           <legend>Taille du papier</legend>
           <div class="choices" data-field="size">
-            <button type="button" data-value="20-17" data-rows="20" data-cols="17" aria-pressed="true">Cahier<small>17 × 22</small></button>
-            <button type="button" data-value="16-12" data-rows="16" data-cols="12">Cahier long<small>24 × 32</small></button>
+            <button type="button" data-value="20-17" data-rows="20" data-cols="17" aria-pressed="true">Cahier<small>17 × 20</small></button>
+            <button type="button" data-value="16-12" data-rows="16" data-cols="12">Cahier long<small>12 × 16</small></button>
             <button type="button" data-value="custom" data-rows="0" data-cols="0">Libre<small>2 à 32</small></button>
           </div>
+          <p class="score-cap">Les chiffres comptent les cases : largeur × hauteur.</p>
           <div id="custom-size" class="inline-fields" hidden>
-            <label>Lignes de carrés <input id="rows" type="number" min="2" max="32" value="6"></label>
-            <label>Colonnes de carrés <input id="cols" type="number" min="2" max="32" value="6"></label>
+            <label>Largeur <input id="cols" type="number" min="2" max="32" value="6"></label>
+            <label>Hauteur <input id="rows" type="number" min="2" max="32" value="6"></label>
           </div>
         </fieldset>
 
@@ -241,7 +248,7 @@
       <p id="conn-banner" class="banner" hidden></p>
       <div class="game-shell">
         <article class="player" id="p0-card">
-          <p class="eyebrow" id="p0-turn" hidden>Au trait</p>
+          <p class="eyebrow" id="p0-turn" hidden>Joue</p>
           <h2 id="p0-name">Joueur 1</h2>
           <p class="score" id="p0-score">0</p>
           <p class="pen-name" id="p0-pen"></p>
@@ -257,12 +264,12 @@
           </div>
           <div class="board-stage">
             <div class="board-wrap">
-              <canvas id="board" aria-label="Plateau de points et de carrés"></canvas>
+              <canvas id="board" aria-label="Feuille de pointillés"></canvas>
             </div>
           </div>
         </div>
         <article class="player" id="p1-card">
-          <p class="eyebrow" id="p1-turn" hidden>Au trait</p>
+          <p class="eyebrow" id="p1-turn" hidden>Joue</p>
           <h2 id="p1-name">Joueur 2</h2>
           <p class="score" id="p1-score">0</p>
           <p class="pen-name" id="p1-pen"></p>
