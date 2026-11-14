@@ -327,6 +327,17 @@ body[data-page="play"] #screen-game {
   padding: 0 4px 2px;
 }
 .board-meta #turn-label { color: var(--ink); font-weight: 640; margin-right: auto; }
+.match-clock {
+  margin: 0 0 4px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  font-size: 1.7rem;
+  font-weight: 640;
+  letter-spacing: 0.04em;
+  color: var(--ink);
+}
+.match-clock.low { color: #e23d3d; }
+.time-note { margin: 8px 0 0; color: #9aa8ba; font-size: 0.86rem; }
 #rule-chip.attach {
   color: #e23d3d;
   font-weight: 700;
@@ -448,6 +459,18 @@ body[data-page="play"] #screen-game {
 }
 #rank-count { margin: 0; color: #9aa8ba; }
 .rank-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+#rank-search {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 44px;
+  margin: 0 0 14px;
+  border: 0;
+  border-radius: 12px;
+  padding: 10px 14px;
+  background: #f4f6f8;
+  color: #0e1616;
+  font-size: max(16px, 1em);
+}
 #rank-me { padding: 0; font-size: 0.86rem; color: #e7c56a; }
 .you-tag { color: #e7c56a; font-style: normal; font-size: 0.72rem; letter-spacing: 0.04em; text-transform: uppercase; }
 #rank-top {

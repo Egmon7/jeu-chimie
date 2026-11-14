@@ -35,13 +35,13 @@
       <div class="home-center">
         <h1>Jeu - chimie</h1>
         <p class="home-lead">Retrouvez le plaisir des heures d’école, quand une feuille quadrillée et deux stylos suffisaient. Fermez les carrés, et revivez ce moment.</p>
-        <button type="button" class="home-cta" id="create-match">Créer une partie</button>
+        <button type="button" class="home-cta" id="create-match">Commencez</button>
       </div>
     </section>
 
     <section id="screen-modes" class="screen" hidden>
       <div class="modes-wrap">
-        <h1 id="modes-title">Créer une partie</h1>
+        <h1 id="modes-title">Commencez</h1>
         <div class="mode-list" id="mode-home">
           <button type="button" class="mode" data-open-hub="play">
             <strong>Jouer</strong>
@@ -192,6 +192,8 @@
               <button type="button" data-set-time="1200">20 min</button>
             </div>
             <input id="timeLimit" type="hidden" value="300">
+            <p class="time-note">Le compteur s’affiche en haut. À zéro, la partie s’arrête.</p>
+            <p class="hint">Le compteur reste en haut. À zéro, la partie s’arrête.</p>
           </div>
         </fieldset>
 
@@ -308,9 +310,9 @@
           <div class="track" id="p0-bar" hidden><i></i></div>
         </article>
         <div class="board-column">
+          <p id="clock" class="match-clock" hidden>5:00</p>
           <div class="board-meta">
             <p id="turn-label">Au tour du joueur</p>
-            <p id="clock" hidden>5:00</p>
             <p id="rule-chip"></p>
             <p id="move-count"></p>
           </div>
@@ -403,6 +405,7 @@
           <p id="rank-count"></p>
           <button type="button" class="text-btn" id="rank-me">Ma position</button>
         </div>
+        <input id="rank-search" type="search" placeholder="Chercher un nom" maxlength="40" autocomplete="off" enterkeyhint="search">
         <div id="rank-top"></div>
         <ol id="rank-list"></ol>
         <button type="button" class="btn" data-home>Retour</button>

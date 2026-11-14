@@ -284,10 +284,22 @@ function syncScoreCap() {
   });
 }
 
+function markTimePreset() {
+  const seconds = String(Number($("timeLimit").value) || 300);
+  document.querySelectorAll("[data-set-time]").forEach((btn) => {
+    btn.setAttribute("aria-pressed", btn.dataset.setTime === seconds ? "true" : "false");
+  });
+}
+
+function foldName(value) {
+  return String(value ?? "").normalize("NFD").replace(/\p{M}/gu, "").toLocaleLowerCase("fr");
+}
+
 function syncFormBits() {
   $("custom-size").hidden = readGroup("size") !== "custom";
   const timeMode = readGroup("timeMode");
   $("time-box").hidden = timeMode === "none";
+  markTimePreset();
   $("score-custom").hidden = readGroup("score") !== "custom";
   syncScoreCap();
   document.querySelectorAll("[data-show]").forEach((el) => {
@@ -499,26 +511,45 @@ function renderProgress(rows) {
   $("level-list").innerHTML = `<h2>Niveaux</h2><ul class="goal-list">${levels}</ul><h2>Badges à atteindre</h2><ul class="goal-list">${badges}</ul>`;
 }
 
+let rankCache = null;
+
 function renderBoard(rows) {
+  rankCache = Array.isArray(rows) ? rows : null;
+  paintBoard();
+}
+
+function paintBoard() {
   const top = $("rank-top");
   const list = $("rank-list");
   const count = $("rank-count");
+  const query = foldName($("rank-search")?.value || "");
   top.replaceChildren();
   list.replaceChildren();
-  if (!Array.isArray(rows)) {
+  if (!rankCache) {
     count.textContent = "Le classement n’est pas disponible.";
     return;
   }
-  const people = Number(rows[0]?.people) || 0;
-  count.textContent = `${people} personne${people > 1 ? "s" : ""}`;
-  for (const row of rows.filter((item) => Number(item.rank) <= 3)) {
+  const people = Number(rankCache[0]?.people) || 0;
+  const rows = query ? rankCache.filter((row) => foldName(row.name).includes(query)) : rankCache;
+  count.textContent = query
+    ? `${rows.length} trouvé${rows.length > 1 ? "s" : ""}`
+    : `${people} personne${people > 1 ? "s" : ""}`;
+  const podium = query ? [] : rows.filter((item) => Number(item.rank) <= 3);
+  const rest = query ? rows : rows.filter((item) => Number(item.rank) > 3);
+  for (const row of podium) {
     const card = document.createElement("article");
     const rank = Number(row.rank);
     card.className = `podium-card rank-${rank}${row.you ? " you" : ""}`;
     card.innerHTML = `<img class="podium-medal" src="img/medaille-${rank}.png" alt=""><span class="face">${faceMarkup(row.photo)}</span>${row.you ? `<em class="you-tag">Toi</em>` : ""}<strong>${esc(row.name)}</strong><p class="podium-xp">${Number(row.xp) || 0} XP</p>`;
     top.append(card);
   }
-  for (const row of rows.filter((item) => Number(item.rank) > 3)) {
+  if (query && !rows.length) {
+    const empty = document.createElement("li");
+    empty.className = "rank-row";
+    empty.textContent = "Aucun nom.";
+    list.append(empty);
+  }
+  for (const row of rest) {
     const item = document.createElement("li");
     item.className = row.you ? "rank-row you" : "rank-row";
     item.innerHTML = `<span class="rank-num">${Number(row.rank)}</span><span class="face">${faceMarkup(row.photo)}</span><strong>${esc(row.name)}</strong>${row.you ? `<em class="you-tag">Toi</em>` : ""}<span class="rank-points">${Number(row.xp) || 0} XP</span>`;
@@ -919,6 +950,7 @@ function updateTimers() {
   const global = game.settings.timeMode === "global";
   const turn = game.settings.timeMode === "turn";
   $("clock").hidden = !global;
+  $("clock").classList.toggle("low", global && remaining("global") <= 30_000 && game.status === "playing");
   if (global) $("clock").textContent = formatClock(remaining("global"));
   const turnMs = turn ? remaining("turn") : 0;
   const ratio = turn && game.turnLimit ? Math.max(0, Math.min(1, turnMs / game.turnLimit)) : 0;
@@ -994,6 +1026,7 @@ function canPlay() {
   if (app.tracing) return false;
   if ($("game-overlay") && !$("game-overlay").hidden) return false;
   if (!app.game || app.game.status !== "playing" || app.paused || app.inputLock) return false;
+  if (app.game.settings.timeMode === "global" && remaining("global") <= 0) return false;
   if (app.mode === "online") return app.seat === app.game.current;
   if (app.mode === "solo") return app.players[app.game.current]?.kind === "human";
   return true;
@@ -1200,7 +1233,9 @@ function showResult() {
 }
 
 function endLocal() {
+  app.inputLock = true;
   recordGame();
+  updateTimers();
   showResult();
 }
 
@@ -1293,8 +1328,7 @@ function showPause() {
 }
 
 function loop(ts) {
-  if (!app.lastTs) app.lastTs = ts;
-  const dt = Math.min(80, ts - app.lastTs);
+  const dt = app.lastTs ? Math.max(0, ts - app.lastTs) : 0;
   app.lastTs = ts;
   if (app.game && app.mode !== "online" && !app.paused && app.game.status === "playing") {
     const clock = tick(app.game, dt);
@@ -1535,7 +1569,7 @@ function openHub(name) {
   document.querySelectorAll("[data-hub-panel]").forEach((panel) => {
     panel.hidden = panel.dataset.hubPanel !== next;
   });
-  $("modes-title").textContent = HUB_TITLES[next] || "Créer une partie";
+  $("modes-title").textContent = HUB_TITLES[next] || "Commencez";
 }
 
 function bind() {
@@ -1560,7 +1594,10 @@ function bind() {
       else if (field.dataset.field === "theme") applyTheme(app.prefs.theme);
     }
     const preset = event.target.closest("[data-set-time]");
-    if (preset) $("timeLimit").value = preset.dataset.setTime;
+    if (preset) {
+      $("timeLimit").value = preset.dataset.setTime;
+      markTimePreset();
+    }
     const hubBtn = event.target.closest("[data-open-hub]");
     if (hubBtn) openHub(hubBtn.dataset.openHub);
     if (event.target.closest("#modes-back")) {
@@ -1643,6 +1680,7 @@ function bind() {
   $("go-badges").addEventListener("click", openBadges);
   $("go-rank").addEventListener("click", () => show("screen-rank"));
   $("rank-me").addEventListener("click", scrollToMyRank);
+  $("rank-search").addEventListener("input", paintBoard);
   $("go-history").addEventListener("click", () => {
     renderHistory();
     show("screen-history");

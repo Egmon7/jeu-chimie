@@ -427,7 +427,9 @@ setInterval(() => {
   for (const [code, room] of rooms) {
     const playing = room.game?.status === "playing" && room.players[0]?.connected && room.players[1]?.connected;
     if (playing) {
-      const clock = tick(room.game, 200);
+      const dt = room.clockAt ? Math.max(0, now - room.clockAt) : 200;
+      room.clockAt = now;
+      const clock = tick(room.game, dt);
       if (clock.timedOut && clock.kind === "turn") {
         const moves = legalMoves(room.game);
         if (moves.length) {
@@ -438,6 +440,8 @@ setInterval(() => {
       } else if (clock.timedOut && clock.kind === "global") {
         emitState(room, { type: "time" });
       }
+    } else {
+      room.clockAt = now;
     }
     const empty = room.players.every((player) => !player?.connected);
     if (empty && now - room.touched > 10 * 60 * 1000) rooms.delete(code);
