@@ -1543,36 +1543,45 @@ function loop(ts) {
   requestAnimationFrame(loop);
 }
 
+function rejoinSavedRoom() {
+  if (app.ignoreOnline || !app.socket?.connected) return;
+  const saved = sessionStorage.getItem("egmon-room");
+  if (!saved) return;
+  try {
+    const { code } = JSON.parse(saved);
+    if (!code) return;
+    const tryRejoin = (attempt) => {
+      app.socket.emit("rejoin", { playerId: playerId(), code }, (res) => {
+        if (res?.ok || app.ignoreOnline) return;
+        if (attempt < 2) {
+          window.setTimeout(() => tryRejoin(attempt + 1), 500);
+          return;
+        }
+        try { sessionStorage.removeItem("egmon-room"); } catch { /* ignore */ }
+        if (!$("screen-lobby").hidden || !$("screen-game").hidden) {
+          toast("La salle n’est plus ouverte.");
+          leaveOnlineScreen();
+        }
+      });
+    };
+    tryRejoin(0);
+  } catch {
+    sessionStorage.removeItem("egmon-room");
+  }
+}
+
 function ensureSocket() {
   if (!window.io) return null;
   if (app.socket) return app.socket;
   app.socket = window.io({ autoConnect: false });
   app.socket.on("connect", () => {
     clearTimeout(app.reconnectNote);
-    if (app.holdRejoin || app.ignoreOnline) return;
-    const saved = sessionStorage.getItem("egmon-room");
-    if (!saved) return;
-    try {
-      const { code } = JSON.parse(saved);
-      if (!code) return;
-      const tryRejoin = (attempt) => {
-        app.socket.emit("rejoin", { playerId: playerId(), code }, (res) => {
-          if (res?.ok || app.ignoreOnline) return;
-          if (attempt < 2) {
-            window.setTimeout(() => tryRejoin(attempt + 1), 500);
-            return;
-          }
-          try { sessionStorage.removeItem("egmon-room"); } catch { /* ignore */ }
-          if (!$("screen-lobby").hidden || !$("screen-game").hidden) {
-            toast("La salle n’est plus ouverte.");
-            leaveOnlineScreen();
-          }
-        });
-      };
-      tryRejoin(0);
-    } catch {
-      sessionStorage.removeItem("egmon-room");
+    if (app.ignoreOnline) return;
+    if (app.holdRejoin) {
+      app.rejoinAfterHold = true;
+      return;
     }
+    rejoinSavedRoom();
   });
   app.socket.on("state", (msg) => onOnlineState(msg));
   app.socket.on("closed", () => {
@@ -1651,6 +1660,25 @@ function connectSocket() {
       if (socket.disconnected) socket.connect();
     });
     return socketReady;
+  });
+}
+
+function sendInRoom(event) {
+  const snap = readRoomSnap();
+  const code = snap?.code || app.roomCode;
+  const run = () => app.socket.emit(event);
+  if (!app.socket?.connected || !code) {
+    connectSocket().then(() => {
+      app.socket.emit("rejoin", { playerId: playerId(), code }, (res) => {
+        if (res?.ok) run();
+        else toast("La salle n’est plus ouverte.");
+      });
+    }).catch(() => toast("La connexion a sauté. Réessaie."));
+    return;
+  }
+  app.socket.emit("rejoin", { playerId: playerId(), code }, (res) => {
+    if (res?.ok) run();
+    else toast("La salle n’est plus ouverte.");
   });
 }
 
@@ -1764,9 +1792,14 @@ function renderLobby(msg) {
   $("lobby-rules").textContent = tableText(msg.settings);
   $("lobby-seats").innerHTML = [0, 1].map((index) => {
     const seat = seats[index] || {};
-    const here = seat.present && seat.connected && msg.ready?.[index];
     const label = seat.present ? esc(seat.name || "Joueur") : "Place libre";
-    const state = !seat.present ? "En attente" : !seat.connected ? "Déconnecté" : here ? "Présent" : "Pas encore confirmé";
+    const state = !seat.present
+      ? "En attente"
+      : msg.ready?.[index]
+        ? "Présent"
+        : seat.connected === false
+          ? "Déconnecté"
+          : "Pas encore confirmé";
     return `<p><strong>${label}</strong><span>${state}</span></p>`;
   }).join("");
   const both = seats[0]?.present && seats[1]?.present && seats[0]?.connected && seats[1]?.connected;
@@ -1885,6 +1918,10 @@ async function createOnlineRoom(settings) {
     toast("La salle n’a pas pu s’ouvrir. Réessaie.");
   } finally {
     app.holdRejoin = false;
+    if (app.rejoinAfterHold) {
+      app.rejoinAfterHold = false;
+      rejoinSavedRoom();
+    }
     if (button) {
       button.disabled = false;
       button.textContent = "Créer la salle";
@@ -1915,6 +1952,10 @@ async function joinRoom(code, color) {
     toast("Impossible de rejoindre. Réessaie.");
   } finally {
     app.holdRejoin = false;
+    if (app.rejoinAfterHold) {
+      app.rejoinAfterHold = false;
+      rejoinSavedRoom();
+    }
     if (button) {
       button.disabled = false;
       button.textContent = "Rejoindre";
@@ -2178,9 +2219,9 @@ function bind() {
   });
   $("copy-code").addEventListener("click", () => copyText(app.roomCode || $("lobby-code").textContent));
   $("lobby-cancel").addEventListener("click", () => leaveOnlineScreen());
-  $("lobby-present").addEventListener("click", () => app.socket?.emit("present"));
-  $("lobby-accept").addEventListener("click", () => app.socket?.emit("accept"));
-  $("lobby-launch").addEventListener("click", () => app.socket?.emit("launch"));
+  $("lobby-present").addEventListener("click", () => sendInRoom("present"));
+  $("lobby-accept").addEventListener("click", () => sendInRoom("accept"));
+  $("lobby-launch").addEventListener("click", () => sendInRoom("launch"));
   $("find-back").addEventListener("click", () => {
     if (history.state?.page === "find") history.back();
     else show("screen-modes", "replace");

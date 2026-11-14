@@ -335,12 +335,37 @@ function snapshot(room, event = null) {
 
 function emitState(room, event = null) {
   room.touched = Date.now();
-  const base = snapshot(room, event);
+  const sent = new Set();
+  const send = (sock, seat) => {
+    if (!sock || sent.has(sock.id)) return;
+    sent.add(sock.id);
+    sock.emit("state", { ...snapshot(room, event), you: seat });
+  };
   for (const seat of [0, 1]) {
     const player = room.players[seat];
     if (!player?.socketId) continue;
-    io.to(player.socketId).emit("state", { ...base, you: seat });
+    send(io.sockets.sockets.get(player.socketId), seat);
   }
+  for (const sock of io.sockets.sockets.values()) {
+    if (sock.data.roomCode !== room.code || sent.has(sock.id)) continue;
+    const seat = seatOf(room, sock.data.playerId);
+    if (seat < 0) continue;
+    room.players[seat].socketId = sock.id;
+    room.players[seat].connected = true;
+    send(sock, seat);
+  }
+}
+
+function claim(socket) {
+  const room = rooms.get(socket.data.roomCode);
+  const seat = room ? seatOf(room, socket.data.playerId) : -1;
+  if (!room || seat < 0) return null;
+  const player = room.players[seat];
+  player.socketId = socket.id;
+  player.connected = true;
+  clearForfeit(room, seat);
+  socket.join(room.code);
+  return { room, seat };
 }
 
 function clearForfeit(room, seat) {
@@ -538,16 +563,16 @@ io.on("connection", (socket) => {
   });
 
   socket.on("present", () => {
-    const room = rooms.get(socket.data.roomCode);
-    const seat = room ? seatOf(room, socket.data.playerId) : -1;
-    if (!room || seat < 0 || room.game || limited(`${socket.id}:present`, 40, 60_000)) return;
-    room.ready[seat] = !room.ready[seat];
-    emitState(room, { type: "present" });
+    const found = claim(socket);
+    if (!found || found.room.game || limited(`${socket.id}:present`, 40, 60_000)) return;
+    found.room.ready[found.seat] = true;
+    emitState(found.room, { type: "present" });
   });
 
   socket.on("accept", () => {
-    const room = rooms.get(socket.data.roomCode);
-    const seat = room ? seatOf(room, socket.data.playerId) : -1;
+    const found = claim(socket);
+    const room = found?.room;
+    const seat = found ? found.seat : -1;
     if (!room || seat !== 1 || room.game || !room.players[1] || limited(`${socket.id}:accept`, 20, 60_000)) return;
     room.accepted = true;
     emitState(room, { type: "accept" });
@@ -568,8 +593,9 @@ io.on("connection", (socket) => {
   });
 
   socket.on("launch", () => {
-    const room = rooms.get(socket.data.roomCode);
-    const seat = room ? seatOf(room, socket.data.playerId) : -1;
+    const found = claim(socket);
+    const room = found?.room;
+    const seat = found ? found.seat : -1;
     if (!room || seat !== 0 || room.game || limited(`${socket.id}:launch`, 8, 60_000)) return;
     if (!room.players[1]?.connected || !room.ready[0] || !room.ready[1]) return;
     room.game = createGame(room.settings, 0);
@@ -671,28 +697,32 @@ io.on("connection", (socket) => {
     if (!room) return;
     const seat = seatOf(room, socket.data.playerId);
     if (seat < 0 || room.players[seat].socketId !== socket.id) return;
-    room.players[seat].connected = false;
     room.touched = Date.now();
-    emitState(room, { type: "presence" });
     clearForfeit(room, seat);
-    const wait = room.game?.status === "playing" ? 60000 : 20000;
+    if (room.game?.status === "playing") {
+      room.players[seat].connected = false;
+      emitState(room, { type: "presence" });
+      room.forfeit[seat] = setTimeout(() => {
+        const player = room.players[seat];
+        if (!player || player.connected || player.socketId !== socket.id) return;
+        if (room.game?.status === "playing") {
+          abandon(room.game, seat);
+          emitState(room, { type: "forfeit" });
+        }
+      }, 60000);
+      return;
+    }
     room.forfeit[seat] = setTimeout(() => {
       const player = room.players[seat];
-      if (!player || player.connected || player.socketId !== socket.id) return;
-      if (room.game?.status === "playing") {
-        abandon(room.game, seat);
-        emitState(room, { type: "forfeit" });
-        return;
-      }
+      if (!player || player.socketId !== socket.id) return;
+      player.connected = false;
       room.ready[seat] = false;
       if (seat === 1) {
         room.players[1] = null;
         room.accepted = false;
-        emitState(room, { type: "left" });
-        return;
       }
-      emitState(room, { type: "presence" });
-    }, wait);
+      emitState(room, { type: "left" });
+    }, 20000);
   });
 });
 
