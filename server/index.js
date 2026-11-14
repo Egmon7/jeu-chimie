@@ -17,10 +17,86 @@ import {
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const httpServer = createServer(app);
-const io = new Server(httpServer);
+const io = new Server(httpServer, {
+  maxHttpBufferSize: 16_000,
+  allowRequest(req, callback) {
+    const origin = req.headers.origin;
+    if (!origin) return callback(null, true);
+    try {
+      callback(null, new URL(origin).host === req.headers.host);
+    } catch {
+      callback(null, false);
+    }
+  },
+});
 const rooms = new Map();
+const hits = new Map();
+const connections = new Map();
+const ROOM_LIMIT = 80;
 
-app.use(express.static(path.join(__dirname, "../public")));
+app.disable("x-powered-by");
+app.use((req, res, next) => {
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("Referrer-Policy", "same-origin");
+  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("Content-Security-Policy", [
+    "default-src 'self'",
+    "script-src 'self'",
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+    "font-src 'self' https://fonts.gstatic.com",
+    "img-src 'self' data:",
+    "connect-src 'self'",
+    "frame-ancestors 'none'",
+    "base-uri 'self'",
+    "form-action 'self'",
+  ].join("; "));
+  next();
+});
+app.use(express.static(path.join(__dirname, "../public"), { dotfiles: "ignore" }));
+
+function roomCode(value) {
+  const code = String(value || "").trim().toUpperCase();
+  return /^EGD-[A-Z2-9]{6}$/.test(code) ? code : "";
+}
+
+function safePlayerId(value, fallback) {
+  const id = String(value || "");
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id)) return id;
+  return fallback;
+}
+
+function asMove(move) {
+  if (!move || typeof move !== "object") return null;
+  const { r, c } = move;
+  if (!Number.isInteger(r) || !Number.isInteger(c)) return null;
+  if (r < 0 || c < 0 || r > 32 || c > 32) return null;
+  return { r, c };
+}
+
+function limited(key, max, windowMs) {
+  const now = Date.now();
+  const fresh = (hits.get(key) || []).filter((time) => now - time < windowMs);
+  if (fresh.length >= max) {
+    hits.set(key, fresh);
+    return true;
+  }
+  fresh.push(now);
+  hits.set(key, fresh);
+  return false;
+}
+
+io.use((socket, next) => {
+  const ip = socket.handshake.address || "unknown";
+  const count = connections.get(ip) || 0;
+  if (count >= 12) return next(new Error("Trop de connexions."));
+  connections.set(ip, count + 1);
+  socket.on("disconnect", () => {
+    const left = (connections.get(ip) || 1) - 1;
+    if (left <= 0) connections.delete(ip);
+    else connections.set(ip, left);
+  });
+  next();
+});
 
 function seatOf(room, playerId) {
   return room.players.findIndex((player) => player && player.id === playerId);
@@ -60,6 +136,8 @@ function clearForfeit(room, seat) {
 
 io.on("connection", (socket) => {
   socket.on("create", (payload = {}, ack) => {
+    if (rooms.size >= ROOM_LIMIT) return ack?.({ ok: false, error: "Le serveur est plein." });
+    if (limited(`${socket.id}:create`, 4, 60_000)) return ack?.({ ok: false, error: "Trop de salles créées." });
     const settings = normalizeSettings({ ...payload.settings, p1Name: payload.name });
     const code = makeRoomCode(rooms);
     const room = {
@@ -68,7 +146,7 @@ io.on("connection", (socket) => {
       game: null,
       players: [
         {
-          id: String(payload.playerId || socket.id),
+          id: safePlayerId(payload.playerId, socket.id),
           name: settings.p1Name,
           color: settings.p1Color,
           socketId: socket.id,
@@ -89,10 +167,11 @@ io.on("connection", (socket) => {
   });
 
   socket.on("join", (payload = {}, ack) => {
-    const code = String(payload.code || "").trim().toUpperCase();
-    const room = rooms.get(code);
+    if (limited(`${socket.id}:join`, 12, 60_000)) return ack?.({ ok: false, error: "Trop d'essais. Patiente un peu." });
+    const code = roomCode(payload.code);
+    const room = code ? rooms.get(code) : null;
     if (!room) return ack?.({ ok: false, error: "Salle introuvable." });
-    const existing = seatOf(room, payload.playerId);
+    const existing = seatOf(room, safePlayerId(payload.playerId, ""));
     if (existing >= 0) {
       attach(socket, room, existing, payload.playerId);
       ack?.({ ok: true, code });
@@ -109,7 +188,7 @@ io.on("connection", (socket) => {
       }
     }
     room.settings = { ...room.settings, p2Name: name, p2Color: color };
-    room.players[1] = { id: String(payload.playerId || socket.id), name, color, socketId: socket.id, connected: true };
+    room.players[1] = { id: safePlayerId(payload.playerId, socket.id), name, color, socketId: socket.id, connected: true };
     room.game = createGame(room.settings, 0);
     attach(socket, room, 1, room.players[1].id);
     ack?.({ ok: true, code });
@@ -117,8 +196,10 @@ io.on("connection", (socket) => {
   });
 
   socket.on("rejoin", (payload = {}, ack) => {
-    const room = rooms.get(String(payload.code || "").toUpperCase());
-    const seat = room ? seatOf(room, payload.playerId) : -1;
+    if (limited(`${socket.id}:join`, 12, 60_000)) return ack?.({ ok: false });
+    const code = roomCode(payload.code);
+    const room = code ? rooms.get(code) : null;
+    const seat = room ? seatOf(room, safePlayerId(payload.playerId, "")) : -1;
     if (!room || seat < 0) return ack?.({ ok: false });
     attach(socket, room, seat, payload.playerId);
     ack?.({ ok: true, code: room.code });
@@ -128,13 +209,15 @@ io.on("connection", (socket) => {
   socket.on("move", (move, ack) => {
     const room = rooms.get(socket.data.roomCode);
     const seat = room ? seatOf(room, socket.data.playerId) : -1;
+    const play = asMove(move);
     if (!room?.game || room.game.status !== "playing") return ack?.({ ok: false, error: "Partie inactive." });
     if (seat !== room.game.current) return ack?.({ ok: false, error: "Ce n'est pas votre tour." });
-    const result = applyMove(room.game, move);
+    if (!play) return ack?.({ ok: false, error: "Coup impossible." });
+    const result = applyMove(room.game, play);
     if (!result.ok) return ack?.({ ok: false, error: "Coup impossible." });
     room.rematch = [false, false];
     ack?.({ ok: true });
-    emitState(room, { type: "move", move, result });
+    emitState(room, { type: "move", move: play, result });
   });
 
   socket.on("abandon", () => {
@@ -195,12 +278,13 @@ io.on("connection", (socket) => {
 
 function attach(socket, room, seat, playerId) {
   clearForfeit(room, seat);
+  const id = safePlayerId(playerId, room.players[seat].id);
   room.players[seat].socketId = socket.id;
   room.players[seat].connected = true;
-  room.players[seat].id = String(playerId);
+  room.players[seat].id = id;
   socket.join(room.code);
   socket.data.roomCode = room.code;
-  socket.data.playerId = room.players[seat].id;
+  socket.data.playerId = id;
 }
 
 setInterval(() => {
@@ -223,9 +307,13 @@ setInterval(() => {
     const empty = room.players.every((player) => !player?.connected);
     if (empty && now - room.touched > 10 * 60 * 1000) rooms.delete(code);
   }
+  for (const [key, times] of hits) {
+    if (!times.some((time) => now - time < 60_000)) hits.delete(key);
+  }
 }, 200);
 
 const port = Number(process.env.PORT) || 4173;
-httpServer.listen(port, () => {
-  console.log(`Egmon Dots prêt sur http://localhost:${port}`);
+const host = process.env.HOST || "127.0.0.1";
+httpServer.listen(port, host, () => {
+  console.log(`Jeu - chimie prêt sur http://${host}:${port}`);
 });

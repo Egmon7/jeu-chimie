@@ -638,10 +638,16 @@ export function formatClock(ms) {
   return `${minutes}:${String(seconds).padStart(2, "0")}`;
 }
 
+const ROOM_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+
 export function makeRoomCode(reserved) {
+  const bytes = new Uint8Array(6);
   for (let i = 0; i < 20; i += 1) {
-    const code = `EGD-${Math.floor(1000 + Math.random() * 9000)}`;
+    crypto.getRandomValues(bytes);
+    let body = "";
+    for (const byte of bytes) body += ROOM_ALPHABET[byte % ROOM_ALPHABET.length];
+    const code = `EGD-${body}`;
     if (!reserved.has(code)) return code;
   }
-  return `EGD-${Date.now() % 10000}`;
+  return `EGD-${Date.now().toString(36).slice(-6).toUpperCase()}`;
 }

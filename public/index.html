@@ -14,7 +14,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,560;9..144,680&family=Outfit:wght@380;500;640&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="css/styles.css" onload="document.body.classList.add('ready')">
+  <link rel="stylesheet" href="css/styles.css">
 </head>
 <body data-theme="classic" data-page="home">
   <header class="topbar">
@@ -162,7 +162,6 @@
               <button type="button" data-value="blue" aria-label="Bleu" aria-pressed="true"></button>
               <button type="button" data-value="black" aria-label="Noir"></button>
               <button type="button" data-value="green" aria-label="Vert"></button>
-              <button type="button" data-value="purple" aria-label="Violet"></button>
               <button type="button" data-value="orange" aria-label="Orange"></button>
             </div>
           </fieldset>
@@ -173,7 +172,6 @@
               <button type="button" data-value="blue" aria-label="Bleu"></button>
               <button type="button" data-value="black" aria-label="Noir"></button>
               <button type="button" data-value="green" aria-label="Vert"></button>
-              <button type="button" data-value="purple" aria-label="Violet"></button>
               <button type="button" data-value="orange" aria-label="Orange"></button>
             </div>
           </fieldset>
@@ -214,14 +212,13 @@
         <form id="join-form" class="join">
           <h2>Rejoindre</h2>
           <label>Votre nom <input id="join-name" maxlength="18" value="Joueur 2" autocomplete="off" required></label>
-          <label>Code <input id="join-code" maxlength="8" placeholder="EGD-4821" autocapitalize="characters" required></label>
+          <label>Code <input id="join-code" maxlength="12" placeholder="EGD-K7MQ2P" autocapitalize="characters" required></label>
           <p class="hint">Votre couleur</p>
           <div class="swatches" data-field="joinColor">
             <button type="button" data-value="red" aria-label="Rouge" aria-pressed="true"></button>
             <button type="button" data-value="blue" aria-label="Bleu"></button>
             <button type="button" data-value="black" aria-label="Noir"></button>
             <button type="button" data-value="green" aria-label="Vert"></button>
-            <button type="button" data-value="purple" aria-label="Violet"></button>
             <button type="button" data-value="orange" aria-label="Orange"></button>
           </div>
           <button type="submit" class="btn primary">Rejoindre la salle</button>
@@ -330,6 +327,14 @@
       </div>
     </section>
   </main>
+  <div id="app-dialog" class="overlay page-dialog" hidden>
+    <div class="dialog">
+      <p class="eyebrow" id="app-dialog-kicker"></p>
+      <h2 id="app-dialog-title"></h2>
+      <p id="app-dialog-text"></p>
+      <div class="form-actions" id="app-dialog-actions"></div>
+    </div>
+  </div>
 
   <footer class="site-footer">created by Prospere Egmon</footer>
   <div id="toast" role="status"></div>

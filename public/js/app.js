@@ -25,6 +25,8 @@ import {
   saveProfile,
 } from "./storage.js";
 
+document.body.classList.add("ready");
+
 const DIFF_LABEL = {
   easy: "Facile",
   medium: "Moyen",
@@ -390,11 +392,69 @@ function startMatch(settings, mode) {
   app.board.clearAnims();
   show("screen-game");
   paintMatch();
-  app.tracing = false;
-  app.board?.setTracing(false);
-  hideOverlay();
+  showModeReminder();
   if (mode === "solo" && app.game.current === 1) queueAi();
   saveMatch();
+}
+
+function showModeReminder() {
+  app.tracing = false;
+  app.board?.setTracing(false);
+  const hand = app.game?.settings?.closeMode === "hand";
+  showOverlay({
+    kicker: hand ? "Dessiner seul" : "Le système",
+    title: hand ? "Tu dessines" : "Le système ferme",
+    text: hand
+      ? "Quand une maison est prête, touche son bord. Elle se ferme."
+      : "Les maisons se ferment toutes seules.",
+    actions: [{ label: "Compris", primary: true, on: hideOverlay }],
+  });
+}
+
+function revealMove(move) {
+  const stage = document.querySelector(".board-stage");
+  const board = app.board;
+  if (!stage || !board?.geom || !move) return;
+  const [x, y] = board.point(move.c, move.r);
+  const canvasRect = board.canvas.getBoundingClientRect();
+  const stageRect = stage.getBoundingClientRect();
+  const dotX = canvasRect.left + x - stageRect.left + stage.scrollLeft;
+  const dotY = canvasRect.top + y - stageRect.top + stage.scrollTop;
+  const margin = 56;
+  let nextTop = stage.scrollTop;
+  let nextLeft = stage.scrollLeft;
+  if (dotY < nextTop + margin) nextTop = dotY - margin;
+  else if (dotY > nextTop + stage.clientHeight - margin) nextTop = dotY - stage.clientHeight + margin;
+  if (dotX < nextLeft + margin) nextLeft = dotX - margin;
+  else if (dotX > nextLeft + stage.clientWidth - margin) nextLeft = dotX - stage.clientWidth + margin;
+  if (nextTop === stage.scrollTop && nextLeft === stage.scrollLeft) return;
+  stage.scrollTo({ top: Math.max(0, nextTop), left: Math.max(0, nextLeft), behavior: "smooth" });
+}
+
+function askDialog({ kicker, title, text, confirm, cancel, onYes }) {
+  $("app-dialog-kicker").textContent = kicker || "";
+  $("app-dialog-title").textContent = title;
+  $("app-dialog-text").textContent = text || "";
+  const box = $("app-dialog-actions");
+  box.replaceChildren();
+  const yes = document.createElement("button");
+  yes.type = "button";
+  yes.className = "btn primary";
+  yes.textContent = confirm || "Continuer";
+  yes.addEventListener("click", () => {
+    $("app-dialog").hidden = true;
+    onYes?.();
+  });
+  box.append(yes);
+  if (cancel) {
+    const no = document.createElement("button");
+    no.type = "button";
+    no.className = "btn";
+    no.textContent = cancel;
+    no.addEventListener("click", () => { $("app-dialog").hidden = true; });
+    box.append(no);
+  }
+  $("app-dialog").hidden = false;
 }
 
 function wantsTrace() {
@@ -442,7 +502,7 @@ function refreshHud() {
   const humanTurn = app.players[game.current]?.kind !== "ai";
   const attach = game.status === "playing" && game.settings.closeMode === "hand" && humanTurn && canCatch(game, game.current);
   if (attach) {
-    chip.textContent = "Glisse sur tes points autour des enfants.";
+    chip.textContent = "Touche le bord de la maison.";
     chip.classList.add("attach");
   } else {
     const houseRule = "1 point par maison. Encercler l’autre prend son point, et l’intérieur est fermé.";
@@ -556,6 +616,7 @@ function playLocal(move, fromTimeout) {
   if (result.eaten) popScore(1 - result.player);
   refreshHud();
   saveMatch();
+  revealMove(move);
   window.setTimeout(() => afterMove(), 230 + result.completed * 180);
 }
 
@@ -690,9 +751,7 @@ function rematch() {
   app.timeoutQueued = null;
   app.board.clearAnims();
   paintMatch();
-  app.tracing = false;
-  app.board?.setTracing(false);
-  hideOverlay();
+  showModeReminder();
   if (app.mode === "solo" && app.game.current === 1) queueAi();
   saveMatch();
 }
@@ -966,7 +1025,9 @@ function renderHistory() {
       minute: "2-digit",
     });
     const diff = item.difficulty ? ` · ${DIFF_LABEL[item.difficulty] || ""}` : "";
-    return `<article class="history-item"><div><strong>${result}</strong><span>${esc(item.size)} · ${modeLabel[item.mode] || ""}${esc(diff)}</span></div><div><b>${item.scores[0]} – ${item.scores[1]}</b><span>${esc(when)}</span></div></article>`;
+    const left = Number(item.scores?.[0]) || 0;
+    const right = Number(item.scores?.[1]) || 0;
+    return `<article class="history-item"><div><strong>${result}</strong><span>${esc(item.size)} · ${modeLabel[item.mode] || ""}${esc(diff)}</span></div><div><b>${left} – ${right}</b><span>${esc(when)}</span></div></article>`;
   }).join("");
 }
 
@@ -1014,9 +1075,36 @@ function bind() {
     });
   }
 
-  $("create-match").addEventListener("click", () => show("screen-modes"));
-  $("go-solo").addEventListener("click", () => openSetup("solo"));
-  $("go-local").addEventListener("click", () => openSetup("local"));
+  $("create-match").addEventListener("click", () => {
+    askDialog({
+      kicker: "Avant de jouer",
+      title: "Configure bien les paramètres",
+      text: "Regarde la feuille, le score, le temps et la façon d'encercler avant de lancer.",
+      confirm: "Continuer",
+      cancel: "Retour",
+      onYes: () => show("screen-modes"),
+    });
+  });
+  $("go-solo").addEventListener("click", () => {
+    askDialog({
+      kicker: "Confirmer",
+      title: "Partie solo",
+      text: "Tu joues contre un robot. Tu confirmes ce choix ?",
+      confirm: "Oui",
+      cancel: "Retour",
+      onYes: () => openSetup("solo"),
+    });
+  });
+  $("go-local").addEventListener("click", () => {
+    askDialog({
+      kicker: "Confirmer",
+      title: "Deux joueurs",
+      text: "Vous jouez à deux sur cet écran. Vous confirmez ?",
+      confirm: "Oui",
+      cancel: "Retour",
+      onYes: () => openSetup("local"),
+    });
+  });
   $("go-online").addEventListener("click", soon);
   $("go-tourney").addEventListener("click", soon);
   $("go-profile").addEventListener("click", openProfile);
@@ -1060,8 +1148,8 @@ function bind() {
   $("join-form").addEventListener("submit", (event) => {
     event.preventDefault();
     const code = $("join-code").value.trim().toUpperCase();
-    if (!/^EGD-\d{4}$/.test(code)) {
-      toast("Le code ressemble à EGD-4821.");
+    if (!/^EGD-[A-Z2-9]{6}$/.test(code)) {
+      toast("Le code ressemble à EGD-K7MQ2P.");
       return;
     }
     joinRoom(code, readGroup("joinColor"));
@@ -1122,7 +1210,7 @@ function bind() {
       return;
     }
     if (!loop) {
-      toast("Glisse sur tes points et reviens au premier.");
+      toast("Glisse jusqu'à toucher le trait.");
       syncTrace();
       return;
     }

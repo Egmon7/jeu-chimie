@@ -27,9 +27,12 @@ const guestStates = [];
 host.on("state", (state) => hostStates.push(state));
 guest.on("state", (state) => guestStates.push(state));
 
+const hostId = crypto.randomUUID();
+const guestId = crypto.randomUUID();
+
 const created = await new Promise((resolve) => {
   host.emit("create", {
-    playerId: "ada",
+    playerId: hostId,
     name: "Ada",
     settings: {
       rows: 2,
@@ -42,10 +45,10 @@ const created = await new Promise((resolve) => {
     },
   }, resolve);
 });
-assert(created.ok && /^EGD-\d{4}$/.test(created.code), "code de salle");
+assert(created.ok && /^EGD-[A-Z2-9]{6}$/.test(created.code), "code de salle");
 
 const joined = await new Promise((resolve) => {
-  guest.emit("join", { playerId: "blaise", name: "Blaise", code: created.code, color: "green" }, resolve);
+  guest.emit("join", { playerId: guestId, name: "Blaise", code: created.code, color: "green" }, resolve);
 });
 assert(joined.ok, joined.error || "rejoindre");
 

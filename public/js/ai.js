@@ -303,10 +303,19 @@ function searchRoot(game, player, profile) {
   return best || legalMoves(game)[0] || null;
 }
 
+function easyChoice(game) {
+  const player = game.current;
+  const win = winningMoves(game, player)[0];
+  if (win) return win.move;
+  const near = byBuild(game, player).slice(0, 5);
+  if (near.length) return pick(near);
+  return pick(legalMoves(game));
+}
+
 export function chooseMove(game, difficulty = "medium") {
   const moves = legalMoves(game);
   if (!moves.length || game.status !== "playing") return null;
-  if (difficulty === "easy") return pick(moves);
+  if (difficulty === "easy") return easyChoice(game);
 
   const profile = PROFILE[difficulty] || PROFILE.medium;
   const player = game.current;

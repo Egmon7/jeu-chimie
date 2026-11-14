@@ -181,7 +181,6 @@ input[type="number"], input[type="text"], input[type="email"], #join-code, #join
 .swatches button[data-value="blue"] { background: #2f6fed; }
 .swatches button[data-value="black"] { background: #1a1a1a; }
 .swatches button[data-value="green"] { background: #1f9d57; }
-.swatches button[data-value="purple"] { background: #7b3ff2; }
 .swatches button[data-value="orange"] { background: #f0741a; }
 .swatches button[aria-pressed="true"] { outline: 2px solid var(--ink); outline-offset: 3px; }
 .swatches button:disabled, .choices button:disabled { opacity: 0.28; cursor: not-allowed; outline: none; }
@@ -325,6 +324,8 @@ body[data-page="play"] #screen-game {
   border-radius: 10px;
   background: rgba(196, 73, 44, 0.12);
 }
+.overlay.page-dialog { position: fixed; z-index: 30; }
+#app-dialog-text { white-space: pre-line; color: var(--muted); }
 .overlay {
   position: absolute;
   inset: 0;

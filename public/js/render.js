@@ -153,6 +153,15 @@ export class BoardView {
     return this.game.dots[hit.r]?.[hit.c] === player && this.game.framed[hit.r][hit.c] == null;
   }
 
+  loopUnder(hit) {
+    if (!hit || !this.game) return null;
+    const matches = catchLoops(this.game, this.game.current)
+      .filter((loop) => loop.some((dot) => dot.r === hit.r && dot.c === hit.c));
+    if (!matches.length) return null;
+    matches.sort((a, b) => a.length - b.length);
+    return matches[0];
+  }
+
   hitOwn(x, y) {
     const game = this.game;
     if (!game || !this.geom) return null;
@@ -180,16 +189,40 @@ export class BoardView {
       return;
     }
     if (last.r === hit.r && last.c === hit.c) return;
-    const start = this.trace[0];
-    if (this.trace.length >= 4 && hit.r === start.r && hit.c === start.c) return;
     const walked = this.walkOwn(last, hit);
     if (!walked) return;
     for (const dot of walked) {
       const prev = this.trace[this.trace.length - 1];
       if (prev.r === dot.r && prev.c === dot.c) continue;
-      if (this.trace.length >= 4 && dot.r === start.r && dot.c === start.c) return;
       this.trace.push(dot);
+      if (this.sealTrace()) return;
     }
+  }
+
+  closedLoop(trace) {
+    if (!trace || trace.length < 4) return null;
+    const last = trace[trace.length - 1];
+    for (let i = 0; i <= trace.length - 4; i += 1) {
+      const dot = trace[i];
+      if (dot.r === last.r && dot.c === last.c) {
+        const loop = trace.slice(i, -1);
+        if (loop.length >= 4) return loop;
+        continue;
+      }
+      const step = Math.max(Math.abs(dot.r - last.r), Math.abs(dot.c - last.c));
+      if (step === 1) return trace.slice(i);
+    }
+    return null;
+  }
+
+  sealTrace() {
+    const loop = this.closedLoop(this.trace);
+    if (!loop) return false;
+    this.traceId = null;
+    this.trace = [];
+    this.traceFault = false;
+    this.onTrace(loop, false);
+    return true;
   }
 
   walkOwn(from, to) {
@@ -237,10 +270,8 @@ export class BoardView {
     this.trace = [];
     this.traceFault = false;
     if (!trace.length) return;
-    const start = trace[0];
-    const last = trace[trace.length - 1];
-    const closed = trace.length >= 4 && Math.max(Math.abs(last.r - start.r), Math.abs(last.c - start.c)) <= 1;
-    this.onTrace(closed && !fault ? trace : null, fault);
+    const loop = this.closedLoop(trace);
+    this.onTrace(loop, !loop && fault);
   }
 
   onPointer(event) {
@@ -249,6 +280,13 @@ export class BoardView {
       const hit = this.hitOwn(event.clientX - rect.left, event.clientY - rect.top);
       if (event.type === "pointerdown") {
         event.preventDefault();
+        const house = this.loopUnder(hit);
+        if (house) {
+          this.traceId = null;
+          this.trace = [];
+          this.onTrace(house, false);
+          return;
+        }
         this.traceId = event.pointerId;
         this.trace = [];
         this.traceFault = false;

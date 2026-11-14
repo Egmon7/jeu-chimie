@@ -13,7 +13,7 @@ function almostSurrounded() {
   return game;
 }
 
-for (const level of ["medium", "hard", "veryhard", "expert"]) {
+for (const level of ["easy", "medium", "hard", "veryhard", "expert"]) {
   const move = chooseMove(almostSurrounded(), level);
   assert(move && move.r === 2 && move.c === 2, `${level} ferme le contour`);
 }
