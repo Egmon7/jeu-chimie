@@ -153,15 +153,6 @@ export class BoardView {
     return this.game.dots[hit.r]?.[hit.c] === player && this.game.framed[hit.r][hit.c] == null;
   }
 
-  loopUnder(hit) {
-    if (!hit || !this.game) return null;
-    const matches = catchLoops(this.game, this.game.current)
-      .filter((loop) => loop.some((dot) => dot.r === hit.r && dot.c === hit.c));
-    if (!matches.length) return null;
-    matches.sort((a, b) => a.length - b.length);
-    return matches[0];
-  }
-
   hitOwn(x, y) {
     const game = this.game;
     if (!game || !this.geom) return null;
@@ -280,13 +271,6 @@ export class BoardView {
       const hit = this.hitOwn(event.clientX - rect.left, event.clientY - rect.top);
       if (event.type === "pointerdown") {
         event.preventDefault();
-        const house = this.loopUnder(hit);
-        if (house) {
-          this.traceId = null;
-          this.trace = [];
-          this.onTrace(house, false);
-          return;
-        }
         this.traceId = event.pointerId;
         this.trace = [];
         this.traceFault = false;

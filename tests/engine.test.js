@@ -201,6 +201,15 @@ gapRing.current = 0;
 const gapClose = applyMove(gapRing, { r: edge.at(-1)[0], c: edge.at(-1)[1] });
 assert(gapClose.completed === 0 && enclosures(gapRing).length === 0, "un trou d'une case ne trace pas un trait sur deux cases");
 
+const gemGame = createGame({ rows: 8, cols: 8, extraTurn: false, timeMode: "none" });
+gemGame.dots[3][3] = 1;
+const gem = [[1, 3], [2, 2], [2, 4], [3, 1], [3, 5], [4, 2], [4, 4]];
+for (const [r, c] of gem) gemGame.dots[r][c] = 0;
+gemGame.current = 0;
+const gemClose = applyMove(gemGame, { r: 5, c: 3 });
+assert(gemClose.completed === 1 && gemGame.scores[0] === 1, "un losange en diagonale se ferme");
+assert(!legalMoves(gemGame).some((move) => move.r === 3 && move.c === 2), "l'intérieur du losange est fermé");
+
 const spur = createGame({ rows: 4, cols: 4, extraTurn: false, timeMode: "none" });
 spur.dots[2][2] = 1;
 spur.dots[1][2] = 0;

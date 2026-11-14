@@ -13,6 +13,16 @@ import {
   normalizeSettings,
   tick,
 } from "../public/js/engine.js";
+import {
+  clearGames,
+  dbReady,
+  initDb,
+  insertGame,
+  isUuid,
+  listGames,
+  readProfile,
+  upsertProfile,
+} from "./db.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -52,7 +62,77 @@ app.use((req, res, next) => {
   ].join("; "));
   next();
 });
+app.use(express.json({ limit: "8kb" }));
 app.use(express.static(path.join(__dirname, "../public"), { dotfiles: "ignore" }));
+
+function api(handler) {
+  return (req, res) => {
+    Promise.resolve(handler(req, res)).catch(() => {
+      if (!res.headersSent) res.status(500).json({ error: "Base indisponible." });
+    });
+  };
+}
+
+function apiPlayer(req, res) {
+  const id = String(req.params.id || "");
+  if (!isUuid(id)) {
+    res.status(400).json({ error: "Joueur inconnu." });
+    return "";
+  }
+  if (!dbReady()) {
+    res.status(503).json({ error: "Base indisponible." });
+    return "";
+  }
+  if (limited(`${req.ip}:api`, 40, 60_000)) {
+    res.status(429).json({ error: "Trop d'essais." });
+    return "";
+  }
+  return id;
+}
+
+app.get("/api/profile/:id", api(async (req, res) => {
+  const id = apiPlayer(req, res);
+  if (!id) return;
+  const profile = await readProfile(id);
+  res.json(profile || { name: "", email: "" });
+}));
+
+app.put("/api/profile/:id", api(async (req, res) => {
+  const id = apiPlayer(req, res);
+  if (!id) return;
+  const name = String(req.body?.name || "").trim().slice(0, 40);
+  const email = String(req.body?.email || "").trim().slice(0, 80);
+  if (!name || (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))) {
+    res.status(400).json({ error: "Nom ou e-mail invalide." });
+    return;
+  }
+  res.json(await upsertProfile({ id, name, email }));
+}));
+
+app.get("/api/games/:id", api(async (req, res) => {
+  const id = apiPlayer(req, res);
+  if (!id) return;
+  res.json(await listGames(id));
+}));
+
+app.post("/api/games/:id", api(async (req, res) => {
+  const id = apiPlayer(req, res);
+  if (!id) return;
+  const entry = req.body || {};
+  if (!isUuid(entry.id) || !Array.isArray(entry.names) || !Array.isArray(entry.scores)) {
+    res.status(400).json({ error: "Partie invalide." });
+    return;
+  }
+  await insertGame(id, entry);
+  res.json({ ok: true });
+}));
+
+app.delete("/api/games/:id", api(async (req, res) => {
+  const id = apiPlayer(req, res);
+  if (!id) return;
+  await clearGames(id);
+  res.json({ ok: true });
+}));
 
 function roomCode(value) {
   const code = String(value || "").trim().toUpperCase();
@@ -314,6 +394,14 @@ setInterval(() => {
 
 const port = Number(process.env.PORT) || 4173;
 const host = process.env.HOST || "127.0.0.1";
-httpServer.listen(port, host, () => {
-  console.log(`Jeu - chimie prêt sur http://${host}:${port}`);
-});
+
+initDb()
+  .catch((error) => {
+    console.error("Base indisponible:", error.message);
+  })
+  .finally(() => {
+    httpServer.listen(port, host, () => {
+      const base = dbReady() ? "avec la base" : "sans base, profil dans le navigateur";
+      console.log(`Jeu - chimie prêt sur http://${host}:${port} ${base}`);
+    });
+  });

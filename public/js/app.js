@@ -21,6 +21,7 @@ import {
   loadProfile,
   playerId,
   pushHistory,
+  replaceHistory,
   savePrefs,
   saveProfile,
 } from "./storage.js";
@@ -109,7 +110,9 @@ function show(id, historyMode = "push") {
     const profile = loadProfile();
     $("profile-name").value = profile.name;
     $("profile-email").value = profile.email;
+    pullProfile();
   }
+  if (id === "screen-history") pullHistory();
   if (historyMode === "skip") return;
   const url = page === "home"
     ? `${location.pathname}${location.search}`
@@ -405,7 +408,7 @@ function showModeReminder() {
     kicker: hand ? "Dessiner seul" : "Le système",
     title: hand ? "Tu dessines" : "Le système ferme",
     text: hand
-      ? "Quand une maison est prête, touche son bord. Elle se ferme."
+      ? "Quand une maison est prête, glisse sur tes points pour la fermer."
       : "Les maisons se ferment toutes seules.",
     actions: [{ label: "Compris", primary: true, on: hideOverlay }],
   });
@@ -431,20 +434,38 @@ function revealMove(move) {
   stage.scrollTo({ top: Math.max(0, nextTop), left: Math.max(0, nextLeft), behavior: "smooth" });
 }
 
-function askDialog({ kicker, title, text, confirm, cancel, onYes }) {
+function askDialog({ kicker, title, text, confirm, cancel, field, onYes }) {
   $("app-dialog-kicker").textContent = kicker || "";
   $("app-dialog-title").textContent = title;
   $("app-dialog-text").textContent = text || "";
+  const input = $("app-dialog-input");
+  $("app-dialog-field").hidden = !field;
+  if (field) {
+    input.value = field.value || "";
+    input.placeholder = field.placeholder || "Ton nom";
+  }
   const box = $("app-dialog-actions");
   box.replaceChildren();
   const yes = document.createElement("button");
   yes.type = "button";
   yes.className = "btn primary";
   yes.textContent = confirm || "Continuer";
-  yes.addEventListener("click", () => {
+  const closeYes = () => {
+    if (field) {
+      const value = input.value.trim();
+      if (!value) {
+        toast("Écris ton nom de profil.");
+        input.focus();
+        return;
+      }
+      $("app-dialog").hidden = true;
+      onYes?.(value);
+      return;
+    }
     $("app-dialog").hidden = true;
     onYes?.();
-  });
+  };
+  yes.addEventListener("click", closeYes);
   box.append(yes);
   if (cancel) {
     const no = document.createElement("button");
@@ -454,7 +475,16 @@ function askDialog({ kicker, title, text, confirm, cancel, onYes }) {
     no.addEventListener("click", () => { $("app-dialog").hidden = true; });
     box.append(no);
   }
+  input.onkeydown = field
+    ? (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        closeYes();
+      }
+    }
+    : null;
   $("app-dialog").hidden = false;
+  if (field) input.focus();
 }
 
 function wantsTrace() {
@@ -502,7 +532,7 @@ function refreshHud() {
   const humanTurn = app.players[game.current]?.kind !== "ai";
   const attach = game.status === "playing" && game.settings.closeMode === "hand" && humanTurn && canCatch(game, game.current);
   if (attach) {
-    chip.textContent = "Touche le bord de la maison.";
+    chip.textContent = "Glisse sur tes points autour des enfants.";
     chip.classList.add("attach");
   } else {
     const houseRule = "1 point par maison. Encercler l’autre prend son point, et l’intérieur est fermé.";
@@ -681,12 +711,65 @@ function onTurnTimeout() {
   playLocal(moves[Math.floor(Math.random() * moves.length)], true);
 }
 
+async function sendJson(url, method, body) {
+  const res = await fetch(url, {
+    method,
+    headers: body ? { "Content-Type": "application/json" } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!res.ok) return null;
+  return res.json();
+}
+
+function syncProfile(profile) {
+  sendJson(`/api/profile/${playerId()}`, "PUT", profile).catch(() => {});
+}
+
+async function pullProfile() {
+  try {
+    const profile = await sendJson(`/api/profile/${playerId()}`, "GET");
+    if (!profile) return;
+    const local = loadProfile();
+    if (!profile.name && local.name) {
+      syncProfile(local);
+      return;
+    }
+    if (!profile.name) return;
+    saveProfile(profile);
+    if (!$("screen-profile").hidden) {
+      $("profile-name").value = profile.name;
+      $("profile-email").value = profile.email || "";
+    }
+  } catch {
+    /* le profil reste dans le navigateur */
+  }
+}
+
+function syncGame(entry) {
+  sendJson(`/api/games/${playerId()}`, "POST", entry).catch(() => {});
+}
+
+async function pullHistory() {
+  try {
+    const games = await sendJson(`/api/games/${playerId()}`, "GET");
+    if (!Array.isArray(games)) return;
+    if (!games.length) {
+      loadHistory().forEach((entry) => syncGame(entry));
+      return;
+    }
+    replaceHistory(games);
+    if (!$("screen-history").hidden) renderHistory();
+  } catch {
+    /* l'historique reste dans le navigateur */
+  }
+}
+
 function recordGame() {
   if (app.recorded || !app.game) return;
   app.recorded = true;
   const game = app.game;
   const userSeat = app.mode === "local" ? null : app.mode === "online" ? app.seat : 0;
-  pushHistory({
+  const entry = {
     id: crypto.randomUUID(),
     at: Date.now(),
     mode: app.mode,
@@ -697,7 +780,9 @@ function recordGame() {
     userSeat,
     reason: game.reason,
     difficulty: app.mode === "solo" ? app.prefs.difficulty : null,
-  });
+  };
+  pushHistory(entry);
+  syncGame(entry);
   if (game.winner === "draw") app.sounds.tap();
   else if (userSeat == null || game.winner === userSeat) app.sounds.win();
   else app.sounds.lose();
@@ -1076,13 +1161,31 @@ function bind() {
   }
 
   $("create-match").addEventListener("click", () => {
-    askDialog({
+    const profile = loadProfile();
+    const next = () => askDialog({
       kicker: "Avant de jouer",
       title: "Configure bien les paramètres",
       text: "Regarde la feuille, le score, le temps et la façon d'encercler avant de lancer.",
       confirm: "Continuer",
       cancel: "Retour",
       onYes: () => show("screen-modes"),
+    });
+    if (profile.name) {
+      next();
+      return;
+    }
+    askDialog({
+      kicker: "Profil",
+      title: "Votre nom de profil",
+      text: "Ce nom est le tien. Il est gardé pour tes prochaines parties.",
+      confirm: "Continuer",
+      cancel: "Retour",
+      field: { value: "", placeholder: "Ton nom" },
+      onYes: (name) => {
+        const saved = saveProfile({ name, email: profile.email });
+        syncProfile(saved);
+        next();
+      },
     });
   });
   $("go-solo").addEventListener("click", () => {
@@ -1125,6 +1228,7 @@ function bind() {
       return;
     }
     saveProfile({ name, email });
+    syncProfile({ name, email });
     toast("Profil enregistré.");
   });
   $("setup-form").addEventListener("submit", (event) => {
@@ -1190,6 +1294,7 @@ function bind() {
   });
   $("clear-history").addEventListener("click", () => {
     clearHistory();
+    sendJson(`/api/games/${playerId()}`, "DELETE").catch(() => {});
     renderHistory();
   });
 

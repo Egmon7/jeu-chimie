@@ -393,9 +393,116 @@ export function canCatch(game, player) {
   return catchLoops(game, player).length > 0;
 }
 
+function bend(prev, cur, next) {
+  const ic = cur.c - prev.c;
+  const ir = cur.r - prev.r;
+  const oc = next.c - cur.c;
+  const orr = next.r - cur.r;
+  return Math.atan2(ic * orr - ir * oc, ic * oc + ir * orr);
+}
+
+function walkFace(start, second, adj) {
+  const key = (dot) => `${dot.r},${dot.c}`;
+  const loop = [start];
+  let prev = start;
+  let cur = second;
+  const guard = adj.size + 2;
+  for (let n = 0; n < guard; n += 1) {
+    if (n > 0 && cur.r === start.r && cur.c === start.c) return loop.length >= 4 ? loop : [];
+    const options = (adj.get(key(cur)) || []).filter((dot) => dot.r !== prev.r || dot.c !== prev.c);
+    if (!options.length) return [];
+    options.sort((a, b) => bend(prev, cur, a) - bend(prev, cur, b));
+    loop.push(cur);
+    prev = cur;
+    cur = options[0];
+  }
+  return [];
+}
+
+function faceLoops(dots) {
+  if (dots.length < 4) return [];
+  const adj = new Map();
+  for (const dot of dots) adj.set(`${dot.r},${dot.c}`, []);
+  for (let i = 0; i < dots.length; i += 1) {
+    for (let j = i + 1; j < dots.length; j += 1) {
+      if (loopStep(dots[i], dots[j]) !== 1) continue;
+      adj.get(`${dots[i].r},${dots[i].c}`).push(dots[j]);
+      adj.get(`${dots[j].r},${dots[j].c}`).push(dots[i]);
+    }
+  }
+  const found = [];
+  const seen = new Set();
+  for (const start of dots) {
+    for (const second of adj.get(`${start.r},${start.c}`)) {
+      const loop = walkFace(start, second, adj);
+      if (!attachedLoop(loop)) continue;
+      const key = houseKey(loop);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      found.push(loop);
+    }
+  }
+  found.sort((a, b) => {
+    const area = (loop) => {
+      let sum = 0;
+      for (let i = 0; i < loop.length; i += 1) {
+        const p = loop[i];
+        const q = loop[(i + 1) % loop.length];
+        sum += p.c * q.r - q.c * p.r;
+      }
+      return Math.abs(sum);
+    };
+    return area(a) - area(b);
+  });
+  return found;
+}
+
 function newHouses(game, player) {
   const found = [];
   const seen = new Set((game.houses || []).filter((house) => house.alive && house.owner === player).map((house) => house.key));
+  const dots = [];
+  for (let r = 0; r <= game.rows; r += 1) {
+    for (let c = 0; c <= game.cols; c += 1) {
+      if (game.dots[r][c] === player && game.framed[r][c] == null) dots.push({ r, c });
+    }
+  }
+  const traced = new Map();
+  for (const loop of faceLoops(dots)) {
+    let minR = loop[0].r;
+    let maxR = loop[0].r;
+    let minC = loop[0].c;
+    let maxC = loop[0].c;
+    for (const dot of loop) {
+      minR = Math.min(minR, dot.r);
+      maxR = Math.max(maxR, dot.r);
+      minC = Math.min(minC, dot.c);
+      maxC = Math.max(maxC, dot.c);
+    }
+    const children = [];
+    const cells = [];
+    for (let r = minR; r <= maxR; r += 1) {
+      for (let c = minC; c <= maxC; c += 1) {
+        if (!strictlyInside(loop, r, c)) continue;
+        cells.push({ r, c });
+        const color = game.dots[r][c];
+        if (color != null && color !== player && game.framed[r][c] == null) children.push({ r, c });
+      }
+    }
+    if (!children.length) continue;
+    const key = houseKey(children);
+    const prev = traced.get(key);
+    if (!prev || loop.length > prev.loop.length) traced.set(key, { loop, children, key, cells });
+  }
+  const tracedHouses = [...traced.values()].sort((a, b) => a.loop.length - b.loop.length);
+  const claimed = new Set();
+  for (const house of tracedHouses) {
+    if (seen.has(house.key)) continue;
+    if (house.children.every((kid) => claimed.has(`${kid.r},${kid.c}`))) continue;
+    if (house.children.some((kid) => claimed.has(`${kid.r},${kid.c}`))) continue;
+    for (const kid of house.children) claimed.add(`${kid.r},${kid.c}`);
+    seen.add(house.key);
+    found.push(house);
+  }
   for (const region of interiorRegions(game, player)) {
     const loop = loopAround(game, player, region.cells);
     if (loop.length < 4) continue;

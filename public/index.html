@@ -89,8 +89,8 @@
         <fieldset>
           <legend>Encerclement</legend>
           <div class="choices" data-field="closeMode">
-            <button type="button" data-value="hand">Dessiner seul<small>Vous tracez la maison</small></button>
             <button type="button" data-value="auto" aria-pressed="true">Laisser le système<small>La maison se ferme seule</small></button>
+            <button type="button" data-value="hand">Dessiner seul<small>Vous tracez la maison</small></button>
           </div>
         </fieldset>
 
@@ -332,6 +332,9 @@
       <p class="eyebrow" id="app-dialog-kicker"></p>
       <h2 id="app-dialog-title"></h2>
       <p id="app-dialog-text"></p>
+      <label id="app-dialog-field" hidden>Votre nom de profil
+        <input id="app-dialog-input" type="text" maxlength="40" autocomplete="name" placeholder="Ton nom">
+      </label>
       <div class="form-actions" id="app-dialog-actions"></div>
     </div>
   </div>

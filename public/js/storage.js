@@ -60,12 +60,17 @@ export function clearHistory() {
   write(data);
 }
 
+export function replaceHistory(entries) {
+  const data = read();
+  data.history = Array.isArray(entries) ? entries.slice(0, 40) : [];
+  write(data);
+  return data.history;
+}
+
 export function playerId() {
   const key = "egmon-player-id";
-  let id = sessionStorage.getItem(key);
-  if (!id) {
-    id = crypto.randomUUID();
-    sessionStorage.setItem(key, id);
-  }
+  let id = localStorage.getItem(key) || sessionStorage.getItem(key);
+  if (!id) id = crypto.randomUUID();
+  localStorage.setItem(key, id);
   return id;
 }

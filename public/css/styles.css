@@ -324,8 +324,19 @@ body[data-page="play"] #screen-game {
   border-radius: 10px;
   background: rgba(196, 73, 44, 0.12);
 }
-.overlay.page-dialog { position: fixed; z-index: 30; }
-#app-dialog-text { white-space: pre-line; color: var(--muted); }
+.overlay.page-dialog { position: fixed; z-index: 30; background: rgba(8, 12, 12, 0.62); }
+.overlay.page-dialog .dialog {
+  background: #1c2a29;
+  color: #f4f6f8;
+  border: 1px solid #2a3a3a;
+  box-shadow: none;
+}
+.overlay.page-dialog .btn { color: #f4f6f8; border-color: #2a3a3a; background: #1c2a29; }
+.overlay.page-dialog .btn.primary { background: #f2f4f7; color: #0e1616; border-color: transparent; }
+#app-dialog-text { white-space: pre-line; color: #9aa8ba; }
+#app-dialog-field { text-align: left; color: #9aa8ba; }
+#app-dialog-field input { background: #f4f6f8; color: #0e1616; border: 0; }
+#app-dialog .form-actions { justify-content: center; }
 .overlay {
   position: absolute;
   inset: 0;

@@ -1,12 +1,36 @@
 services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: jeu-chimie-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: jeu
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-jeu_local_only}
+      POSTGRES_DB: jeu_chimie
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - jeu_chimie_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U jeu -d jeu_chimie"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   jeu-chimie:
     build: .
     container_name: jeu-chimie
     restart: unless-stopped
-
+    depends_on:
+      postgres:
+        condition: service_healthy
     ports:
       - "127.0.0.1:4173:4173"
-
     environment:
       NODE_ENV: production
       PORT: 4173
+      HOST: 0.0.0.0
+      DATABASE_URL: postgres://jeu:${POSTGRES_PASSWORD:-jeu_local_only}@postgres:5432/jeu_chimie
+
+volumes:
+  jeu_chimie_pg:
