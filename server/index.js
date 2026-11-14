@@ -22,6 +22,7 @@ import {
   isUuid,
   listGames,
   ranking,
+  progressOf,
   readProfile,
   upsertProfile,
 } from "./db.js";
@@ -129,6 +130,19 @@ app.get("/api/ranking", api(async (req, res) => {
   }
   const player = isUuid(req.query.player) ? req.query.player : null;
   res.json(await ranking(player));
+}));
+
+app.get("/api/progress", api(async (req, res) => {
+  if (!dbReady()) {
+    res.status(503).json({ error: "Base indisponible." });
+    return;
+  }
+  const player = isUuid(req.query.player) ? req.query.player : null;
+  if (!player) {
+    res.json({ name: "", xp: 0, houses: 0, best: 0, games: 0, wins: 0, expertWins: 0 });
+    return;
+  }
+  res.json(await progressOf(player));
 }));
 
 app.get("/api/games/:id", api(async (req, res) => {

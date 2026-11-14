@@ -156,6 +156,53 @@ export async function insertMessage({ name, body }) {
   );
 }
 
+export async function progressOf(playerId) {
+  const { rows } = await pool.query(
+    `WITH per_game AS (
+       SELECT
+         (CASE
+            WHEN jsonb_typeof(g.scores) = 'array' THEN g.scores ->> g.user_seat
+            ELSE g.scores ->> g.user_seat::text
+          END)::int AS houses,
+         CASE g.difficulty
+           WHEN 'easy' THEN 2 WHEN 'medium' THEN 3 WHEN 'hard' THEN 5
+           WHEN 'veryhard' THEN 7 WHEN 'expert' THEN 10 ELSE 3
+         END AS per_house,
+         CASE WHEN g.winner = g.user_seat::text THEN 15 ELSE 0 END AS win_bonus
+       FROM games g
+       WHERE g.player_id = $1
+         AND g.mode = 'solo'
+         AND g.user_seat = 0
+         AND (CASE
+            WHEN jsonb_typeof(g.scores) = 'array' THEN g.scores ->> g.user_seat
+            ELSE g.scores ->> g.user_seat::text
+          END) ~ '^[0-9]+$'
+     )
+     SELECT COALESCE(p.name, '') AS name,
+       COALESCE(SUM(20 + houses * per_house + win_bonus), 0)::int AS xp,
+       COALESCE(SUM(houses), 0)::int AS houses,
+       COALESCE(MAX(houses), 0)::int AS best,
+       COUNT(houses)::int AS games,
+       COALESCE(SUM(CASE WHEN win_bonus > 0 THEN 1 ELSE 0 END), 0)::int AS wins,
+       COALESCE(SUM(CASE WHEN win_bonus > 0 AND per_house = 10 THEN 1 ELSE 0 END), 0)::int AS expert_wins
+     FROM (SELECT $1::uuid AS id) me
+     LEFT JOIN profiles p ON p.id = me.id
+     LEFT JOIN per_game ON true
+     GROUP BY p.name`,
+    [playerId],
+  );
+  const row = rows[0] || {};
+  return {
+    name: row.name || "",
+    xp: Number(row.xp) || 0,
+    houses: Number(row.houses) || 0,
+    best: Number(row.best) || 0,
+    games: Number(row.games) || 0,
+    wins: Number(row.wins) || 0,
+    expertWins: Number(row.expert_wins) || 0,
+  };
+}
+
 export async function ranking(playerId) {
   const { rows } = await pool.query(
     `WITH per_game AS (

@@ -113,7 +113,7 @@ function show(id, historyMode = "push") {
     fillProfileForm(loadProfile());
     pullProfile();
   }
-  if (id === "screen-progress") loadRanking();
+  if (id === "screen-progress") loadProgress();
   if (id === "screen-rank") loadRanking();
   if (id === "screen-badges") renderBadgeCatalog();
   if (id === "screen-history") pullHistory();
@@ -547,8 +547,46 @@ function renderBadgeCatalog() {
 async function loadRanking() {
   const rows = await sendJson(`/api/ranking?player=${encodeURIComponent(playerId())}`, "GET");
   const list = Array.isArray(rows) ? rows : null;
-  if (!$("screen-progress").hidden) renderProgress(list);
   if (!$("screen-rank").hidden) renderBoard(list);
+}
+
+function progressFromHistory(games) {
+  const perHouse = { easy: 2, medium: 3, hard: 5, veryhard: 7, expert: 10 };
+  const stats = { xp: 0, houses: 0, best: 0, games: 0, wins: 0, expertWins: 0 };
+  for (const game of games || []) {
+    if (game.mode !== "solo" || Number(game.userSeat) !== 0) continue;
+    const houses = Number(Array.isArray(game.scores) ? game.scores[0] : game.scores?.[0]);
+    if (!Number.isFinite(houses)) continue;
+    const per = perHouse[game.difficulty] || 3;
+    const win = String(game.winner) === "0" ? 15 : 0;
+    stats.xp += 20 + houses * per + win;
+    stats.houses += houses;
+    stats.best = Math.max(stats.best, houses);
+    stats.games += 1;
+    if (win) stats.wins += 1;
+    if (win && per === 10) stats.expertWins += 1;
+  }
+  return stats;
+}
+
+function loadProgress() {
+  const local = progressFromHistory(loadHistory());
+  renderProgress([{ ...local, you: true, name: loadProfile().name || "Toi" }]);
+  sendJson(`/api/progress?player=${encodeURIComponent(playerId())}`, "GET").then((row) => {
+    if (!$("screen-progress").hidden && row && typeof row.xp === "number") {
+      renderProgress([{
+        ...local,
+        xp: row.xp,
+        houses: row.houses,
+        best: row.best,
+        games: row.games,
+        wins: row.wins,
+        expertWins: row.expertWins,
+        you: true,
+        name: row.name || loadProfile().name || "Toi",
+      }]);
+    }
+  }).catch(() => {});
 }
 
 function openProfile() {
@@ -1599,6 +1637,7 @@ function bind() {
       onYes: () => openSetup("local"),
     });
   });
+  $("go-online").addEventListener("click", () => show("screen-online"));
   $("go-account").addEventListener("click", openProfile);
   $("go-progress").addEventListener("click", openProgress);
   $("go-badges").addEventListener("click", openBadges);
