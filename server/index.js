@@ -21,6 +21,7 @@ import {
   insertMessage,
   isUuid,
   listGames,
+  ranking,
   readProfile,
   upsertProfile,
 } from "./db.js";
@@ -55,8 +56,8 @@ app.use((req, res, next) => {
     "script-src 'self'",
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
     "font-src 'self' https://fonts.gstatic.com",
-    "img-src 'self' data:",
-    "connect-src 'self'",
+    "img-src 'self' data: https://res.cloudinary.com",
+    "connect-src 'self' https://api.cloudinary.com",
     "frame-ancestors 'none'",
     "base-uri 'self'",
     "form-action 'self'",
@@ -107,7 +108,27 @@ app.put("/api/profile/:id", api(async (req, res) => {
     res.status(400).json({ error: "Nom ou e-mail invalide." });
     return;
   }
-  res.json(await upsertProfile({ id, name, email }));
+  const icon = ["dot", "house", "star", "crown", "pen", "book", "flame", "gem"].includes(req.body?.icon)
+    ? req.body.icon
+    : null;
+  const rawPhoto = String(req.body?.photo || "");
+  const photo = /^https:\/\/res\.cloudinary\.com\/ka4h4lpk\/image\/upload\/[A-Za-z0-9_./%-]{1,360}$/.test(rawPhoto)
+    ? rawPhoto
+    : null;
+  res.json(await upsertProfile({ id, name, email, icon, photo }));
+}));
+
+app.get("/api/ranking", api(async (req, res) => {
+  if (!dbReady()) {
+    res.status(503).json({ error: "Base indisponible." });
+    return;
+  }
+  if (limited(`${req.ip}:rank`, 30, 60_000)) {
+    res.status(429).json({ error: "Trop d'essais." });
+    return;
+  }
+  const player = isUuid(req.query.player) ? req.query.player : null;
+  res.json(await ranking(player));
 }));
 
 app.get("/api/games/:id", api(async (req, res) => {

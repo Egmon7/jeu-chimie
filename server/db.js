@@ -61,22 +61,39 @@ export async function initDb() {
     ALTER TABLE profiles ADD CONSTRAINT profiles_email_check
     CHECK (email = '' OR char_length(email) BETWEEN 3 AND 80)
   `);
+  await pool.query("ALTER TABLE profiles ADD COLUMN IF NOT EXISTS icon text NOT NULL DEFAULT 'dot'");
+  await pool.query("ALTER TABLE profiles DROP CONSTRAINT IF EXISTS profiles_icon_check");
+  await pool.query(`
+    ALTER TABLE profiles ADD CONSTRAINT profiles_icon_check
+    CHECK (icon IN ('dot', 'house', 'star', 'crown', 'pen', 'book', 'flame', 'gem'))
+  `);
+  await pool.query("ALTER TABLE profiles ADD COLUMN IF NOT EXISTS photo text NOT NULL DEFAULT ''");
+  await pool.query("ALTER TABLE profiles DROP CONSTRAINT IF EXISTS profiles_photo_check");
+  await pool.query(`
+    ALTER TABLE profiles ADD CONSTRAINT profiles_photo_check
+    CHECK (photo = '' OR photo ~ '^https://res\\.cloudinary\\.com/ka4h4lpk/image/upload/[A-Za-z0-9_./%-]{1,360}$')
+  `);
   ready = true;
 }
 
-export async function upsertProfile({ id, name, email }) {
+export async function upsertProfile({ id, name, email, icon, photo }) {
   const { rows } = await pool.query(
-    `INSERT INTO profiles (id, name, email)
-     VALUES ($1, $2, $3)
-     ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, email = EXCLUDED.email, updated_at = now()
-     RETURNING name, email`,
-    [id, name, email],
+    `INSERT INTO profiles (id, name, email, icon, photo)
+     VALUES ($1, $2, $3, COALESCE($4, 'dot'), COALESCE($5, ''))
+     ON CONFLICT (id) DO UPDATE SET
+       name = EXCLUDED.name,
+       email = EXCLUDED.email,
+       icon = COALESCE($4, profiles.icon),
+       photo = COALESCE($5, profiles.photo),
+       updated_at = now()
+     RETURNING name, email, icon, photo`,
+    [id, name, email, icon || null, photo],
   );
   return rows[0];
 }
 
 export async function readProfile(id) {
-  const { rows } = await pool.query("SELECT name, email FROM profiles WHERE id = $1", [id]);
+  const { rows } = await pool.query("SELECT name, email, icon, photo FROM profiles WHERE id = $1", [id]);
   return rows[0] || null;
 }
 
@@ -137,4 +154,67 @@ export async function insertMessage({ name, body }) {
     "INSERT INTO messages (id, name, body) VALUES ($1, $2, $3)",
     [crypto.randomUUID(), name, body],
   );
+}
+
+export async function ranking(playerId) {
+  const { rows } = await pool.query(
+    `WITH per_game AS (
+       SELECT g.player_id,
+         (CASE
+            WHEN jsonb_typeof(g.scores) = 'array' THEN g.scores ->> g.user_seat
+            ELSE g.scores ->> g.user_seat::text
+          END)::int AS houses,
+         CASE g.difficulty
+           WHEN 'easy' THEN 2
+           WHEN 'medium' THEN 3
+           WHEN 'hard' THEN 5
+           WHEN 'veryhard' THEN 7
+           WHEN 'expert' THEN 10
+           ELSE 3
+         END AS per_house,
+         CASE WHEN g.winner = g.user_seat::text THEN 15 ELSE 0 END AS win_bonus
+       FROM games g
+       WHERE g.mode = 'solo'
+         AND g.user_seat = 0
+         AND (CASE
+            WHEN jsonb_typeof(g.scores) = 'array' THEN g.scores ->> g.user_seat
+            ELSE g.scores ->> g.user_seat::text
+          END) ~ '^[0-9]+$'
+     ),
+     scored AS (
+       SELECT p.id, p.name, p.icon, COALESCE(p.photo, '') AS photo,
+         COALESCE(SUM(20 + houses * per_house + win_bonus), 0)::int AS xp,
+         COALESCE(SUM(houses), 0)::int AS houses,
+         COALESCE(MAX(houses), 0)::int AS best,
+         COUNT(pg.player_id)::int AS games,
+         COALESCE(SUM(CASE WHEN win_bonus > 0 THEN 1 ELSE 0 END), 0)::int AS wins,
+         COALESCE(SUM(CASE WHEN win_bonus > 0 AND per_house = 10 THEN 1 ELSE 0 END), 0)::int AS expert_wins
+       FROM profiles p
+       LEFT JOIN per_game pg ON pg.player_id = p.id
+       GROUP BY p.id
+     ),
+     ranked AS (
+       SELECT *, ROW_NUMBER() OVER (ORDER BY xp DESC, best DESC, games DESC, name) AS rank,
+              COUNT(*) OVER () AS people
+       FROM scored
+     )
+     SELECT name, icon, photo, xp, houses, best, games, wins, expert_wins, rank, people, (id = $1) AS you
+     FROM ranked
+     ORDER BY rank`,
+    [playerId],
+  );
+  return rows.map((row) => ({
+    name: row.name,
+    icon: row.icon,
+    photo: typeof row.photo === "string" && row.photo.startsWith("https://res.cloudinary.com/ka4h4lpk/") ? row.photo : "",
+    xp: row.xp,
+    houses: row.houses,
+    best: row.best,
+    games: row.games,
+    wins: row.wins,
+    expertWins: row.expert_wins,
+    rank: Number(row.rank),
+    people: Number(row.people),
+    you: row.you === true,
+  }));
 }

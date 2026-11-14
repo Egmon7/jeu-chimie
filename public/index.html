@@ -41,32 +41,82 @@
 
     <section id="screen-modes" class="screen" hidden>
       <div class="modes-wrap">
-        <h1>Créer une partie</h1>
-        <div class="modes-layout">
-          <div class="mode-list">
-            <button type="button" class="mode" id="go-solo">
-              <strong>Solo</strong>
-              <span>Contre un robot.</span>
-            </button>
-            <button type="button" class="mode" id="go-local">
-              <strong>2 joueurs</strong>
-              <span>Même écran, deux stylos.</span>
-            </button>
-            <button type="button" class="mode" id="go-online">
-              <strong>En ligne</strong>
-              <span>Bientôt disponible.</span>
-            </button>
-            <button type="button" class="mode" id="go-tourney">
-              <strong>Tournois</strong>
-              <span>Bientôt disponible.</span>
-            </button>
-          </div>
-          <aside class="mode-side">
-            <button type="button" id="go-profile">Profil</button>
-            <button type="button" id="go-history">Historique</button>
-          </aside>
+        <h1 id="modes-title">Créer une partie</h1>
+        <div class="mode-list" id="mode-home">
+          <button type="button" class="mode" data-open-hub="play">
+            <strong>Jouer</strong>
+            <span>Robot et multijoueurs.</span>
+          </button>
+          <button type="button" class="mode" data-open-hub="challenges">
+            <strong>Défis</strong>
+            <span>Défis quotidiens, XP et séries.</span>
+          </button>
+          <button type="button" class="mode" data-open-hub="competitions">
+            <strong>Compétitions</strong>
+            <span>Tournois, classements et saisons.</span>
+          </button>
+          <button type="button" class="mode" data-open-hub="profiles">
+            <strong>Profils</strong>
+            <span>Progression, statistiques, badges et premium.</span>
+          </button>
         </div>
-        <button type="button" class="text-btn modes-back" data-home>Retour</button>
+        <div class="mode-list" data-hub-panel="play" hidden>
+          <button type="button" class="mode" id="go-solo">
+            <strong>Robot</strong>
+            <span>Contre un robot.</span>
+          </button>
+          <button type="button" class="mode" id="go-local">
+            <strong>Multijoueurs</strong>
+            <span>Même écran, deux stylos.</span>
+          </button>
+        </div>
+        <div class="mode-list" data-hub-panel="challenges" hidden>
+          <button type="button" class="mode" id="go-daily" data-soon>
+            <strong>Défis quotidiens</strong>
+            <span>Bientôt disponible.</span>
+          </button>
+          <button type="button" class="mode" id="go-streak" data-soon>
+            <strong>XP et séries</strong>
+            <span>Bientôt disponible.</span>
+          </button>
+        </div>
+        <div class="mode-list" data-hub-panel="competitions" hidden>
+          <button type="button" class="mode" id="go-tourney" data-soon>
+            <strong>Tournois</strong>
+            <span>Bientôt disponible.</span>
+          </button>
+          <button type="button" class="mode" id="go-seasons" data-soon>
+            <strong>Classements et saisons</strong>
+            <span>Bientôt disponible.</span>
+          </button>
+        </div>
+        <div class="mode-list" data-hub-panel="profiles" hidden>
+          <button type="button" class="mode" id="go-account">
+            <strong>Profil</strong>
+            <span>Nom, e-mail et photo.</span>
+          </button>
+          <button type="button" class="mode" id="go-progress">
+            <strong>Progression</strong>
+            <span>Niveau et XP.</span>
+          </button>
+          <button type="button" class="mode" id="go-history">
+            <strong>Statistiques</strong>
+            <span>Tes parties terminées.</span>
+          </button>
+          <button type="button" class="mode" id="go-rank">
+            <strong>Classement</strong>
+            <span>Les points de tout le monde.</span>
+          </button>
+          <button type="button" class="mode" id="go-badges">
+            <strong>Badges</strong>
+            <span>Titres et niveaux.</span>
+          </button>
+          <button type="button" class="mode" id="go-premium" data-soon>
+            <strong>Premium</strong>
+            <span>Bientôt disponible.</span>
+          </button>
+        </div>
+        <button type="button" class="text-btn modes-back" id="modes-back">Retour</button>
       </div>
     </section>
 
@@ -245,6 +295,7 @@
       <p id="conn-banner" class="banner" hidden></p>
       <div class="game-shell">
         <article class="player" id="p0-card">
+          <span class="face" id="p0-face"></span>
           <p class="eyebrow" id="p0-turn" hidden>Joue</p>
           <h2 id="p0-name">Joueur 1</h2>
           <p class="score" id="p0-score">0</p>
@@ -270,6 +321,7 @@
           </div>
         </div>
         <article class="player" id="p1-card">
+          <span class="face" id="p1-face"></span>
           <p class="eyebrow" id="p1-turn" hidden>Joue</p>
           <h2 id="p1-name">Joueur 2</h2>
           <p class="score" id="p1-score">0</p>
@@ -305,6 +357,13 @@
     <section id="screen-profile" class="screen" hidden>
       <form id="profile-form" class="sheet narrow">
         <h1>Profil</h1>
+        <div class="photo-pick">
+          <img id="profile-photo" class="profile-photo" alt="" hidden>
+          <label class="btn">
+            Choisir une photo
+            <input id="profile-file" type="file" accept="image/jpeg,image/png,image/webp" hidden>
+          </label>
+        </div>
         <label>Nom <input id="profile-name" type="text" maxlength="40" autocomplete="name" placeholder="Ton nom"></label>
         <label>E-mail <input id="profile-email" type="email" maxlength="80" autocomplete="email" placeholder="ton@email"></label>
         <div class="form-actions">
@@ -314,10 +373,50 @@
       </form>
     </section>
 
+    <section id="screen-progress" class="screen" hidden>
+      <div class="rank-wrap">
+        <h1>Progression</h1>
+        <div id="rank-you"></div>
+        <div id="level-list"></div>
+        <button type="button" class="btn" data-home>Retour</button>
+      </div>
+      <div id="icon-sprite" hidden>
+        <svg data-icon="dot" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"></circle></svg>
+        <svg data-icon="house" viewBox="0 0 24 24"><path d="M4 11.5 12 5l8 6.5V20H4Z"></path></svg>
+        <svg data-icon="star" viewBox="0 0 24 24"><path d="m12 3 2.4 5.6L20 9.2l-4.2 3.8L17 19 12 16.2 7 19l1.2-6L4 9.2l5.6-.6Z"></path></svg>
+        <svg data-icon="crown" viewBox="0 0 24 24"><path d="M3 17 6 8l6 5 6-5 3 9Z"></path></svg>
+        <svg data-icon="pen" viewBox="0 0 24 24"><path d="M14 5.5 18.5 10 9 19.5 4.5 20 5 15.5Z"></path></svg>
+        <svg data-icon="book" viewBox="0 0 24 24"><path d="M6 4.5h11.5V20H8a2 2 0 0 1-2-2Z"></path><path d="M6 4.5v13"></path></svg>
+        <svg data-icon="flame" viewBox="0 0 24 24"><path d="M12 3s5 4.2 5 9a5 5 0 0 1-10 0c0-2 1.2-3.4 1.2-3.4S9.5 11 12 11c0-3 0-8 0-8Z"></path></svg>
+        <svg data-icon="gem" viewBox="0 0 24 24"><path d="M12 3 20 12 12 21 4 12Z"></path></svg>
+      </div>
+    </section>
+
+    <section id="screen-rank" class="screen" hidden>
+      <div class="rank-wrap">
+        <h1>Classement</h1>
+        <div class="rank-head">
+          <p id="rank-count"></p>
+          <button type="button" class="text-btn" id="rank-me">Ma position</button>
+        </div>
+        <div id="rank-top"></div>
+        <ol id="rank-list"></ol>
+        <button type="button" class="btn" data-home>Retour</button>
+      </div>
+    </section>
+
+    <section id="screen-badges" class="screen" hidden>
+      <div class="sheet narrow">
+        <h1>Badges</h1>
+        <div id="badge-list" class="badge-row"></div>
+        <button type="button" class="btn" data-home>Retour</button>
+      </div>
+    </section>
+
     <section id="screen-history" class="screen" hidden>
       <div class="sheet">
         <p class="eyebrow">Carnet</p>
-        <h1>Historique</h1>
+        <h1>Statistiques</h1>
         <div class="stats">
           <p><strong id="stat-played">0</strong><span>Parties</span></p>
           <p><strong id="stat-wins">0</strong><span>Victoires</span></p>

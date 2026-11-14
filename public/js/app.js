@@ -84,9 +84,12 @@ const SCREEN_BY_PAGE = {
   game: "screen-game",
   history: "screen-history",
   profile: "screen-profile",
+  progress: "screen-progress",
+  rank: "screen-rank",
+  badges: "screen-badges",
 };
 
-const SHELL_PAGES = new Set(["home", "modes", "setup", "profile", "history"]);
+const SHELL_PAGES = new Set(["home", "modes", "setup", "profile", "progress", "rank", "badges", "history"]);
 
 function pageOf(id) {
   return Object.keys(SCREEN_BY_PAGE).find((key) => SCREEN_BY_PAGE[key] === id) || "home";
@@ -107,12 +110,14 @@ function show(id, historyMode = "push") {
     requestAnimationFrame(() => app.board.resize());
   }
   if (id === "screen-profile") {
-    const profile = loadProfile();
-    $("profile-name").value = profile.name;
-    $("profile-email").value = profile.email;
+    fillProfileForm(loadProfile());
     pullProfile();
   }
+  if (id === "screen-progress") loadRanking();
+  if (id === "screen-rank") loadRanking();
+  if (id === "screen-badges") renderBadgeCatalog();
   if (id === "screen-history") pullHistory();
+  if (id === "screen-modes") openHub(savedHub());
   if (historyMode === "skip") return;
   const url = page === "home"
     ? `${location.pathname}${location.search}`
@@ -289,8 +294,8 @@ function syncFormBits() {
     el.hidden = !el.dataset.show.split(" ").includes(app.formMode);
   });
   const titles = {
-    solo: ["Partie solo", "Réglez la feuille, puis affrontez un robot."],
-    local: ["Deux joueurs", "Même écran, deux stylos."],
+    solo: ["Robot", "Réglez la feuille, puis affrontez un robot."],
+    local: ["Multijoueurs", "Même écran, deux stylos."],
     online: ["Créer une salle", "Votre ami vous rejoindra avec le code."],
     custom: ["Partie libre", "Taille, temps, score et adversaire."],
   };
@@ -361,8 +366,213 @@ function openSetup(mode, historyMode = "push") {
   show("screen-setup", historyMode);
 }
 
+const CLOUD_NAME = "ka4h4lpk";
+const CLOUD_PRESET = "jeu-chimie";
+const CLOUD_PHOTO = /^https:\/\/res\.cloudinary\.com\/ka4h4lpk\/image\/upload\/[A-Za-z0-9_./%-]{1,360}$/;
+const PROFILE_PHOTO_MAX = 96;
+
+function photoView(url) {
+  return url.replace("/image/upload/", "/image/upload/c_fill,g_auto,w_192,h_192/");
+}
+
+function fillProfileForm(profile) {
+  $("profile-name").value = profile.name || "";
+  $("profile-email").value = profile.email || "";
+  const photo = $("profile-photo");
+  const url = CLOUD_PHOTO.test(profile.photo) ? profile.photo : "";
+  photo.hidden = !url;
+  photo.dataset.full = url;
+  photo.src = url ? photoView(url) : "";
+  photo.style.width = `${PROFILE_PHOTO_MAX}px`;
+  photo.style.height = `${PROFILE_PHOTO_MAX}px`;
+}
+
+async function uploadProfilePhoto(file) {
+  if (!["image/jpeg", "image/png", "image/webp"].includes(file.type)) {
+    toast("Choisis une image jpg, png ou webp.");
+    return;
+  }
+  if (file.size > 2 * 1024 * 1024) {
+    toast("La photo doit rester sous 2 Mo.");
+    return;
+  }
+  const body = new FormData();
+  body.append("file", file);
+  body.append("upload_preset", CLOUD_PRESET);
+  toast("Envoi de la photo…");
+  try {
+    const res = await fetch(`https://api.cloudinary.com/v1_1/${CLOUD_NAME}/image/upload`, { method: "POST", body });
+    const data = await res.json();
+    const url = String(data?.secure_url || "");
+    if (!res.ok || !CLOUD_PHOTO.test(url)) {
+      toast("La photo n’a pas pu partir.");
+      return;
+    }
+    const saved = saveProfile({ ...loadProfile(), photo: url });
+    fillProfileForm(saved);
+    if (saved.name) syncProfile(saved);
+    toast("Photo enregistrée.");
+  } catch {
+    toast("La photo n’a pas pu partir.");
+  }
+}
+
+function iconMarkup(icon) {
+  const source = document.querySelector(`#icon-sprite [data-icon="${icon}"]`);
+  return source ? source.outerHTML : "";
+}
+
+const LEVELS = [
+  { xp: 0, name: "Élève", icon: "dot" },
+  { xp: 50, name: "Stylo", icon: "pen" },
+  { xp: 150, name: "Cahier", icon: "book" },
+  { xp: 400, name: "Bâtisseur", icon: "house" },
+  { xp: 800, name: "Étoile", icon: "star" },
+  { xp: 1500, name: "Losange", icon: "gem" },
+  { xp: 3000, name: "Flamme", icon: "flame" },
+  { xp: 6000, name: "Couronne", icon: "crown" },
+];
+
+const RANK_TITLE = {
+  1: "Premier de la classe",
+  2: "Second de la classe",
+  3: "Troisième de la classe",
+};
+
+function levelOf(xp) {
+  let current = LEVELS[0];
+  for (const level of LEVELS) if (xp >= level.xp) current = level;
+  const next = LEVELS.find((level) => level.xp > xp) || null;
+  return { ...current, next };
+}
+
+function earnedBadges(row) {
+  return BADGE_GOALS.filter((item) => item.test(row)).map((item) => item.name);
+}
+
+const BADGE_GOALS = [
+  { name: "Première maison", need: "Fermer une maison", img: "img/badges/master.png", test: (row) => (Number(row.houses) || 0) >= 1 },
+  { name: "Première victoire", need: "Gagner une partie", img: "img/badges/man-winner.png", test: (row) => (Number(row.wins) || 0) >= 1 },
+  { name: "Dix victoires", need: "Gagner 10 parties", img: "img/badges/gaming-hand.png", test: (row) => (Number(row.wins) || 0) >= 10 },
+  { name: "Dix maisons", need: "Fermer 10 maisons", img: "img/badges/medal-tv.png", test: (row) => (Number(row.houses) || 0) >= 10 },
+  { name: "500 maisons", need: "Fermer 500 maisons", img: "img/badges/discord.png", test: (row) => (Number(row.houses) || 0) >= 500 },
+  { name: "1000 maisons", need: "Fermer 1000 maisons", img: "img/badges/medal.png", test: (row) => (Number(row.houses) || 0) >= 1000 },
+  { name: "Habitué", need: "Finir 100 parties", img: "img/badges/police-badge.png", test: (row) => (Number(row.games) || 0) >= 100 },
+  { name: "Régulier", need: "Finir 300 parties", img: "img/badges/baseball.png", test: (row) => (Number(row.games) || 0) >= 300 },
+  { name: "Expert battu", need: "Battre 50 fois l'expert", img: "img/badges/legend.png", test: (row) => (Number(row.expertWins) || 0) >= 50 },
+  { name: "Grande feuille", need: "100 maisons dans une partie", img: "img/badges/premium-badge.png", test: (row) => (Number(row.best) || 0) >= 100 },
+];
+
+function faceMarkup(photo) {
+  if (CLOUD_PHOTO.test(photo)) return `<img src="${photoView(photo)}" alt="">`;
+  return `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="3.2"></circle><path d="M5 19c1.4-3 3.6-4.5 7-4.5S17.6 16 19 19"></path></svg>`;
+}
+
+function renderProgress(rows) {
+  const youBox = $("rank-you");
+  const known = Array.isArray(rows);
+  const mine = known ? rows.find((row) => row.you) : null;
+  const player = mine || { xp: 0, best: 0, name: loadProfile().name || "Toi", rank: 0, houses: 0, wins: 0, games: 0 };
+  if (!known) {
+    youBox.textContent = "La progression n’est pas disponible.";
+  } else {
+    const level = levelOf(Number(player.xp) || 0);
+    const floor = level.xp;
+    const width = level.next ? Math.max(4, Math.min(100, Math.round((((Number(player.xp) || 0) - floor) / (level.next.xp - floor)) * 100))) : 100;
+    const next = level.next
+      ? `${Number(player.xp) || 0} / ${level.next.xp} XP`
+      : `${Number(player.xp) || 0} XP · niveau le plus haut`;
+    youBox.className = "rank-you";
+    youBox.innerHTML = `<div class="rank-line"><span class="rank-mark ${level.icon}">${iconMarkup(level.icon)}</span><div><h3>${esc(level.name)}</h3><p class="rank-xp">${esc(player.name)} · record ${Number(player.best) || 0}</p></div></div>
+      <div class="xp-track" aria-hidden="true"><i style="width:${width}%"></i></div>
+      <p class="rank-xp">${next}</p>`;
+  }
+  const earned = new Set(known ? earnedBadges(player) : []);
+  const xp = Number(player.xp) || 0;
+  const current = known ? levelOf(xp) : null;
+  const levels = LEVELS.map((item) => {
+    const here = current && item.name === current.name;
+    const label = !known ? `${item.xp} XP` : here ? (current.next ? "En cours" : "Atteint") : xp >= item.xp ? "Atteint" : `${item.xp} XP`;
+    return `<li class="${here ? "current" : known && xp >= item.xp ? "reached" : ""}"><strong>${esc(item.name)}</strong><span>${label}</span></li>`;
+  }).join("");
+  const badges = BADGE_GOALS.map((item) => `<li class="${earned.has(item.name) ? "reached" : ""}"><img src="${item.img}" alt=""><strong>${esc(item.name)}</strong><span>${earned.has(item.name) ? "Atteint" : esc(item.need)}</span></li>`).join("");
+  $("level-list").innerHTML = `<h2>Niveaux</h2><ul class="goal-list">${levels}</ul><h2>Badges à atteindre</h2><ul class="goal-list">${badges}</ul>`;
+}
+
+function renderBoard(rows) {
+  const top = $("rank-top");
+  const list = $("rank-list");
+  const count = $("rank-count");
+  top.replaceChildren();
+  list.replaceChildren();
+  if (!Array.isArray(rows)) {
+    count.textContent = "Le classement n’est pas disponible.";
+    return;
+  }
+  const people = Number(rows[0]?.people) || 0;
+  count.textContent = `${people} personne${people > 1 ? "s" : ""}`;
+  for (const row of rows.filter((item) => Number(item.rank) <= 3)) {
+    const card = document.createElement("article");
+    const rank = Number(row.rank);
+    const level = levelOf(Number(row.xp) || 0);
+    const badges = earnedBadges(row);
+    card.className = `podium-card rank-${rank}${row.you ? " you" : ""}`;
+    const chips = badges.map((name) => {
+      const badge = BADGE_GOALS.find((item) => item.name === name);
+      return `<span><img src="${badge.img}" alt="">${esc(name)}</span>`;
+    }).join("");
+    card.innerHTML = `<img class="podium-medal" src="img/medaille-${rank}.png" alt=""><span class="face">${faceMarkup(row.photo)}</span>${row.you ? `<em class="you-tag">Toi</em>` : ""}<strong>${esc(row.name)}</strong><p class="podium-level"><span class="rank-mark ${level.icon}">${iconMarkup(level.icon)}</span>${esc(level.name)}</p><p class="podium-xp">${Number(row.xp) || 0} XP</p>${chips ? `<p class="podium-badges">${chips}</p>` : ""}`;
+    top.append(card);
+  }
+  for (const row of rows.filter((item) => Number(item.rank) > 3)) {
+    const item = document.createElement("li");
+    const level = levelOf(Number(row.xp) || 0);
+    const badges = earnedBadges(row);
+    item.className = row.you ? "rank-row you" : "rank-row";
+    const marks = badges.map((name) => {
+      const badge = BADGE_GOALS.find((item) => item.name === name);
+      return `<img src="${badge.img}" alt="">${esc(name)}`;
+    }).join(" · ");
+    item.innerHTML = `<span class="rank-num">${Number(row.rank)}</span><span class="face">${faceMarkup(row.photo)}</span><div class="rank-who"><strong>${esc(row.name)}</strong><span>${row.you ? `<em class="you-tag">Toi</em> · ` : ""}${esc(level.name)}${marks ? ` · ${marks}` : ""}</span></div><span class="rank-points">${Number(row.xp) || 0} XP</span>`;
+    list.append(item);
+  }
+}
+
+function scrollToMyRank() {
+  const mine = document.querySelector("#rank-top .you, #rank-list .you");
+  if (!mine) {
+    toast("Ton profil n’est pas dans ce classement.");
+    return;
+  }
+  const list = $("rank-list");
+  if (list.contains(mine)) {
+    const listRect = list.getBoundingClientRect();
+    const mineRect = mine.getBoundingClientRect();
+    list.scrollTop += mineRect.top - listRect.top - (list.clientHeight - mineRect.height) / 2;
+  }
+  mine.scrollIntoView({ block: "center", behavior: "smooth" });
+}
+function renderBadgeCatalog() {
+  $("badge-list").innerHTML = BADGE_GOALS.map((item) => `<p><img src="${item.img}" alt="">${esc(item.name)}</p>`).join("");
+}
+
+async function loadRanking() {
+  const rows = await sendJson(`/api/ranking?player=${encodeURIComponent(playerId())}`, "GET");
+  const list = Array.isArray(rows) ? rows : null;
+  if (!$("screen-progress").hidden) renderProgress(list);
+  if (!$("screen-rank").hidden) renderBoard(list);
+}
+
 function openProfile() {
   show("screen-profile");
+}
+
+function openProgress() {
+  show("screen-progress");
+}
+
+function openBadges() {
+  show("screen-badges");
 }
 
 function remember(settings) {
@@ -632,6 +842,9 @@ function refreshHud() {
     const card = $(`p${index}-card`);
     card.style.setProperty("--pen", displayColor(player.color, app.prefs.theme));
     $(`p${index}-name`).textContent = player.name;
+    const profile = loadProfile();
+    const showPhoto = player.kind !== "ai" && (app.mode === "online" ? index === app.seat : app.mode === "local" ? player.name === profile.name : index === 0);
+    $(`p${index}-face`).innerHTML = faceMarkup(showPhoto ? profile.photo : "");
     $(`p${index}-score`).textContent = String(game?.scores[index] ?? 0);
     $(`p${index}-pen`).textContent = COLOR_LABEL[player.color] || "";
     const active = game?.status === "playing" && game.current === index;
@@ -881,10 +1094,7 @@ async function pullProfile() {
     }
     if (!profile.name) return;
     saveProfile(profile);
-    if (!$("screen-profile").hidden) {
-      $("profile-name").value = profile.name;
-      $("profile-email").value = profile.email || "";
-    }
+    if (!$("screen-profile").hidden) fillProfileForm(loadProfile());
   } catch {
     /* le profil reste dans le navigateur */
   }
@@ -1242,7 +1452,7 @@ function renderHistory() {
     list.innerHTML = `<p class="empty">Aucune partie enregistrée. Le papier est encore vierge.</p>`;
     return;
   }
-  const modeLabel = { solo: "Solo", local: "2 joueurs", online: "En ligne" };
+  const modeLabel = { solo: "Robot", local: "2 joueurs", online: "En ligne" };
   list.innerHTML = history.map((item) => {
     let result = "Égalité";
     if (item.winner === 0 || item.winner === 1) {
@@ -1271,6 +1481,37 @@ function soon() {
   toast("Bientôt disponible.");
 }
 
+const HUB_TITLES = {
+  play: "Jouer",
+  challenges: "Défis",
+  competitions: "Compétitions",
+  profiles: "Profils",
+};
+
+function savedHub() {
+  try {
+    const name = sessionStorage.getItem("egmon-hub") || "";
+    return HUB_TITLES[name] ? name : "";
+  } catch {
+    return "";
+  }
+}
+
+function openHub(name) {
+  const next = HUB_TITLES[name] ? name : "";
+  try {
+    if (next) sessionStorage.setItem("egmon-hub", next);
+    else sessionStorage.removeItem("egmon-hub");
+  } catch { /* ignore */ }
+  const home = $("mode-home");
+  if (!home) return;
+  home.hidden = Boolean(next);
+  document.querySelectorAll("[data-hub-panel]").forEach((panel) => {
+    panel.hidden = panel.dataset.hubPanel !== next;
+  });
+  $("modes-title").textContent = HUB_TITLES[next] || "Créer une partie";
+}
+
 function bind() {
   document.body.addEventListener("click", (event) => {
     if (!$("game-menu").hidden && !event.target.closest(".game-tools")) closeGameMenu();
@@ -1294,7 +1535,19 @@ function bind() {
     }
     const preset = event.target.closest("[data-set-time]");
     if (preset) $("timeLimit").value = preset.dataset.setTime;
+    const hubBtn = event.target.closest("[data-open-hub]");
+    if (hubBtn) openHub(hubBtn.dataset.openHub);
+    if (event.target.closest("#modes-back")) {
+      if ($("mode-home")?.hidden) openHub("");
+      else if (history.state?.page && history.state.page !== "home") history.back();
+      else goHome();
+    }
+    if (event.target.closest("[data-soon]")) soon();
     if (event.target.closest("[data-home]")) {
+      if (savedHub()) {
+        show("screen-modes");
+        return;
+      }
       if (history.state?.page && history.state.page !== "home") history.back();
       else goHome();
     }
@@ -1315,7 +1568,10 @@ function bind() {
       text: "Regarde la feuille, le score, le temps et la façon d'encercler avant de lancer.",
       confirm: "Continuer",
       cancel: "Retour",
-      onYes: () => show("screen-modes"),
+      onYes: () => {
+        try { sessionStorage.removeItem("egmon-hub"); } catch { /* ignore */ }
+        show("screen-modes");
+      },
     });
     if (profile.name) {
       next();
@@ -1329,7 +1585,7 @@ function bind() {
       cancel: "Retour",
       field: { value: "", placeholder: "Ton nom" },
       onYes: (name) => {
-        const saved = saveProfile({ name, email: profile.email });
+        const saved = saveProfile({ name, email: profile.email, icon: profile.icon });
         syncProfile(saved);
         next();
       },
@@ -1338,7 +1594,7 @@ function bind() {
   $("go-solo").addEventListener("click", () => {
     askDialog({
       kicker: "Confirmer",
-      title: "Partie solo",
+      title: "Robot",
       text: "Tu joues contre un robot. Tu confirmes ce choix ?",
       confirm: "Oui",
       cancel: "Retour",
@@ -1348,19 +1604,26 @@ function bind() {
   $("go-local").addEventListener("click", () => {
     askDialog({
       kicker: "Confirmer",
-      title: "Deux joueurs",
+      title: "Multijoueurs",
       text: "Vous jouez à deux sur cet écran. Vous confirmez ?",
       confirm: "Oui",
       cancel: "Retour",
       onYes: () => openSetup("local"),
     });
   });
-  $("go-online").addEventListener("click", soon);
-  $("go-tourney").addEventListener("click", soon);
-  $("go-profile").addEventListener("click", openProfile);
+  $("go-account").addEventListener("click", openProfile);
+  $("go-progress").addEventListener("click", openProgress);
+  $("go-badges").addEventListener("click", openBadges);
+  $("go-rank").addEventListener("click", () => show("screen-rank"));
+  $("rank-me").addEventListener("click", scrollToMyRank);
   $("go-history").addEventListener("click", () => {
     renderHistory();
     show("screen-history");
+  });
+  $("profile-file").addEventListener("change", (event) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (file) uploadProfilePhoto(file);
   });
   $("profile-form").addEventListener("submit", (event) => {
     event.preventDefault();
@@ -1374,8 +1637,9 @@ function bind() {
       toast("Cet e-mail n’est pas valide.");
       return;
     }
-    saveProfile({ name, email });
-    syncProfile({ name, email });
+    const photo = $("profile-photo").dataset.full || "";
+    saveProfile({ name, email, photo });
+    syncProfile({ name, email, photo });
     toast("Profil enregistré.");
   });
   $("setup-form").addEventListener("submit", (event) => {

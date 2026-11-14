@@ -24,19 +24,33 @@ export function savePrefs(prefs) {
   write(data);
 }
 
+const PROFILE_ICONS = ["dot", "house", "star", "crown", "pen", "book", "flame", "gem"];
+
 export function loadProfile() {
   const profile = read().profile || {};
+  const icon = PROFILE_ICONS.includes(profile.icon) ? profile.icon : "dot";
   return {
     name: typeof profile.name === "string" ? profile.name : "",
     email: typeof profile.email === "string" ? profile.email : "",
+    icon,
+    photo: /^https:\/\/res\.cloudinary\.com\/ka4h4lpk\/image\/upload\/[A-Za-z0-9_./%-]{1,360}$/.test(profile.photo) ? profile.photo : "",
   };
 }
 
 export function saveProfile(profile) {
   const data = read();
+  const previous = data.profile || {};
+  const icon = PROFILE_ICONS.includes(profile.icon)
+    ? profile.icon
+    : PROFILE_ICONS.includes(previous.icon) ? previous.icon : "dot";
+  const photo = /^https:\/\/res\.cloudinary\.com\/ka4h4lpk\/image\/upload\/[A-Za-z0-9_./%-]{1,360}$/.test(profile.photo)
+    ? profile.photo
+    : (/^https:\/\/res\.cloudinary\.com\/ka4h4lpk\/image\/upload\/[A-Za-z0-9_./%-]{1,360}$/.test(previous.photo) ? previous.photo : "");
   data.profile = {
     name: String(profile.name || "").trim(),
     email: String(profile.email || "").trim(),
+    icon,
+    photo,
   };
   write(data);
   return data.profile;
