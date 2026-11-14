@@ -514,26 +514,14 @@ function renderBoard(rows) {
   for (const row of rows.filter((item) => Number(item.rank) <= 3)) {
     const card = document.createElement("article");
     const rank = Number(row.rank);
-    const level = levelOf(Number(row.xp) || 0);
-    const badges = earnedBadges(row);
     card.className = `podium-card rank-${rank}${row.you ? " you" : ""}`;
-    const chips = badges.map((name) => {
-      const badge = BADGE_GOALS.find((item) => item.name === name);
-      return `<span><img src="${badge.img}" alt="">${esc(name)}</span>`;
-    }).join("");
-    card.innerHTML = `<img class="podium-medal" src="img/medaille-${rank}.png" alt=""><span class="face">${faceMarkup(row.photo)}</span>${row.you ? `<em class="you-tag">Toi</em>` : ""}<strong>${esc(row.name)}</strong><p class="podium-level"><span class="rank-mark ${level.icon}">${iconMarkup(level.icon)}</span>${esc(level.name)}</p><p class="podium-xp">${Number(row.xp) || 0} XP</p>${chips ? `<p class="podium-badges">${chips}</p>` : ""}`;
+    card.innerHTML = `<img class="podium-medal" src="img/medaille-${rank}.png" alt=""><span class="face">${faceMarkup(row.photo)}</span>${row.you ? `<em class="you-tag">Toi</em>` : ""}<strong>${esc(row.name)}</strong><p class="podium-xp">${Number(row.xp) || 0} XP</p>`;
     top.append(card);
   }
   for (const row of rows.filter((item) => Number(item.rank) > 3)) {
     const item = document.createElement("li");
-    const level = levelOf(Number(row.xp) || 0);
-    const badges = earnedBadges(row);
     item.className = row.you ? "rank-row you" : "rank-row";
-    const marks = badges.map((name) => {
-      const badge = BADGE_GOALS.find((item) => item.name === name);
-      return `<img src="${badge.img}" alt="">${esc(name)}`;
-    }).join(" · ");
-    item.innerHTML = `<span class="rank-num">${Number(row.rank)}</span><span class="face">${faceMarkup(row.photo)}</span><div class="rank-who"><strong>${esc(row.name)}</strong><span>${row.you ? `<em class="you-tag">Toi</em> · ` : ""}${esc(level.name)}${marks ? ` · ${marks}` : ""}</span></div><span class="rank-points">${Number(row.xp) || 0} XP</span>`;
+    item.innerHTML = `<span class="rank-num">${Number(row.rank)}</span><span class="face">${faceMarkup(row.photo)}</span><strong>${esc(row.name)}</strong>${row.you ? `<em class="you-tag">Toi</em>` : ""}<span class="rank-points">${Number(row.xp) || 0} XP</span>`;
     list.append(item);
   }
 }
