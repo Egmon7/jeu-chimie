@@ -297,6 +297,7 @@
           <h2 id="overlay-title"></h2>
           <p id="overlay-text"></p>
           <div class="form-actions" id="overlay-actions"></div>
+          <p id="overlay-note" hidden></p>
         </div>
       </div>
     </section>
@@ -336,8 +337,13 @@
       <p class="eyebrow" id="app-dialog-kicker"></p>
       <h2 id="app-dialog-title"></h2>
       <p id="app-dialog-text"></p>
-      <label id="app-dialog-field" hidden>Votre nom de profil
+      <label id="app-dialog-field" hidden>
+        <span id="app-dialog-field-label">Votre nom de profil</span>
         <input id="app-dialog-input" type="text" maxlength="40" autocomplete="name" placeholder="Ton nom">
+      </label>
+      <label id="app-dialog-note" hidden>
+        <span>Message</span>
+        <textarea id="app-dialog-message" maxlength="800" rows="5" placeholder="Une amélioration ou un bug"></textarea>
       </label>
       <div class="form-actions" id="app-dialog-actions"></div>
     </div>

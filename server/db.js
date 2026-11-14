@@ -49,6 +49,12 @@ export async function initDb() {
       difficulty text
     );
     CREATE INDEX IF NOT EXISTS games_player_played ON games (player_id, played_at DESC);
+    CREATE TABLE IF NOT EXISTS messages (
+      id uuid PRIMARY KEY,
+      name text NOT NULL CHECK (char_length(name) BETWEEN 1 AND 40),
+      body text NOT NULL CHECK (char_length(body) BETWEEN 1 AND 800),
+      created_at timestamptz NOT NULL DEFAULT now()
+    );
   `);
   await pool.query("ALTER TABLE profiles DROP CONSTRAINT IF EXISTS profiles_email_check");
   await pool.query(`
@@ -124,4 +130,11 @@ export async function listGames(playerId) {
 
 export async function clearGames(playerId) {
   await pool.query("DELETE FROM games WHERE player_id = $1", [playerId]);
+}
+
+export async function insertMessage({ name, body }) {
+  await pool.query(
+    "INSERT INTO messages (id, name, body) VALUES ($1, $2, $3)",
+    [crypto.randomUUID(), name, body],
+  );
 }

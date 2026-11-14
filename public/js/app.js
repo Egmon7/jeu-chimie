@@ -537,15 +537,22 @@ function revealMove(move) {
   stage.scrollTo({ top: Math.max(0, nextTop), left: Math.max(0, nextLeft), behavior: "smooth" });
 }
 
-function askDialog({ kicker, title, text, confirm, cancel, field, onYes }) {
+function askDialog({ kicker, title, text, confirm, cancel, field, note, onYes }) {
   $("app-dialog-kicker").textContent = kicker || "";
   $("app-dialog-title").textContent = title;
   $("app-dialog-text").textContent = text || "";
   const input = $("app-dialog-input");
+  const message = $("app-dialog-message");
   $("app-dialog-field").hidden = !field;
+  $("app-dialog-note").hidden = !note;
   if (field) {
+    $("app-dialog-field-label").textContent = field.label || "Votre nom de profil";
     input.value = field.value || "";
     input.placeholder = field.placeholder || "Ton nom";
+  }
+  if (note) {
+    message.value = note.value || "";
+    message.placeholder = note.placeholder || "Une amélioration ou un bug";
   }
   const box = $("app-dialog-actions");
   box.replaceChildren();
@@ -554,19 +561,22 @@ function askDialog({ kicker, title, text, confirm, cancel, field, onYes }) {
   yes.className = "btn primary";
   yes.textContent = confirm || "Continuer";
   const closeYes = () => {
-    if (field) {
-      const value = input.value.trim();
-      if (!value) {
-        toast("Écris ton nom de profil.");
-        input.focus();
-        return;
-      }
-      $("app-dialog").hidden = true;
-      onYes?.(value);
+    const name = field ? input.value.trim() : "";
+    const body = note ? message.value.trim() : "";
+    if (field && !name) {
+      toast(field.empty || "Écris ton nom de profil.");
+      input.focus();
+      return;
+    }
+    if (note && !body) {
+      toast("Écris ton message.");
+      message.focus();
       return;
     }
     $("app-dialog").hidden = true;
-    onYes?.();
+    if (note) onYes?.({ name, message: body });
+    else if (field) onYes?.(name);
+    else onYes?.();
   };
   yes.addEventListener("click", closeYes);
   box.append(yes);
@@ -578,7 +588,7 @@ function askDialog({ kicker, title, text, confirm, cancel, field, onYes }) {
     no.addEventListener("click", () => { $("app-dialog").hidden = true; });
     box.append(no);
   }
-  input.onkeydown = field
+  input.onkeydown = field && !note
     ? (event) => {
       if (event.key === "Enter") {
         event.preventDefault();
@@ -690,7 +700,29 @@ function hideOverlay() {
   overlay.classList.remove("celebrate");
 }
 
-function showOverlay({ kicker, title, text, actions, celebrate = false }) {
+function openFeedback() {
+  const profile = loadProfile();
+  askDialog({
+    kicker: "Message",
+    title: "Écrire un message",
+    text: "Une amélioration, ou un bug à signaler.",
+    confirm: "Envoyer",
+    cancel: "Retour",
+    field: {
+      label: "Ton nom",
+      value: profile.name || "",
+      placeholder: "Ton nom",
+      empty: "Écris ton nom.",
+    },
+    note: { placeholder: "Décris l'idée ou le problème" },
+    onYes: async ({ name, message }) => {
+      const saved = await sendJson("/api/messages", "POST", { name, message });
+      toast(saved?.ok ? "Message envoyé. Merci." : "Le message n'a pas pu partir.");
+    },
+  });
+}
+
+function showOverlay({ kicker, title, text, actions, note = false, celebrate = false }) {
   $("overlay-kicker").textContent = kicker || "";
   $("overlay-title").textContent = title;
   $("overlay-text").textContent = text || "";
@@ -703,6 +735,16 @@ function showOverlay({ kicker, title, text, actions, celebrate = false }) {
     button.textContent = action.label;
     button.addEventListener("click", action.on);
     box.appendChild(button);
+  }
+  const extra = $("overlay-note");
+  extra.replaceChildren();
+  extra.hidden = !note;
+  if (note) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = "Une amélioration ou un bug ? Écris un message.";
+    button.addEventListener("click", openFeedback);
+    extra.append(button);
   }
   const overlay = $("game-overlay");
   overlay.classList.toggle("celebrate", celebrate);
@@ -913,6 +955,7 @@ function showResult() {
     title,
     text,
     celebrate,
+    note: true,
     actions: [
       { label: "Revanche", primary: true, on: () => rematch() },
       { label: "Accueil", on: () => goHome() },

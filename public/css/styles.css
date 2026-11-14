@@ -350,8 +350,25 @@ body[data-page="play"] #screen-game {
 .overlay.page-dialog .btn { color: #f4f6f8; border-color: #2a3a3a; background: #1c2a29; }
 .overlay.page-dialog .btn.primary { background: #f2f4f7; color: #0e1616; border-color: transparent; }
 #app-dialog-text { white-space: pre-line; color: #9aa8ba; }
-#app-dialog-field { text-align: left; color: #9aa8ba; }
-#app-dialog-field input { background: #f4f6f8; color: #0e1616; border: 0; }
+#app-dialog-field, #app-dialog-note { text-align: left; color: #9aa8ba; }
+#app-dialog-field input, #app-dialog-note textarea {
+  background: #f4f6f8;
+  color: #0e1616;
+  border: 0;
+  width: 100%;
+  box-sizing: border-box;
+}
+#app-dialog-note textarea { min-height: 120px; resize: vertical; padding: 10px 12px; border-radius: 12px; font: inherit; }
+#overlay-note { margin: 14px 0 0; }
+#overlay-note button {
+  background: none;
+  border: 0;
+  padding: 0;
+  color: var(--muted);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
 #app-dialog .form-actions { justify-content: center; }
 .overlay {
   position: absolute;

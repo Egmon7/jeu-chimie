@@ -18,6 +18,7 @@ import {
   dbReady,
   initDb,
   insertGame,
+  insertMessage,
   isUuid,
   listGames,
   readProfile,
@@ -124,6 +125,25 @@ app.post("/api/games/:id", api(async (req, res) => {
     return;
   }
   await insertGame(id, entry);
+  res.json({ ok: true });
+}));
+
+app.post("/api/messages", api(async (req, res) => {
+  if (!dbReady()) {
+    res.status(503).json({ error: "Base indisponible." });
+    return;
+  }
+  if (limited(`${req.ip}:message`, 6, 60 * 60 * 1000)) {
+    res.status(429).json({ error: "Trop de messages." });
+    return;
+  }
+  const name = String(req.body?.name || "").trim().slice(0, 40);
+  const body = String(req.body?.message || "").trim().slice(0, 800);
+  if (!name || !body) {
+    res.status(400).json({ error: "Écris ton nom et ton message." });
+    return;
+  }
+  await insertMessage({ name, body });
   res.json({ ok: true });
 }));
 
