@@ -4,15 +4,12 @@ const NEAR = [[-1, -1], [-1, 0], [-1, 1], [0, -1], [0, 1], [1, -1], [1, 0], [1, 
 const ORTHO = [[-1, 0], [1, 0], [0, -1], [0, 1]];
 
 const PROFILE = {
-  medium: { depth: 0, window: 4, reply: 0, fork: 1 },
-  hard: { depth: 2, window: 6, reply: 4, fork: 1 },
-  veryhard: { depth: 2, window: 8, reply: 5, fork: 2 },
-  expert: { depth: 3, window: 6, reply: 4, fork: 3 },
+  easy: { depth: 1, window: 4, reply: 3, fork: 0, chain: 1, ms: 40, max: 80 },
+  medium: { depth: 2, window: 5, reply: 4, fork: 1, chain: 2, ms: 80, max: 180 },
+  hard: { depth: 3, window: 7, reply: 5, fork: 2, chain: 4, ms: 140, max: 360 },
+  veryhard: { depth: 4, window: 8, reply: 6, fork: 3, chain: 5, ms: 220, max: 560 },
+  expert: { depth: 4, window: 8, reply: 6, fork: 4, chain: 6, ms: 320, max: 800 },
 };
-
-function pick(list) {
-  return list[Math.floor(Math.random() * list.length)];
-}
 
 function prefer(game, a, b) {
   const salt = game.salt || 0;
@@ -220,18 +217,37 @@ function positionValue(game, me, fork) {
   return value;
 }
 
-function search(game, me, depth, profile) {
-  if (game.status !== "playing" || depth <= 0) return positionValue(game, me, profile.fork);
+function search(game, me, depth, profile, alpha, beta, chainLeft) {
+  profile.nodes += 1;
+  const stop = depth <= 0 || profile.nodes > profile.max || performance.now() > profile.until;
+  if (game.status !== "playing" || stop) return positionValue(game, me, profile.fork);
   const player = game.current;
   const moves = consider(game, player, profile.reply);
   if (!moves.length) return positionValue(game, me, profile.fork);
   let best = player === me ? -Infinity : Infinity;
   for (const move of moves) {
     const copy = cloneGame(game);
-    applyMove(copy, move);
-    const value = search(copy, me, depth - 1, profile);
-    if (player === me) best = Math.max(best, value);
-    else best = Math.min(best, value);
+    const result = applyMove(copy, move);
+    if (!result.ok) continue;
+    const again = copy.status === "playing" && copy.current === player && (result.completed > 0 || result.eaten > 0);
+    const value = search(
+      copy,
+      me,
+      again && chainLeft > 0 ? depth : depth - 1,
+      profile,
+      alpha,
+      beta,
+      again ? chainLeft - 1 : profile.chain,
+    );
+    if (player === me) {
+      best = Math.max(best, value);
+      if (best > alpha) alpha = best;
+      if (alpha >= beta) break;
+    } else {
+      best = Math.min(best, value);
+      if (best < beta) beta = best;
+      if (beta <= alpha) break;
+    }
   }
   return best;
 }
@@ -268,23 +284,6 @@ function bestImmediate(game, player, chain) {
   return best;
 }
 
-function mediumChoice(game, player) {
-  const ranked = byBuild(game, player).slice(0, 4);
-  if (!ranked.length) return legalMoves(game)[0] || null;
-  let choice = ranked[0];
-  let gift = 99;
-  for (const move of ranked) {
-    const copy = cloneGame(game);
-    const result = applyMove(copy, move);
-    const next = result.ok && copy.status === "playing" && copy.current !== player ? pendingCount(copy, 1 - player) : 0;
-    if (next < gift || (next === gift && prefer(game, move, choice) < 0)) {
-      gift = next;
-      choice = move;
-    }
-  }
-  return choice;
-}
-
 function searchRoot(game, player, profile) {
   const ranked = consider(game, player, Math.max(profile.window + 4, 10));
   ranked.sort((a, b) => taste(game, player, b, profile.fork) - taste(game, player, a, profile.fork) || prefer(game, a, b));
@@ -292,9 +291,20 @@ function searchRoot(game, player, profile) {
   let best = window[0];
   let bestValue = -Infinity;
   for (const move of window) {
+    if (performance.now() > profile.until && best) break;
     const copy = cloneGame(game);
-    applyMove(copy, move);
-    const value = search(copy, player, profile.depth - 1, profile);
+    const result = applyMove(copy, move);
+    if (!result.ok) continue;
+    const again = copy.status === "playing" && copy.current === player && (result.completed > 0 || result.eaten > 0);
+    const value = search(
+      copy,
+      player,
+      again && profile.chain > 0 ? profile.depth : profile.depth - 1,
+      profile,
+      -Infinity,
+      Infinity,
+      again ? profile.chain - 1 : profile.chain,
+    );
     if (value > bestValue || (value === bestValue && prefer(game, move, best) < 0)) {
       bestValue = value;
       best = move;
@@ -303,26 +313,25 @@ function searchRoot(game, player, profile) {
   return best || legalMoves(game)[0] || null;
 }
 
-function easyChoice(game) {
-  const player = game.current;
-  const win = winningMoves(game, player)[0];
-  if (win) return win.move;
-  const near = byBuild(game, player).slice(0, 5);
-  if (near.length) return pick(near);
-  return pick(legalMoves(game));
-}
-
 export function chooseMove(game, difficulty = "medium") {
   const moves = legalMoves(game);
   if (!moves.length || game.status !== "playing") return null;
-  if (difficulty === "easy") return easyChoice(game);
-
-  const profile = PROFILE[difficulty] || PROFILE.medium;
+  const base = PROFILE[difficulty] || PROFILE.medium;
+  const profile = {
+    ...base,
+    nodes: 0,
+    until: performance.now() + base.ms,
+  };
+  if (difficulty === "expert" && moves.length <= 18) {
+    profile.depth += 1;
+    profile.window += 2;
+  }
   const player = game.current;
-  const win = bestImmediate(game, player, profile.depth > 0);
+  const win = bestImmediate(game, player, profile.depth > 1);
   if (win) return win;
-  const block = bestImmediate(game, 1 - player, false);
-  if (block) return block;
-  if (profile.depth === 0) return mediumChoice(game, player);
+  if (difficulty !== "easy") {
+    const block = bestImmediate(game, 1 - player, false);
+    if (block) return block;
+  }
   return searchRoot(game, player, profile);
 }

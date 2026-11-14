@@ -210,6 +210,29 @@ const gemClose = applyMove(gemGame, { r: 5, c: 3 });
 assert(gemClose.completed === 1 && gemGame.scores[0] === 1, "un losange en diagonale se ferme");
 assert(!legalMoves(gemGame).some((move) => move.r === 3 && move.c === 2), "l'intérieur du losange est fermé");
 
+const tailed = createGame({ rows: 6, cols: 6, extraTurn: false, timeMode: "none" });
+tailed.dots[1][1] = 1;
+tailed.dots[0][1] = 0;
+tailed.dots[1][0] = 0;
+tailed.dots[2][1] = 0;
+tailed.dots[2][3] = 0;
+tailed.dots[3][2] = 0;
+tailed.current = 0;
+const tailedClose = applyMove(tailed, { r: 1, c: 2 });
+const tailedLoop = enclosures(tailed)[0]?.loop || [];
+assert(tailedClose.completed === 1 && tailedLoop.length === 4, "une pointe à côté de la maison ne trace pas de ligne vide");
+
+const bulge = createGame({ rows: 8, cols: 8, extraTurn: false, timeMode: "none" });
+bulge.dots[3][3] = 1;
+for (const [r, c] of [[2, 2], [2, 3], [2, 4], [3, 2], [4, 2], [4, 3], [4, 4], [4, 5], [5, 5], [5, 4], [6, 4], [6, 5], [5, 6], [4, 6], [3, 5]]) {
+  bulge.dots[r][c] = 0;
+}
+bulge.current = 0;
+applyMove(bulge, { r: 3, c: 4 });
+const bulgeLoop = enclosures(bulge)[0]?.loop || [];
+assert(bulge.scores[0] === 1 && bulgeLoop.length === 4, "un renflement vide à côté ne se trace pas");
+assert(!bulgeLoop.some((dot) => dot.r >= 5 || dot.c >= 5), "les lignes du renflement restent absentes");
+
 const spur = createGame({ rows: 4, cols: 4, extraTurn: false, timeMode: "none" });
 spur.dots[2][2] = 1;
 spur.dots[1][2] = 0;

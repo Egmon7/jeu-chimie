@@ -203,7 +203,8 @@ function readSettingsFromForm() {
 
 function fillForm(prefs) {
   const key = `${prefs.rows}-${prefs.cols}`;
-  if (["20-17", "16-12"].includes(key)) setGroup("size", key);
+  if (["32-24", "32-18"].includes(key)) setGroup("size", key);
+  else if (["20-17", "16-12"].includes(key)) setGroup("size", "32-24");
   else {
     setGroup("size", "custom");
     $("rows").value = prefs.rows;

@@ -16,8 +16,8 @@ export const DIFFICULTIES = ["easy", "medium", "hard", "veryhard", "expert"];
 
 export function defaultSettings() {
   return {
-    rows: 20,
-    cols: 17,
+    rows: 32,
+    cols: 24,
     extraTurn: true,
     timeMode: "none",
     timeLimit: 300,
@@ -393,6 +393,44 @@ export function canCatch(game, player) {
   return catchLoops(game, player).length > 0;
 }
 
+function hugsInside(loop, cells, children) {
+  const inside = new Set(cells.map((cell) => `${cell.r},${cell.c}`));
+  const kids = new Set(children.map((cell) => `${cell.r},${cell.c}`));
+  const guarded = new Set();
+  const seen = new Set();
+  for (const cell of cells) {
+    const start = `${cell.r},${cell.c}`;
+    if (seen.has(start)) continue;
+    const stack = [cell];
+    const group = [];
+    seen.add(start);
+    let hasChild = kids.has(start);
+    while (stack.length) {
+      const cur = stack.pop();
+      group.push(cur);
+      for (const [dr, dc] of ORTHO) {
+        const next = `${cur.r + dr},${cur.c + dc}`;
+        if (!inside.has(next) || seen.has(next)) continue;
+        seen.add(next);
+        if (kids.has(next)) hasChild = true;
+        stack.push({ r: cur.r + dr, c: cur.c + dc });
+      }
+    }
+    if (hasChild) for (const cur of group) guarded.add(`${cur.r},${cur.c}`);
+  }
+  for (let i = 0; i < loop.length; i += 1) {
+    const a = loop[i];
+    const b = loop[(i + 1) % loop.length];
+    const touches = [...guarded].some((key) => {
+      const [r, c] = key.split(",").map(Number);
+      const cell = { r, c };
+      return loopStep(cell, a) <= 1 && loopStep(cell, b) <= 1;
+    });
+    if (!touches) return false;
+  }
+  return guarded.size > 0;
+}
+
 function bend(prev, cur, next) {
   const ic = cur.c - prev.c;
   const ir = cur.r - prev.r;
@@ -488,10 +526,13 @@ function newHouses(game, player) {
         if (color != null && color !== player && game.framed[r][c] == null) children.push({ r, c });
       }
     }
-    if (!children.length) continue;
+    if (!children.length || !hugsInside(loop, cells, children)) continue;
     const key = houseKey(children);
     const prev = traced.get(key);
-    if (!prev || loop.length > prev.loop.length) traced.set(key, { loop, children, key, cells });
+    const tighter = !prev
+      || cells.length < prev.cells.length
+      || (cells.length === prev.cells.length && loop.length > prev.loop.length);
+    if (tighter) traced.set(key, { loop, children, key, cells });
   }
   const tracedHouses = [...traced.values()].sort((a, b) => a.loop.length - b.loop.length);
   const claimed = new Set();

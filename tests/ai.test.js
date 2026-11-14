@@ -49,9 +49,10 @@ function startedRing() {
   return game;
 }
 
-const built = chooseMove(startedRing(), "medium");
+const ring = startedRing();
+const built = chooseMove(ring, "medium");
 assert(built && Math.max(Math.abs(built.r - 3), Math.abs(built.c - 3)) === 1, "moyen poursuit la forme autour du point adverse");
-const again = chooseMove(startedRing(), "medium");
+const again = chooseMove(ring, "medium");
 assert(again && again.r === built.r && again.c === built.c, "moyen rejoue le même coup");
 
 const opening = chooseMove(createGame({ rows: 5, cols: 5, extraTurn: true, timeMode: "none" }), "medium");
