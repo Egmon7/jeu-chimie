@@ -2404,10 +2404,18 @@ async function sendAuth() {
       showAuthError(looked.error || "Réessaie dans un instant.");
       return;
     }
+    if (!looked.data.exists) {
+      if (auth.mode === "login") {
+        showAuthError("Aucun compte avec cet e-mail.");
+        return;
+      }
+      auth.exists = false;
+    } else {
+      auth.exists = true;
+      auth.mode = "login";
+    }
     auth.name = name;
     auth.email = email;
-    auth.exists = looked.data.exists === true;
-    auth.mode = auth.exists ? "login" : "create";
     $("auth-password").value = "";
     $("auth-confirm").value = "";
     showAuthFace("password");
