@@ -28,6 +28,13 @@
       </svg>
       <span>Jeu - chimie</span>
     </button>
+    <p id="user-chip" class="user-chip" hidden>
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <circle cx="12" cy="8" r="3.2" fill="none" stroke="currentColor" stroke-width="1.7"/>
+        <path d="M5.5 19.2c1.3-3 3.5-4.4 6.5-4.4s5.2 1.4 6.5 4.4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+      </svg>
+      <span id="user-chip-name"></span>
+    </p>
   </header>
 
   <main>
@@ -386,7 +393,7 @@
           </label>
           <p id="photo-status" class="photo-status" aria-live="polite"></p>
         </div>
-        <label>Nom <input id="profile-name" type="text" maxlength="40" autocomplete="name" placeholder="Ton nom"></label>
+        <label>Nom et prénom <input id="profile-name" type="text" maxlength="40" autocomplete="name" placeholder="Nom et prénom"></label>
         <label>E-mail <input id="profile-email" type="email" maxlength="80" autocomplete="email" placeholder="ton@email"></label>
         <div class="form-actions">
           <button type="button" class="btn" data-home>Retour</button>
@@ -469,6 +476,49 @@
       </label>
       <div class="form-actions" id="app-dialog-actions"></div>
     </div>
+  </div>
+  <div id="auth-dialog" class="overlay page-dialog" hidden>
+    <form id="auth-form" class="dialog">
+      <p class="eyebrow">Profil</p>
+      <h2 id="auth-title">Votre profil</h2>
+      <p id="auth-text"></p>
+      <label id="auth-name-label">Nom et prénom
+        <input id="auth-name" type="text" maxlength="40" autocomplete="name" placeholder="Nom et prénom">
+      </label>
+      <label id="auth-email-label">E-mail
+        <input id="auth-email" type="email" maxlength="80" autocomplete="username" placeholder="ton@email">
+      </label>
+      <label id="auth-password-label" hidden>Mot de passe
+        <span class="secret">
+          <input id="auth-password" type="password" maxlength="80" autocomplete="current-password">
+          <button type="button" class="secret-see" data-for="auth-password" aria-label="Afficher le mot de passe" aria-pressed="false">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path class="eye-on" d="M2.5 12s3.4-6 9.5-6 9.5 6 9.5 6-3.4 6-9.5 6-9.5-6-9.5-6z" fill="none" stroke="currentColor" stroke-width="1.7"/>
+              <circle class="eye-on" cx="12" cy="12" r="2.5" fill="none" stroke="currentColor" stroke-width="1.7"/>
+              <path class="eye-off" d="M4 5.5l16 13" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+              <path class="eye-off" d="M9.2 9.6A3 3 0 0 0 12 15a3 3 0 0 0 2.6-1.5M7 7.2C5 8.6 3.2 12 3.2 12s3.2 5.5 8.8 5.5c1.4 0 2.6-.3 3.7-.8M10.2 6.1C10.8 5.9 11.4 5.8 12 5.8c5.6 0 8.8 6.2 8.8 6.2a16 16 0 0 1-2.6 3.2" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+            </svg>
+          </button>
+        </span>
+      </label>
+      <label id="auth-confirm-label" hidden>Confirmation
+        <span class="secret">
+          <input id="auth-confirm" type="password" maxlength="80" autocomplete="new-password">
+          <button type="button" class="secret-see" data-for="auth-confirm" aria-label="Afficher le mot de passe" aria-pressed="false">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path class="eye-on" d="M2.5 12s3.4-6 9.5-6 9.5 6 9.5 6-3.4 6-9.5 6-9.5-6-9.5-6z" fill="none" stroke="currentColor" stroke-width="1.7"/>
+              <circle class="eye-on" cx="12" cy="12" r="2.5" fill="none" stroke="currentColor" stroke-width="1.7"/>
+              <path class="eye-off" d="M4 5.5l16 13" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+              <path class="eye-off" d="M9.2 9.6A3 3 0 0 0 12 15a3 3 0 0 0 2.6-1.5M7 7.2C5 8.6 3.2 12 3.2 12s3.2 5.5 8.8 5.5c1.4 0 2.6-.3 3.7-.8M10.2 6.1C10.8 5.9 11.4 5.8 12 5.8c5.6 0 8.8 6.2 8.8 6.2a16 16 0 0 1-2.6 3.2" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+            </svg>
+          </button>
+        </span>
+      </label>
+      <p id="auth-error" hidden></p>
+      <div class="form-actions">
+        <button type="submit" class="btn primary" id="auth-go">Continuer</button>
+      </div>
+    </form>
   </div>
 
   <footer class="site-footer">created by Prospere Egmon</footer>

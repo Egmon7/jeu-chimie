@@ -91,3 +91,19 @@ export function playerId() {
   localStorage.setItem(key, id);
   return id;
 }
+
+export function setPlayerId(id) {
+  localStorage.setItem("egmon-player-id", id);
+}
+
+export function loadSession() {
+  const session = read().session;
+  if (!session || session.connected !== true) return null;
+  return session;
+}
+
+export function saveSession(session) {
+  const data = read();
+  data.session = session;
+  write(data);
+}

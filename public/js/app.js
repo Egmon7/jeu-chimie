@@ -21,11 +21,14 @@ import {
   loadHistory,
   loadPrefs,
   loadProfile,
+  loadSession,
   playerId,
   pushHistory,
   replaceHistory,
   savePrefs,
   saveProfile,
+  saveSession,
+  setPlayerId,
 } from "./storage.js";
 
 document.body.classList.add("ready");
@@ -1628,6 +1631,7 @@ function goHome() {
   app.mode = null;
   hideOverlay();
   show("screen-home", online ? "replace" : "push");
+  maybeAskAccount();
 }
 
 function confirmAbandon() {
@@ -2226,6 +2230,203 @@ function openHub(name) {
   }
 }
 
+const auth = { step: "identity", exists: false, name: "", email: "" };
+
+function firstNameGroup(name) {
+  return String(name || "").trim().split(/\s+/)[0] || "";
+}
+
+function paintUserChip() {
+  const chip = $("user-chip");
+  const label = firstNameGroup(loadProfile().name);
+  if (!chip) return;
+  chip.hidden = !label;
+  const slot = $("user-chip-name");
+  if (slot) slot.textContent = label;
+}
+
+function isConnected() {
+  const session = loadSession();
+  return session?.connected === true && session.id === playerId() && Boolean(loadProfile().name);
+}
+
+function livePlayOpen() {
+  try {
+    if (sessionStorage.getItem("egmon-live-match")) return true;
+    if (sessionStorage.getItem("egmon-room")) return true;
+  } catch {
+    /* ignore */
+  }
+  return document.body.dataset.page === "play";
+}
+
+function showAuthError(message) {
+  const node = $("auth-error");
+  node.hidden = false;
+  node.textContent = message;
+}
+
+async function authFetch(url, body) {
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) return { ok: false, error: data.error || "" };
+    return { ok: true, data };
+  } catch {
+    return { ok: false, error: "Réessaie dans un instant." };
+  }
+}
+
+function hideSecrets() {
+  for (const id of ["auth-password", "auth-confirm"]) {
+    const input = $(id);
+    if (input) input.type = "password";
+  }
+  document.querySelectorAll(".secret-see").forEach((button) => {
+    button.classList.remove("is-on");
+    button.setAttribute("aria-pressed", "false");
+    button.setAttribute("aria-label", "Afficher le mot de passe");
+  });
+}
+
+function showAuthStep(step) {
+  auth.step = step;
+  const named = Boolean(loadProfile().name) && step === "identity";
+  $("auth-name-label").hidden = step !== "identity" || named;
+  $("auth-email-label").hidden = step !== "identity";
+  $("auth-password-label").hidden = step !== "password";
+  $("auth-confirm-label").hidden = step !== "password" || auth.exists;
+  $("auth-error").hidden = true;
+  if (step === "identity") {
+    $("auth-title").textContent = named ? "Votre e-mail" : "Votre profil";
+    $("auth-text").textContent = !named
+      ? "Écris ton nom et prénom, puis ton e-mail."
+      : loadProfile().email
+        ? "Entre avec l’e-mail de ton profil."
+        : "Tu avais mentionné ton profil sans e-mail.";
+    $("auth-go").textContent = "Continuer";
+  } else {
+    $("auth-title").textContent = "Mot de passe";
+    $("auth-text").textContent = auth.exists
+      ? "Écris le mot de passe de ce profil."
+      : "Choisis un mot de passe, puis confirme-le.";
+    $("auth-go").textContent = auth.exists ? "Entrer" : "Créer le profil";
+    $("auth-password").autocomplete = auth.exists ? "current-password" : "new-password";
+    hideSecrets();
+  }
+}
+
+function openAuth() {
+  if (!$("auth-dialog").hidden) return;
+  auth.exists = false;
+  auth.name = loadProfile().name || "";
+  auth.email = "";
+  $("auth-name").value = "";
+  $("auth-email").value = "";
+  $("auth-password").value = "";
+  $("auth-confirm").value = "";
+  showAuthStep("identity");
+  $("auth-dialog").hidden = false;
+  window.setTimeout(() => (loadProfile().name ? $("auth-email") : $("auth-name")).focus(), 30);
+}
+
+function finishAuth(profile) {
+  setPlayerId(profile.id);
+  saveProfile({
+    name: profile.name,
+    email: profile.email,
+    icon: profile.icon,
+    photo: profile.photo,
+  });
+  saveSession({ connected: true, id: profile.id, email: profile.email });
+  $("auth-dialog").hidden = true;
+  paintUserChip();
+  pullHistory();
+  if (!$("screen-profile").hidden) fillProfileForm(loadProfile());
+}
+
+async function submitAuth(event) {
+  event.preventDefault();
+  const button = $("auth-go");
+  button.disabled = true;
+  try {
+    await sendAuth(event);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function sendAuth() {
+  if (auth.step === "identity") {
+    const name = loadProfile().name || $("auth-name").value.trim();
+    const email = $("auth-email").value.trim();
+    if (!name) {
+      showAuthError("Écris ton nom et prénom.");
+      return;
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      showAuthError("Cet e-mail n’est pas valide.");
+      return;
+    }
+    const looked = await authFetch("/api/auth/lookup", { email });
+    if (!looked.ok) {
+      showAuthError(looked.error || "Réessaie dans un instant.");
+      return;
+    }
+    auth.name = name;
+    auth.email = email;
+    auth.exists = looked.data.exists === true;
+    $("auth-password").value = "";
+    $("auth-confirm").value = "";
+    showAuthStep("password");
+    $("auth-password").focus();
+    return;
+  }
+  const password = $("auth-password").value;
+  if (password.length < 6) {
+    showAuthError("Le mot de passe doit avoir au moins 6 caractères.");
+    return;
+  }
+  if (!auth.exists && password !== $("auth-confirm").value) {
+    showAuthError("Les deux mots de passe ne sont pas les mêmes.");
+    return;
+  }
+  const result = auth.exists
+    ? await authFetch("/api/auth/login", { email: auth.email, password })
+    : await authFetch("/api/auth/register", {
+      playerId: playerId(),
+      name: auth.name,
+      email: auth.email,
+      password,
+    });
+  if (!result.ok) {
+    showAuthError(result.error || "Réessaie dans un instant.");
+    return;
+  }
+  finishAuth(result.data);
+}
+
+async function maybeAskAccount() {
+  const session = loadSession();
+  if (session?.id) setPlayerId(session.id);
+  paintUserChip();
+  if (isConnected()) {
+    try {
+      const response = await fetch(`/api/profile/${playerId()}`);
+      if (response.status !== 401) return;
+      saveSession(null);
+    } catch {
+      return;
+    }
+  }
+  if (livePlayOpen()) return;
+  openAuth();
+}
+
 function bind() {
   const rail = $("reactions");
   if (rail) {
@@ -2304,28 +2505,12 @@ function bind() {
   }
 
   $("create-match").addEventListener("click", () => {
-    const profile = loadProfile();
-    const enter = () => {
-      try { sessionStorage.removeItem("egmon-hub"); } catch { /* ignore */ }
-      show("screen-modes");
-    };
-    if (profile.name) {
-      enter();
+    if (!isConnected()) {
+      maybeAskAccount();
       return;
     }
-    askDialog({
-      kicker: "Profil",
-      title: "Votre nom de profil",
-      text: "Ce nom est le tien. Il est gardé pour tes prochaines parties.",
-      confirm: "Continuer",
-      cancel: "Retour",
-      field: { value: "", placeholder: "Ton nom" },
-      onYes: (name) => {
-        const saved = saveProfile({ name, email: profile.email, icon: profile.icon });
-        syncProfile(saved);
-        enter();
-      },
-    });
+    try { sessionStorage.removeItem("egmon-hub"); } catch { /* ignore */ }
+    show("screen-modes");
   });
   $("go-solo").addEventListener("click", () => {
     askDialog({
@@ -2364,7 +2549,7 @@ function bind() {
     event.target.value = "";
     if (file) uploadProfilePhoto(file);
   });
-  $("profile-form").addEventListener("submit", (event) => {
+  $("profile-form").addEventListener("submit", async (event) => {
     event.preventDefault();
     const name = $("profile-name").value.trim();
     const email = $("profile-email").value.trim();
@@ -2377,9 +2562,30 @@ function bind() {
       return;
     }
     const photo = $("profile-photo").dataset.full || "";
-    saveProfile({ name, email, photo });
-    syncProfile({ name, email, photo });
-    toast("Profil enregistré.");
+    try {
+      const response = await fetch(`/api/profile/${playerId()}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, email, photo }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (response.status === 401) {
+        saveSession(null);
+        openAuth();
+        return;
+      }
+      if (!response.ok) {
+        toast(data.error || "Profil non enregistré.");
+        return;
+      }
+      saveProfile({ name: data.name || name, email: data.email || email, photo: data.photo || photo, icon: data.icon });
+      const session = loadSession();
+      if (session?.connected) saveSession({ ...session, email: data.email || email });
+      paintUserChip();
+      toast("Profil enregistré.");
+    } catch {
+      toast("Profil non enregistré.");
+    }
   });
   $("setup-form").addEventListener("submit", (event) => {
     event.preventDefault();
@@ -2564,6 +2770,19 @@ function bind() {
 
   applyTheme($("screen-game").hidden ? "classic" : app.prefs.theme);
   app.sounds.enabled = false;
+  $("auth-form").addEventListener("submit", submitAuth);
+  document.querySelectorAll(".secret-see").forEach((button) => {
+    button.addEventListener("click", () => {
+      const input = $(button.dataset.for);
+      if (!input) return;
+      const shown = input.type === "password";
+      input.type = shown ? "text" : "password";
+      button.classList.toggle("is-on", shown);
+      button.setAttribute("aria-pressed", shown ? "true" : "false");
+      button.setAttribute("aria-label", shown ? "Masquer le mot de passe" : "Afficher le mot de passe");
+    });
+  });
+  maybeAskAccount();
   requestAnimationFrame(loop);
   window.egmonApp = app;
 }

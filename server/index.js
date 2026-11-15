@@ -1,5 +1,7 @@
 import express from "express";
 import { createServer } from "http";
+import { randomBytes, scrypt, timingSafeEqual } from "crypto";
+import { promisify } from "util";
 import path from "path";
 import { fileURLToPath } from "url";
 import { Server } from "socket.io";
@@ -17,6 +19,8 @@ import {
 import {
   clearGames,
   dbReady,
+  emailTaken,
+  findAccount,
   initDb,
   insertGame,
   insertMessage,
@@ -24,7 +28,10 @@ import {
   listGames,
   ranking,
   progressOf,
+  openSession,
   readProfile,
+  saveAccount,
+  sessionPlayer,
   upsertProfile,
 } from "./db.js";
 
@@ -104,20 +111,150 @@ function apiPlayer(req, res) {
   return id;
 }
 
+const scryptAsync = promisify(scrypt);
+const SCRYPT = { N: 16384, r: 8, p: 1, maxmem: 32 * 1024 * 1024 };
+const EMAIL_OK = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+function cleanEmail(value) {
+  return String(value || "").trim().toLowerCase().slice(0, 80);
+}
+
+async function hashPassword(password) {
+  const salt = randomBytes(16).toString("hex");
+  const hash = await scryptAsync(password, salt, 32, SCRYPT);
+  return `${salt}:${hash.toString("hex")}`;
+}
+
+async function checkPassword(password, stored) {
+  const [salt, hex] = String(stored || "").split(":");
+  if (!salt || !/^[0-9a-f]{64}$/i.test(hex)) return false;
+  const hash = await scryptAsync(password, salt, 32, SCRYPT);
+  const left = Buffer.from(hex, "hex");
+  if (left.length !== hash.length) return false;
+  return timingSafeEqual(left, hash);
+}
+
+function readCookie(req, name) {
+  const raw = String(req.headers.cookie || "");
+  for (const part of raw.split(";")) {
+    const item = part.trim();
+    if (!item.startsWith(`${name}=`)) continue;
+    try {
+      return decodeURIComponent(item.slice(name.length + 1));
+    } catch {
+      return "";
+    }
+  }
+  return "";
+}
+
+function setSessionCookie(req, res, token) {
+  const secure = req.secure || req.headers["x-forwarded-proto"] === "https";
+  res.setHeader("Set-Cookie", `egmon_session=${encodeURIComponent(token)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=31536000${secure ? "; Secure" : ""}`);
+}
+
+async function requireSession(req, res, playerId) {
+  const owner = await sessionPlayer(readCookie(req, "egmon_session"));
+  if (!owner || owner !== playerId) {
+    res.status(401).json({ error: "Connexion requise." });
+    return false;
+  }
+  return true;
+}
+
+app.post("/api/auth/lookup", api(async (req, res) => {
+  if (!dbReady()) {
+    res.status(503).json({ error: "Base indisponible." });
+    return;
+  }
+  if (limited(`${clientIp(req)}:lookup`, 20, 10 * 60_000)) {
+    res.status(429).json({ error: "Trop d'essais." });
+    return;
+  }
+  const email = cleanEmail(req.body?.email);
+  if (!EMAIL_OK.test(email)) {
+    res.status(400).json({ error: "Cet e-mail n’est pas valide." });
+    return;
+  }
+  if (limited(`${email}:lookup`, 12, 15 * 60_000)) {
+    res.status(429).json({ error: "Trop d'essais." });
+    return;
+  }
+  const account = await findAccount(email);
+  res.json({ exists: Boolean(account?.password_hash) });
+}));
+
+app.post("/api/auth/register", api(async (req, res) => {
+  if (!dbReady()) {
+    res.status(503).json({ error: "Base indisponible." });
+    return;
+  }
+  if (limited(`${clientIp(req)}:register`, 10, 10 * 60_000)) {
+    res.status(429).json({ error: "Trop d'essais." });
+    return;
+  }
+  const email = cleanEmail(req.body?.email);
+  const name = String(req.body?.name || "").trim().slice(0, 40);
+  const password = String(req.body?.password || "");
+  const id = isUuid(req.body?.playerId) ? req.body.playerId : "";
+  if (!name || !EMAIL_OK.test(email) || password.length < 6 || password.length > 80 || !id) {
+    res.status(400).json({ error: "Nom, e-mail ou mot de passe invalide." });
+    return;
+  }
+  const saved = await saveAccount({ id, name, email, passwordHash: await hashPassword(password) });
+  if (saved.error) {
+    res.status(409).json({ error: saved.error });
+    return;
+  }
+  setSessionCookie(req, res, await openSession(saved.profile.id));
+  res.json({ id: saved.profile.id, name: saved.profile.name, email: saved.profile.email, icon: saved.profile.icon, photo: saved.profile.photo });
+}));
+
+app.post("/api/auth/login", api(async (req, res) => {
+  if (!dbReady()) {
+    res.status(503).json({ error: "Base indisponible." });
+    return;
+  }
+  const email = cleanEmail(req.body?.email);
+  const password = String(req.body?.password || "");
+  if (!EMAIL_OK.test(email) || password.length < 1 || password.length > 80) {
+    res.status(400).json({ error: "E-mail ou mot de passe invalide." });
+    return;
+  }
+  if (limited(`${clientIp(req)}:login`, 20, 10 * 60_000) || limited(`${email}:login`, 8, 15 * 60_000)) {
+    res.status(429).json({ error: "Trop d'essais." });
+    return;
+  }
+  const account = await findAccount(email);
+  const passwordOk = account?.password_hash
+    ? await checkPassword(password, account.password_hash)
+    : await hashPassword(password).then(() => false);
+  if (!passwordOk) {
+    res.status(401).json({ error: "Mot de passe incorrect." });
+    return;
+  }
+  setSessionCookie(req, res, await openSession(account.id));
+  res.json({ id: account.id, name: account.name, email: account.email, icon: account.icon, photo: account.photo });
+}));
+
 app.get("/api/profile/:id", api(async (req, res) => {
   const id = apiPlayer(req, res);
-  if (!id) return;
+  if (!id || !(await requireSession(req, res, id))) return;
   const profile = await readProfile(id);
   res.json(profile || { name: "", email: "" });
 }));
 
 app.put("/api/profile/:id", api(async (req, res) => {
   const id = apiPlayer(req, res);
-  if (!id) return;
+  if (!id || !(await requireSession(req, res, id))) return;
   const name = String(req.body?.name || "").trim().slice(0, 40);
-  const email = String(req.body?.email || "").trim().slice(0, 80);
-  if (!name || (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))) {
+  const email = cleanEmail(req.body?.email);
+  if (!name || (email && !EMAIL_OK.test(email))) {
     res.status(400).json({ error: "Nom ou e-mail invalide." });
+    return;
+  }
+  if (email && await emailTaken(email, id)) {
+    res.status(409).json({ error: "Cet e-mail a déjà un profil." });
     return;
   }
   const icon = ["dot", "house", "star", "crown", "pen", "book", "flame", "gem"].includes(req.body?.icon)
@@ -127,7 +264,15 @@ app.put("/api/profile/:id", api(async (req, res) => {
   const photo = /^https:\/\/res\.cloudinary\.com\/ka4h4lpk\/image\/upload\/[A-Za-z0-9_./%-]{1,360}$/.test(rawPhoto)
     ? rawPhoto
     : null;
-  res.json(await upsertProfile({ id, name, email, icon, photo }));
+  try {
+    res.json(await upsertProfile({ id, name, email, icon, photo }));
+  } catch (error) {
+    if (error.code === "23505") {
+      res.status(409).json({ error: "Cet e-mail a déjà un profil." });
+      return;
+    }
+    throw error;
+  }
 }));
 
 app.get("/api/ranking", api(async (req, res) => {
@@ -162,13 +307,13 @@ app.get("/api/progress", api(async (req, res) => {
 
 app.get("/api/games/:id", api(async (req, res) => {
   const id = apiPlayer(req, res);
-  if (!id) return;
+  if (!id || !(await requireSession(req, res, id))) return;
   res.json(await listGames(id));
 }));
 
 app.post("/api/games/:id", api(async (req, res) => {
   const id = apiPlayer(req, res);
-  if (!id) return;
+  if (!id || !(await requireSession(req, res, id))) return;
   const entry = validGame(req.body);
   if (!entry) {
     res.status(400).json({ error: "Partie invalide." });
@@ -203,7 +348,7 @@ app.post("/api/messages", api(async (req, res) => {
 
 app.delete("/api/games/:id", api(async (req, res) => {
   const id = apiPlayer(req, res);
-  if (!id) return;
+  if (!id || !(await requireSession(req, res, id))) return;
   await clearGames(id);
   res.json({ ok: true });
 }));

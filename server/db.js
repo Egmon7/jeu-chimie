@@ -1,3 +1,4 @@
+import { createHash, randomBytes } from "crypto";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -76,6 +77,24 @@ export async function initDb() {
   await pool.query("ALTER TABLE games ADD COLUMN IF NOT EXISTS duration_ms integer");
   await pool.query("ALTER TABLE games ADD COLUMN IF NOT EXISTS behind boolean NOT NULL DEFAULT false");
   await pool.query("ALTER TABLE games ADD COLUMN IF NOT EXISTS clean boolean NOT NULL DEFAULT false");
+  await pool.query("ALTER TABLE profiles ADD COLUMN IF NOT EXISTS password_hash text NOT NULL DEFAULT ''");
+  try {
+    await pool.query(`
+      CREATE UNIQUE INDEX IF NOT EXISTS profiles_email_unique
+      ON profiles (lower(email))
+      WHERE email <> ''
+    `);
+  } catch (error) {
+    console.error("Index e-mail:", error.message);
+  }
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS sessions (
+      token_hash text PRIMARY KEY,
+      player_id uuid NOT NULL,
+      created_at timestamptz NOT NULL DEFAULT now()
+    )
+  `);
+  await pool.query("CREATE INDEX IF NOT EXISTS sessions_player ON sessions (player_id)");
   ready = true;
 }
 
@@ -98,6 +117,83 @@ export async function upsertProfile({ id, name, email, icon, photo }) {
 export async function readProfile(id) {
   const { rows } = await pool.query("SELECT name, email, icon, photo FROM profiles WHERE id = $1", [id]);
   return rows[0] || null;
+}
+
+export async function findAccount(email) {
+  const { rows } = await pool.query(
+    `SELECT id, name, email, icon, photo, password_hash
+     FROM profiles
+     WHERE lower(email) = lower($1)
+     LIMIT 1`,
+    [email],
+  );
+  return rows[0] || null;
+}
+
+export async function emailTaken(email, exceptId) {
+  const { rows } = await pool.query(
+    "SELECT id FROM profiles WHERE lower(email) = lower($1) AND id <> $2 LIMIT 1",
+    [email, exceptId],
+  );
+  return Boolean(rows[0]);
+}
+
+async function accountById(id) {
+  const { rows } = await pool.query(
+    "SELECT id, email, password_hash FROM profiles WHERE id = $1",
+    [id],
+  );
+  return rows[0] || null;
+}
+
+export async function saveAccount({ id, name, email, passwordHash }) {
+  const byEmail = await findAccount(email);
+  if (byEmail && byEmail.id !== id) return { error: "Cet e-mail a déjà un profil." };
+  const byId = byEmail?.id === id ? byEmail : await accountById(id);
+  try {
+    const { rows } = byId
+      ? await pool.query(
+        `UPDATE profiles
+         SET name = $2, email = $3, password_hash = $4, updated_at = now()
+         WHERE id = $1
+         RETURNING id, name, email, icon, photo`,
+        [byId.id, name, email, passwordHash],
+      )
+      : await pool.query(
+        `INSERT INTO profiles (id, name, email, password_hash)
+         VALUES ($1, $2, $3, $4)
+         RETURNING id, name, email, icon, photo`,
+        [id, name, email, passwordHash],
+      );
+    if (!rows[0]) return { error: "Profil introuvable." };
+    return { profile: rows[0] };
+  } catch (error) {
+    if (error.code === "23505") return { error: "Cet e-mail a déjà un profil." };
+    throw error;
+  }
+}
+
+function tokenHash(token) {
+  return createHash("sha256").update(String(token)).digest("hex");
+}
+
+export async function openSession(playerId) {
+  const token = randomBytes(32).toString("base64url");
+  await pool.query(
+    "INSERT INTO sessions (token_hash, player_id) VALUES ($1, $2)",
+    [tokenHash(token), playerId],
+  );
+  return token;
+}
+
+export async function sessionPlayer(token) {
+  const value = String(token || "");
+  if (value.length < 20 || value.length > 200) return "";
+  const { rows } = await pool.query(
+    "SELECT player_id FROM sessions WHERE token_hash = $1",
+    [tokenHash(value)],
+  );
+  return rows[0]?.player_id || "";
 }
 
 function winnerOut(value) {
