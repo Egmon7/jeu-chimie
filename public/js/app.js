@@ -90,14 +90,13 @@ const SCREEN_BY_PAGE = {
   lobby: "screen-lobby",
   game: "screen-game",
   history: "screen-history",
-  "online-games": "screen-online-games",
   profile: "screen-profile",
   progress: "screen-progress",
   rank: "screen-rank",
   badges: "screen-badges",
 };
 
-const SHELL_PAGES = new Set(["home", "modes", "setup", "profile", "progress", "rank", "badges", "history", "online-games"]);
+const SHELL_PAGES = new Set(["home", "modes", "setup", "profile", "progress", "rank", "badges", "history"]);
 
 function pageOf(id) {
   return Object.keys(SCREEN_BY_PAGE).find((key) => SCREEN_BY_PAGE[key] === id) || "home";
@@ -137,7 +136,6 @@ function show(id, historyMode = "push") {
   if (id === "screen-rank") loadRanking();
   if (id === "screen-badges") renderBadgeCatalog();
   if (id === "screen-history") pullHistory();
-  if (id === "screen-online-games") loadOnlineGames();
   if (id === "screen-modes") openHub(savedHub());
   if (historyMode === "skip") return;
   const url = page === "home"
@@ -2318,42 +2316,6 @@ async function joinRoom(code, color) {
   }
 }
 
-function formatPlayDate(value) {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "";
-  return date.toLocaleString("fr-FR", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
-}
-
-function playCount(count) {
-  return `${count} partie${count > 1 ? "s" : ""}`;
-}
-
-async function loadOnlineGames() {
-  const total = $("online-total");
-  const list = $("online-games");
-  list.replaceChildren();
-  total.textContent = "Chargement…";
-  const data = await sendJson("/api/online-games", "GET");
-  if (!data) {
-    total.textContent = "Les parties en ligne ne sont pas disponibles.";
-    return;
-  }
-  const count = Number(data.total) || 0;
-  total.textContent = count ? playCount(count) : "Aucune partie en ligne.";
-  for (const player of data.players || []) {
-    const row = document.createElement("article");
-    row.className = "online-player";
-    const name = document.createElement("strong");
-    name.textContent = player.name || "Joueur";
-    const games = document.createElement("span");
-    games.textContent = playCount(Number(player.games) || 0);
-    const dates = document.createElement("p");
-    dates.textContent = (player.dates || []).map(formatPlayDate).filter(Boolean).join(" · ");
-    row.append(name, games, dates);
-    list.append(row);
-  }
-}
-
 function renderHistory() {
   const history = loadHistory();
   const ranked = history.filter((item) => item.userSeat === 0 || item.userSeat === 1);
@@ -2908,7 +2870,6 @@ function bind() {
     renderHistory();
     show("screen-history");
   });
-  $("go-online-games").addEventListener("click", () => show("screen-online-games"));
   $("profile-file").addEventListener("change", (event) => {
     const file = event.target.files?.[0];
     event.target.value = "";

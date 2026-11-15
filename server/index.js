@@ -27,7 +27,6 @@ import {
   insertMessage,
   isUuid,
   listGames,
-  onlinePlay,
   ranking,
   progressOf,
   openSession,
@@ -380,18 +379,6 @@ app.get("/api/progress", api(async (req, res) => {
     return;
   }
   res.json(await progressOf(player));
-}));
-
-app.get("/api/online-games", api(async (req, res) => {
-  if (!dbReady()) {
-    res.status(503).json({ error: "Base indisponible." });
-    return;
-  }
-  if (limited(`${clientIp(req)}:online-games`, 60, 60_000)) {
-    res.status(429).json({ error: "Trop d'essais." });
-    return;
-  }
-  res.json(await onlinePlay());
 }));
 
 app.get("/api/games/:id", api(async (req, res) => {

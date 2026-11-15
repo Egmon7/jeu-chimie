@@ -265,59 +265,6 @@ export async function insertGame(playerId, entry) {
   );
 }
 
-export async function onlinePlay() {
-  const { rows } = await pool.query(
-    `SELECT player_id, played_at, names, user_seat
-     FROM games
-     WHERE mode = 'online'
-     ORDER BY played_at DESC
-     LIMIT 500`,
-  );
-  const matches = new Map();
-  for (const row of rows) {
-    const names = Array.isArray(row.names) ? row.names.map((name) => String(name || "").trim()).filter(Boolean) : [];
-    const at = new Date(row.played_at).getTime();
-    const key = `${names.map((name) => name.toLowerCase()).sort().join("|")}|${Math.floor(at / 60000)}`;
-    if (!matches.has(key)) matches.set(key, []);
-    matches.get(key).push({ ...row, names, at });
-  }
-  const people = new Map();
-  for (const list of matches.values()) {
-    const at = Math.min(...list.map((row) => row.at));
-    const credited = new Set();
-    const seen = new Set();
-    for (const row of list) {
-      const seat = row.user_seat === 0 || row.user_seat === 1 ? row.user_seat : 0;
-      const own = row.names[seat] || row.names[0] || "Joueur";
-      const id = row.player_id || `nom:${own.toLowerCase()}`;
-      if (seen.has(id)) continue;
-      seen.add(id);
-      if (!people.has(id)) people.set(id, { name: own, games: 0, dates: [] });
-      const person = people.get(id);
-      person.name = own || person.name;
-      person.games += 1;
-      person.dates.push(at);
-      credited.add(own.toLowerCase());
-    }
-    const mentioned = new Set(list.flatMap((row) => row.names));
-    for (const name of mentioned) {
-      if (credited.has(name.toLowerCase())) continue;
-      const id = `nom:${name.toLowerCase()}`;
-      if (!people.has(id)) people.set(id, { name, games: 0, dates: [] });
-      people.get(id).games += 1;
-      people.get(id).dates.push(at);
-    }
-  }
-  const players = [...people.values()]
-    .map((person) => ({
-      name: person.name,
-      games: person.games,
-      dates: [...new Set(person.dates)].sort((a, b) => b - a).slice(0, 8),
-    }))
-    .sort((a, b) => b.games - a.games || a.name.localeCompare(b.name, "fr"));
-  return { total: matches.size, players };
-}
-
 export async function listGames(playerId) {
   const { rows } = await pool.query(
     `SELECT id, played_at, mode, sheet, names, scores, winner, user_seat, reason, difficulty, duration_ms, behind, clean
