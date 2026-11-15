@@ -510,13 +510,16 @@ function iconMarkup(icon) {
 
 const LEVELS = [
   { xp: 0, name: "Élève", icon: "dot" },
-  { xp: 50, name: "Stylo", icon: "pen" },
-  { xp: 150, name: "Cahier", icon: "book" },
-  { xp: 400, name: "Bâtisseur", icon: "house" },
-  { xp: 800, name: "Étoile", icon: "star" },
-  { xp: 1500, name: "Losange", icon: "gem" },
-  { xp: 3000, name: "Flamme", icon: "flame" },
-  { xp: 6000, name: "Couronne", icon: "crown" },
+  { xp: 150, name: "Stylo", icon: "pen" },
+  { xp: 500, name: "Cahier", icon: "book" },
+  { xp: 1200, name: "Bâtisseur", icon: "house" },
+  { xp: 2500, name: "Étoile", icon: "star" },
+  { xp: 5000, name: "Losange", icon: "gem" },
+  { xp: 8000, name: "Flamme", icon: "flame" },
+  { xp: 12000, name: "Copiste", icon: "pen" },
+  { xp: 18000, name: "Archiviste", icon: "book" },
+  { xp: 24000, name: "Maître", icon: "house" },
+  { xp: 30000, name: "Couronne", icon: "crown" },
 ];
 
 const RANK_TITLE = {
@@ -605,23 +608,14 @@ function challengeBonus(games = loadHistory()) {
   return CHALLENGES.reduce((sum, item) => sum + (earned.has(item.id) ? item.xp : 0), 0);
 }
 
-function challengeSummary(rows) {
-  const earned = CHALLENGES.filter((item) => item.test(rows));
-  const xp = earned.reduce((sum, item) => sum + item.xp, 0);
-  const n = earned.length;
-  return `${n} atteint${n > 1 ? "s" : ""} sur ${CHALLENGES.length} · +${xp} XP`;
-}
-
 function renderChallenges() {
   const box = $("challenge-list");
   if (!box) return;
-  const rows = soloGames();
   box.innerHTML = CHALLENGES.map((item) => {
-    const done = item.test(rows);
-    return `<button type="button" class="challenge-card${done ? " reached" : ""}" data-challenge="${esc(item.id)}"><strong>${esc(item.name)}</strong><span>+${item.xp} XP</span><p>${esc(item.text)}</p><em>${done ? "Atteint · rejouer" : "Entrer"}</em></button>`;
+    return `<button type="button" class="challenge-card" data-challenge="${esc(item.id)}"><strong>${esc(item.name)}</strong><span>+${item.xp} XP</span><p>${esc(item.text)}</p><em>Jouer</em></button>`;
   }).join("");
   const status = $("challenge-status");
-  if (status) status.textContent = challengeSummary(rows);
+  if (status) status.textContent = "";
 }
 
 function startChallenge(id) {
@@ -673,7 +667,7 @@ function renderProgress(rows) {
     return `<li class="${here ? "current" : known && xp >= item.xp ? "reached" : ""}"><strong>${esc(item.name)}</strong><span>${label}</span></li>`;
   }).join("");
   const badges = BADGE_GOALS.map((item) => `<li class="${earned.has(item.name) ? "reached" : ""}"><img src="${item.img}" alt=""><strong>${esc(item.name)}</strong><span>${earned.has(item.name) ? "Atteint" : esc(item.need)}</span></li>`).join("");
-  $("level-list").innerHTML = `<h2>Niveaux</h2><ul class="goal-list">${levels}</ul><h2>Badges à atteindre</h2><ul class="goal-list">${badges}</ul>`;
+  $("level-list").innerHTML = `<h2>Niveaux</h2><ul class="goal-list level-scroll">${levels}</ul><h2>Badges à atteindre</h2><ul class="goal-list">${badges}</ul>`;
 }
 
 let rankCache = null;
@@ -2092,7 +2086,7 @@ function openHub(name) {
       window.clearTimeout(wait);
       if (!panel || panel.hidden) return;
       renderChallenges();
-      if (!ok && status) status.textContent = `${challengeSummary(soloGames())} · affichés depuis cet appareil`;
+      if (!ok && status) status.textContent = "Affichés depuis cet appareil.";
     });
   }
 }

@@ -1169,8 +1169,7 @@ body[data-page="modes"] [data-hub-panel="challenges"] {
 button.challenge-card:hover,
 button.challenge-card:focus-visible { border-color: #f2f4f7; }
 .challenge-card p, .challenge-card em { grid-column: 1 / -1; margin: 0; color: #9aa8ba; font-size: 0.86rem; font-style: normal; }
-.challenge-card.reached { outline: 1px solid #e7c56a; }
-.challenge-card.reached em { color: #e7c56a; }
+.level-scroll { max-height: min(320px, 46dvh); overflow-y: auto; }
 .is-busy { opacity: 0.6; pointer-events: none; }
 @media (max-width: 700px) {
   .online-split { grid-template-columns: 1fr; }
