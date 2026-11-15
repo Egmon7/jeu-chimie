@@ -12,6 +12,7 @@ import {
   makeRoomCode,
   normalizeSettings,
   tick,
+  REACTIONS,
 } from "../public/js/engine.js";
 import {
   clearGames,
@@ -51,6 +52,7 @@ const QUEUE_LIMIT = 80;
 const CONNECTIONS_PER_IP = 120;
 const WAITING_ROOM_MS = 20 * 60 * 1000;
 const PHOTO_URL = /^https:\/\/res\.cloudinary\.com\/ka4h4lpk\/image\/upload\/[A-Za-z0-9_./%-]{1,360}$/;
+const PEN_COLORS = ["red", "blue", "black", "green", "purple"];
 
 app.disable("x-powered-by");
 app.use("/api", (req, res, next) => {
@@ -492,10 +494,10 @@ io.on("connection", (socket) => {
     if (room.players[1]) return ack?.({ ok: false, error: "Cette salle est complète." });
     const name = cleanName(payload.name, "Joueur 2");
     let color = payload.color;
-    if (!["red", "blue", "black", "green", "purple", "orange"].includes(color) || color === room.settings.p1Color) {
+    if (!PEN_COLORS.includes(color) || color === room.settings.p1Color) {
       color = room.settings.p2Color === room.settings.p1Color ? "red" : room.settings.p2Color;
-      if (color === room.settings.p1Color) {
-        color = ["red", "blue", "black", "green", "purple", "orange"].find((item) => item !== room.settings.p1Color);
+      if (!PEN_COLORS.includes(color) || color === room.settings.p1Color) {
+        color = PEN_COLORS.find((item) => item !== room.settings.p1Color);
       }
     }
     room.settings = { ...room.settings, p2Name: name, p2Color: color };
@@ -531,6 +533,19 @@ io.on("connection", (socket) => {
     attach(socket, room, seat, payload.playerId);
     ack?.({ ok: true, code: room.code });
     emitState(room, { type: "rejoin" });
+  });
+
+  socket.on("react", (emoji) => {
+    if (typeof emoji !== "string" || !REACTIONS.includes(emoji)) return;
+    if (limited(`${socket.id}:react`, 12, 10_000)) return;
+    const found = liveRoom(socket);
+    if (!found || found.room.game?.status !== "playing") return;
+    for (const seat of [0, 1]) {
+      if (seat === found.seat) continue;
+      const player = found.room.players[seat];
+      const sock = player?.socketId ? io.sockets.sockets.get(player.socketId) : null;
+      sock?.emit("react", { code: found.room.code, emoji, seat: found.seat });
+    }
   });
 
   socket.on("move", (move, ack) => {
@@ -671,7 +686,7 @@ io.on("connection", (socket) => {
     if (liveRoom(hostSocket)) leaveRoom(hostSocket);
     const settings = normalizeSettings({ ...host.settings, p1Name: host.name, p2Name: guest.name });
     if (settings.p2Color === settings.p1Color) {
-      settings.p2Color = ["red", "blue", "black", "green", "purple", "orange"].find((item) => item !== settings.p1Color);
+      settings.p2Color = PEN_COLORS.find((item) => item !== settings.p1Color);
     }
     const code = makeRoomCode(rooms);
     const room = {

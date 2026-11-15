@@ -199,9 +199,9 @@
         <fieldset>
           <legend>Objectif de score</legend>
           <div class="choices" data-field="score">
-            <button type="button" data-value="0" aria-pressed="true">Aucun<small>Toute la feuille</small></button>
+            <button type="button" data-value="0">Aucun<small>Toute la feuille</small></button>
             <button type="button" data-value="5">5</button>
-            <button type="button" data-value="10">10</button>
+            <button type="button" data-value="10" aria-pressed="true">10</button>
             <button type="button" data-value="20">20</button>
             <button type="button" data-value="custom">Autre</button>
           </div>
@@ -217,7 +217,6 @@
               <button type="button" data-value="blue" aria-label="Bleu" aria-pressed="true"></button>
               <button type="button" data-value="black" aria-label="Noir"></button>
               <button type="button" data-value="green" aria-label="Vert"></button>
-              <button type="button" data-value="orange" aria-label="Orange"></button>
             </div>
           </fieldset>
           <fieldset>
@@ -227,7 +226,6 @@
               <button type="button" data-value="blue" aria-label="Bleu"></button>
               <button type="button" data-value="black" aria-label="Noir"></button>
               <button type="button" data-value="green" aria-label="Vert"></button>
-              <button type="button" data-value="orange" aria-label="Orange"></button>
             </div>
           </fieldset>
         </div>
@@ -329,10 +327,14 @@
             <p id="rule-chip"></p>
             <p id="move-count"></p>
           </div>
-          <div class="board-stage">
-            <div class="board-wrap">
-              <canvas id="board" aria-label="Feuille de pointillés"></canvas>
+          <div class="board-play">
+            <div class="board-stage">
+              <div class="board-wrap">
+                <canvas id="board" aria-label="Feuille de pointillés"></canvas>
+                <div id="reaction-stage" class="reaction-stage" aria-hidden="true"></div>
+              </div>
             </div>
+            <aside id="reactions" class="reactions" aria-label="Réactions"></aside>
           </div>
           <div class="sheet-zoom">
             <button type="button" class="icon-btn" id="sheet-zoom-out" aria-label="Éloigner la feuille">−</button>

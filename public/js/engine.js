@@ -10,6 +10,7 @@ export const COLORS = {
 };
 
 export const COLOR_KEYS = Object.keys(COLORS);
+export const REACTIONS = ["😂", "😭", "😏", "😅", "👌", "🤦‍♂️", "🤣", "👍", "✅", "💔", "❌", "😎"];
 export const PEN_STYLES = ["fine", "marker", "pencil", "fountain"];
 export const THEMES = ["classic", "light"];
 export const DIFFICULTIES = ["easy", "medium", "hard", "veryhard", "expert"];

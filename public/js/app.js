@@ -12,6 +12,7 @@ import {
   sheetHouseCap,
   tick,
   COLORS,
+  REACTIONS,
 } from "./engine.js";
 import { BoardView, displayColor } from "./render.js";
 import {
@@ -241,8 +242,8 @@ function fillForm(prefs) {
     setGroup("score", "custom");
     $("scoreLimit").value = prefs.scoreLimit;
   }
-  setGroup("p1Color", prefs.p1Color);
-  setGroup("p2Color", prefs.p2Color);
+  setGroup("p1Color", prefs.p1Color === "orange" ? "blue" : prefs.p1Color);
+  setGroup("p2Color", prefs.p2Color === "orange" ? "red" : prefs.p2Color);
   syncPenColors("p1Color");
   setGroup("theme", prefs.theme);
   setGroup("difficulty", prefs.difficulty);
@@ -803,7 +804,7 @@ function openBadges() {
 
 function remember(settings) {
   const { p1Name, p2Name, ...rest } = settings;
-  app.prefs = { ...app.prefs, ...rest };
+  app.prefs = { ...app.prefs, ...rest, scoreChosen: true };
   savePrefs(app.prefs);
   app.sounds.enabled = false;
 }
@@ -1098,10 +1099,7 @@ function refreshHud() {
     chip.textContent = "Glisse sur tes points autour des enfants.";
     chip.classList.add("attach");
   } else {
-    const houseRule = "1 point par maison. Encercler l’autre prend son point, et l’intérieur est fermé.";
-    chip.textContent = game.settings.extraTurn
-      ? `${houseRule} Si tu encercles, tu rejoues.`
-      : `${houseRule} Un point par tour.`;
+    chip.textContent = matchRuleText(game);
     chip.classList.remove("attach");
   }
   $("pause-btn").hidden = app.mode === "online";
@@ -1113,6 +1111,45 @@ function refreshHud() {
       ? "À vous de jouer"
       : `Au tour de ${name}`;
   updateTimers();
+}
+
+function matchRuleText(game) {
+  const parts = ["1 point par maison"];
+  if (Number(game.settings.scoreLimit) > 0) parts.push(`Premier à ${game.settings.scoreLimit}`);
+  if (game.settings.timeMode === "global") {
+    const minutes = Math.max(1, Math.round(Number(game.settings.timeLimit) / 60));
+    parts.push(`${minutes} min`);
+  }
+  return parts.join(" · ");
+}
+
+function showReaction(emoji) {
+  if (!REACTIONS.includes(emoji)) return;
+  const stage = $("reaction-stage");
+  if (!stage) return;
+  const node = document.createElement("span");
+  node.className = "reaction-float";
+  node.textContent = emoji;
+  node.style.right = `${10 + Math.round(Math.random() * 36)}%`;
+  node.style.bottom = `${16 + Math.round(Math.random() * 24)}%`;
+  stage.appendChild(node);
+  node.addEventListener("animationend", () => node.remove());
+}
+
+function sendReaction(emoji, button) {
+  if (!REACTIONS.includes(emoji) || !app.game || app.game.status !== "playing") return;
+  const now = Date.now();
+  if (now - (app.lastReactAt || 0) < 350) return;
+  app.lastReactAt = now;
+  if (button) {
+    button.classList.remove("pop");
+    void button.offsetWidth;
+    button.classList.add("pop");
+  }
+  showReaction(emoji);
+  if (app.mode === "online" && app.socket?.connected && app.roomCode) {
+    app.socket.emit("react", emoji);
+  }
 }
 
 function remaining(kind) {
@@ -1623,6 +1660,11 @@ function ensureSocket() {
     rejoinSavedRoom();
   });
   app.socket.on("state", (msg) => onOnlineState(msg));
+  app.socket.on("react", (msg) => {
+    if (app.ignoreOnline || !msg || msg.code !== app.roomCode) return;
+    if (msg.seat === app.seat) return;
+    showReaction(msg.emoji);
+  });
   app.socket.on("closed", () => {
     if (app.ignoreOnline) return;
     toast("Le créateur a quitté la salle.");
@@ -2092,6 +2134,14 @@ function openHub(name) {
 }
 
 function bind() {
+  const rail = $("reactions");
+  if (rail) {
+    rail.innerHTML = REACTIONS.map((emoji) => `<button type="button" data-react="${emoji}" aria-label="Réagir">${emoji}</button>`).join("");
+    rail.addEventListener("click", (event) => {
+      const button = event.target.closest("[data-react]");
+      if (button) sendReaction(button.dataset.react, button);
+    });
+  }
   $("app-dialog").addEventListener("click", (event) => {
     if (event.target === $("app-dialog")) $("app-dialog").hidden = true;
   });

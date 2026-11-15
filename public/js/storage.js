@@ -15,7 +15,10 @@ function write(data) {
 }
 
 export function loadPrefs() {
-  return { ...defaultSettings(), ...(read().prefs || {}) };
+  const stored = read().prefs || {};
+  const prefs = { ...defaultSettings(), ...stored };
+  if (!stored.scoreChosen && Number(prefs.scoreLimit) === 0) prefs.scoreLimit = 10;
+  return prefs;
 }
 
 export function savePrefs(prefs) {
