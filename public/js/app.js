@@ -1127,14 +1127,35 @@ function matchRuleText(game) {
 
 function showReaction(emoji, seat) {
   if (!REACTIONS.includes(emoji)) return;
-  const stage = $("reaction-stage");
-  if (!stage) return;
+  const layer = $("reaction-stage");
+  const view = document.querySelector(".board-stage");
+  const sheet = document.querySelector(".board-wrap");
+  if (!layer || !view || !sheet) return;
   const side = seat === 1 ? 1 : 0;
-  stage.querySelector(`.side-${side}`)?.remove();
+  layer.querySelector(`[data-side="${side}"]`)?.remove();
+  const viewBox = view.getBoundingClientRect();
+  const sheetBox = sheet.getBoundingClientRect();
+  const layerBox = layer.getBoundingClientRect();
+  const left = Math.max(viewBox.left, sheetBox.left);
+  const right = Math.min(viewBox.right, sheetBox.right);
+  const top = Math.max(viewBox.top, sheetBox.top);
+  const bottom = Math.min(viewBox.bottom, sheetBox.bottom);
+  const width = right - left;
+  const height = bottom - top;
+  if (width < 24 || height < 24) return;
+  const size = Math.max(26, Math.min(42, height * 0.16));
+  const inset = Math.min(14, Math.max(6, width * 0.06));
+  const rawX = side === 0 ? left + inset : right - size - inset;
+  const x = Math.max(left + 4, Math.min(rawX, right - size - 4));
+  const y = Math.max(top + 4, Math.min(top + height * 0.22, bottom - size - 4));
   const node = document.createElement("span");
-  node.className = `sheet-react side-${side}`;
+  node.className = "sheet-react";
+  node.dataset.side = String(side);
   node.textContent = emoji;
-  stage.appendChild(node);
+  node.style.fontSize = `${size}px`;
+  node.style.left = `${x - layerBox.left}px`;
+  node.style.top = `${y - layerBox.top}px`;
+  layer.appendChild(node);
   node.addEventListener("animationend", () => node.remove());
 }
 
@@ -1193,7 +1214,7 @@ function reactToMove(result, blocked) {
   let emoji = "";
   let kind = "capture";
   if (took && result.player === human) {
-    emoji = Math.random() < 0.25 ? "❌" : pickReaction(["😅", "😭"]);
+    emoji = Math.random() < 0.25 ? "❌" : "😭";
   } else if (took && result.player === robot) {
     const icons = ["🤣", "😂", "✅"];
     if (cameBack) icons.push("😎", "😏");

@@ -1,8 +1,10 @@
 # Jeu - chimie
 
-Une feuille de cahier et deux stylos. On pose des points sur les intersections. Quand tes points se referment autour de ceux de l’autre, la maison vaut un point. Si l’autre encercle cette maison, il prend le point.
+Une feuille de cahier et deux stylos. On pose un point, une maison fermée vaut 1 point. La partie commence au premier à 10, le temps peut rester illimité.
 
-On peut jouer seul contre un robot, ou à deux sur le même écran. Le profil garde un nom et un e-mail sur cet appareil. L’historique garde les parties terminées ici. En ligne et tournois ne sont pas encore ouverts.
+On joue contre un robot, à deux sur le même écran, en salle privée avec un code, ou en trouvant quelqu’un déjà connecté. Le profil garde le nom, l’e-mail et la photo. Les défis ajoutent de l’XP, avec des niveaux, des statistiques et un classement. Les tournois ne sont pas encore ouverts.
+
+https://jeu-chimie.prosperegmon.pro
 
 ## Stack
 
@@ -11,8 +13,7 @@ On peut jouer seul contre un robot, ou à deux sur le même écran. Le profil ga
 | Page | HTML, CSS |
 | Jeu | JavaScript, Canvas |
 | Serveur | Node.js, Express, Socket.IO |
-| Sur cet appareil | Profil, réglages, historique |
-
+| Données | PostgreSQL |
 
 ## Auteur
 
