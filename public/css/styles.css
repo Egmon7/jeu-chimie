@@ -257,15 +257,15 @@ body[data-page="play"] #screen-game {
 .game-menu .btn { width: 100%; text-align: left; background: transparent; }
 .player {
   width: max-content;
-  max-width: min(260px, calc(50vw - 40px));
-  padding: 8px 14px;
+  max-width: min(220px, calc(50vw - 36px));
+  padding: 3px 8px;
   border: 1px solid var(--line);
-  align-self: stretch;
+  align-self: center;
   position: relative;
   display: flex;
   align-items: center;
-  gap: 12px;
-  flex-wrap: wrap;
+  gap: 6px;
+  flex-wrap: nowrap;
 }
 .face {
   width: 36px;
@@ -278,13 +278,22 @@ body[data-page="play"] #screen-game {
   background: #1c2a29;
   color: #d5deea;
 }
+.player .face {
+  width: 22px;
+  height: 22px;
+  flex-basis: 22px;
+}
+.player .face svg { width: 14px; height: 14px; }
 .face img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .face svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.6; }
-.player.active { box-shadow: var(--shadow), inset 0 0 0 2px var(--pen, var(--accent)); }
+.player.active { box-shadow: none, inset 0 0 0 2px var(--pen, var(--accent)); }
+.player h2 { font-size: 0.86rem; }
+.player .eyebrow,
+.player .pen-name { font-size: 0.68rem; margin: 0; }
 .player .score {
   font-family: var(--display);
-  font-size: 2.4rem;
-  line-height: 0.9;
+  font-size: 1.15rem;
+  line-height: 1;
   margin: 0;
 }
 .score.pop { animation: pop 0.35s ease; }
@@ -655,16 +664,17 @@ body[data-page="play"] #toast { bottom: 16px; }
     justify-self: end;
     align-self: center;
   }
-  .player { max-width: min(220px, calc(50vw - 34px)); }
-  .game-shell { margin-top: 14px; }
+  .player { max-width: min(168px, calc(50vw - 28px)); }
+  .game-shell { margin-top: 6px; }
   #move-count { display: none; }
   .board-meta { gap: 6px; padding: 0 4px; }
   .board-meta p { margin: 0; }
   .board-column { grid-area: board; height: auto; min-height: 0; overflow: hidden; }
   .board-stage { height: 100%; min-height: 0; align-items: flex-start; justify-content: flex-start; }
-  .player { padding: 8px 10px; gap: 8px; }
-  .player h2 { font-size: 1rem; }
-  .player .score { font-size: 1.8rem; }
+  .player { padding: 2px 6px; gap: 4px; }
+  .player h2 { font-size: 0.78rem; }
+  .player .score { font-size: 1rem; }
+  .player .pen-name { display: none; }
   .board-wrap { border-radius: 14px; margin-top: 6px; }
 }
 @media (max-width: 720px) {
@@ -688,7 +698,7 @@ body[data-page="play"] #toast { bottom: 16px; }
     gap: 2px;
   }
   body[data-page="modes"] .mode-list .mode span { white-space: normal; }
-  .player .score { font-size: 1.6rem; }
+  .player .score { font-size: 0.95rem; }
   .board-meta { gap: 6px; }
   .board-meta p { font-size: 0.85rem; }
   .dialog { padding: 20px 14px 16px; }
@@ -1030,8 +1040,8 @@ body[data-page="history"] .btn.primary {
     min-height: 0;
     overflow: hidden;
   }
-  .player { padding: 8px 10px; }
-  .player .score { font-size: 1.8rem; }
+  .player { padding: 2px 6px; }
+  .player .score { font-size: 1rem; }
   .board-stage { height: 100%; min-height: 0; }
 }
 @media (max-width: 720px) {
@@ -1042,7 +1052,7 @@ body[data-page="history"] .btn.primary {
   .mode-list { max-width: 100%; }
 }
 @media (max-width: 480px) {
-  .player .score { font-size: 1.6rem; }
+  .player .score { font-size: 0.95rem; }
   .home-lead { font-size: 0.98rem; }
   body[data-page="modes"] .mode-list .mode {
     grid-template-columns: 1fr;
@@ -1071,7 +1081,7 @@ body[data-page="history"] .btn.primary {
   width: calc(var(--sheet-w, 24) * 72px * var(--sheet-zoom, 1));
   max-width: none;
 }
-#board { touch-action: pan-x pan-y; }
+#board { touch-action: manipulation; }
 
 .lobby-seats { display: grid; gap: 8px; margin: 14px 0; }
 #lobby-rules { margin: 2px 0 8px; font-size: 1.05rem; color: #f4f6f8; }

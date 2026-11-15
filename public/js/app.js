@@ -853,6 +853,11 @@ function showModeReminder() {
   app.tracing = false;
   app.board?.setTracing(false);
   const hand = app.game?.settings?.closeMode === "hand";
+  const key = hand ? "hand" : "auto";
+  try {
+    if (sessionStorage.getItem("egmon-close-hint") === key) return;
+    sessionStorage.setItem("egmon-close-hint", key);
+  } catch { /* ignore */ }
   showOverlay({
     kicker: hand ? "Dessiner seul" : "Le système",
     title: hand ? "Tu dessines" : "Le système ferme",
@@ -861,6 +866,7 @@ function showModeReminder() {
       : "Les maisons se ferment toutes seules.",
     actions: [{ label: "Compris", primary: true, on: hideOverlay }],
   });
+  $("game-overlay").dataset.dismiss = "1";
 }
 
 const sheetZoom = { value: 1 };
@@ -1168,6 +1174,7 @@ function hideOverlay() {
   const overlay = $("game-overlay");
   overlay.hidden = true;
   overlay.classList.remove("celebrate");
+  delete overlay.dataset.dismiss;
 }
 
 function openFeedback() {
@@ -1193,6 +1200,7 @@ function openFeedback() {
 }
 
 function showOverlay({ kicker, title, text, actions, note = false, celebrate = false }) {
+  delete $("game-overlay").dataset.dismiss;
   $("overlay-kicker").textContent = kicker || "";
   $("overlay-title").textContent = title;
   $("overlay-text").textContent = text || "";
@@ -1235,8 +1243,17 @@ function tryMove(move) {
   if (!canPlay()) return;
   if (app.mode === "online") {
     app.inputLock = true;
+    clearTimeout(app.moveWatch);
+    app.moveWatch = setTimeout(() => {
+      app.moveWatch = null;
+      if (app.inputLock && app.mode === "online") {
+        app.inputLock = false;
+        toast("Le coup n’est pas parti. Réessaie.");
+      }
+    }, 5000);
     app.socket.emit("move", move, (res) => {
       if (!res?.ok) {
+        clearTimeout(app.moveWatch);
         app.inputLock = false;
         if (res?.error) toast(res.error);
       }
@@ -1638,7 +1655,11 @@ function ensureSocket() {
     const playing = app.mode === "online" && !$("screen-game").hidden;
     const waiting = !$("screen-lobby").hidden;
     if (!playing && !waiting) return;
-    if (playing) app.selfBackAt = Date.now() + 60_000;
+    if (playing) {
+      app.selfBackAt = Date.now() + 60_000;
+      app.inputLock = false;
+      clearTimeout(app.moveWatch);
+    }
     clearTimeout(app.reconnectNote);
     app.reconnectNote = setTimeout(() => {
       if (app.socket?.connected || app.ignoreOnline) return;
@@ -1782,6 +1803,7 @@ function onOnlineState(msg) {
   show("screen-game", "replace");
   paintMatch();
   if (event.type === "move" || event.type === "timeout") {
+    clearTimeout(app.moveWatch);
     app.board.animate(event.move, event.result);
     app.sounds.line();
     if (event.result?.completed) {
@@ -2080,7 +2102,15 @@ function bind() {
     if (event.target === $("app-dialog")) $("app-dialog").hidden = true;
   });
   document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape" && !$("app-dialog").hidden) $("app-dialog").hidden = true;
+    if (event.key !== "Escape") return;
+    if (!$("app-dialog").hidden) {
+      $("app-dialog").hidden = true;
+      return;
+    }
+    if ($("game-overlay").dataset.dismiss === "1") hideOverlay();
+  });
+  $("game-overlay").addEventListener("click", (event) => {
+    if (event.target === $("game-overlay") && $("game-overlay").dataset.dismiss === "1") hideOverlay();
   });
   document.body.addEventListener("click", (event) => {
     if (!$("game-menu").hidden && !event.target.closest(".game-tools")) closeGameMenu();

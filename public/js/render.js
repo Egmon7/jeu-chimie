@@ -322,8 +322,15 @@ export class BoardView {
     }
     if (event.type === "pointercancel" || event.type === "pointerleave") {
       this.pointers.delete(event.pointerId);
-      this.press = null;
       if (event.type === "pointerleave") this.hover = null;
+      if (event.type === "pointercancel" && this.press?.id === event.pointerId) {
+        const moved = Math.hypot(event.clientX - this.press.x, event.clientY - this.press.y);
+        const press = this.press;
+        this.press = null;
+        if (moved <= 28) this.onMove(press.hit);
+        return;
+      }
+      this.press = null;
       return;
     }
     if (event.type !== "pointerup") return;
@@ -336,7 +343,7 @@ export class BoardView {
     this.press = null;
     const moved = Math.hypot(event.clientX - press.x, event.clientY - press.y);
     const scale = window.visualViewport?.scale || 1;
-    if (moved > 10 || Math.abs(scale - press.scale) > 0.01) return;
+    if (moved > 28 || Math.abs(scale - press.scale) > 0.08) return;
     this.onMove(press.hit);
   }
 
