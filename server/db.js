@@ -124,6 +124,7 @@ export async function findAccount(email) {
     `SELECT id, name, email, icon, photo, password_hash
      FROM profiles
      WHERE lower(email) = lower($1)
+     ORDER BY (password_hash <> '') DESC, updated_at DESC
      LIMIT 1`,
     [email],
   );

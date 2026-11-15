@@ -2310,7 +2310,7 @@ function showAuthFace(face) {
     $("auth-kicker").textContent = auth.exists ? "Connexion" : "Création de compte";
     $("auth-title").textContent = "Mot de passe";
     $("auth-text").textContent = auth.exists
-      ? "Écris le mot de passe de ce profil."
+      ? "Écris le mot de passe que tu as créé."
       : "Choisis un mot de passe, puis confirme-le.";
     $("auth-go").textContent = auth.exists ? "Entrer" : "Créer le profil";
     $("auth-password").autocomplete = auth.exists ? "current-password" : "new-password";
@@ -2318,18 +2318,33 @@ function showAuthFace(face) {
   }
 }
 
-function openAuth() {
+async function openAuth() {
+  const profile = loadProfile();
   auth.exists = false;
-  auth.mode = loadProfile().name ? "login" : "create";
-  auth.name = loadProfile().name || "";
+  auth.mode = profile.name ? "login" : "create";
+  auth.name = profile.name || "";
   auth.email = "";
   $("auth-name").value = "";
   $("auth-email").value = "";
   $("auth-password").value = "";
   $("auth-confirm").value = "";
-  showAuthFace(loadProfile().name ? "email" : "create");
+  const email = profile.email.trim();
+  if (email) {
+    const looked = await authFetch("/api/auth/lookup", { email });
+    if (looked.ok && looked.data.exists) {
+      auth.exists = true;
+      auth.mode = "login";
+      auth.name = profile.name || "";
+      auth.email = email;
+      showAuthFace("password");
+      $("auth-dialog").hidden = false;
+      window.setTimeout(() => $("auth-password").focus(), 30);
+      return;
+    }
+  }
+  showAuthFace(profile.name ? "email" : "create");
   $("auth-dialog").hidden = false;
-  window.setTimeout(() => (loadProfile().name ? $("auth-email") : $("auth-name")).focus(), 30);
+  window.setTimeout(() => (profile.name ? $("auth-email") : $("auth-name")).focus(), 30);
 }
 
 async function alreadyAccount() {
