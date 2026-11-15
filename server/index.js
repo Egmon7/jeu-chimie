@@ -337,6 +337,7 @@ function snapshot(room, event = null) {
     rematch: room.rematch.slice(),
     ready: room.ready?.slice() || [false, false],
     accepted: room.accepted === true,
+    direct: room.direct === true,
     event,
   };
 }
@@ -684,10 +685,19 @@ io.on("connection", (socket) => {
     }
     if (liveRoom(socket)) leaveRoom(socket);
     if (liveRoom(hostSocket)) leaveRoom(hostSocket);
-    const settings = normalizeSettings({ ...host.settings, p1Name: host.name, p2Name: guest.name });
-    if (settings.p2Color === settings.p1Color) {
-      settings.p2Color = PEN_COLORS.find((item) => item !== settings.p1Color);
-    }
+    const settings = normalizeSettings({
+      rows: 32,
+      cols: 24,
+      extraTurn: true,
+      timeMode: "none",
+      scoreLimit: 10,
+      theme: "classic",
+      closeMode: "auto",
+      p1Color: "blue",
+      p2Color: "black",
+      p1Name: host.name,
+      p2Name: guest.name,
+    });
     const code = makeRoomCode(rooms);
     const room = {
       code,
@@ -704,6 +714,7 @@ io.on("connection", (socket) => {
       forfeitAt: [null, null],
       touched: Date.now(),
       opened: Date.now(),
+      direct: true,
     };
     rooms.set(code, room);
     queue.delete(host.socketId);

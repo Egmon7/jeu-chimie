@@ -1846,6 +1846,7 @@ function onOnlineState(msg) {
     ready: msg.ready,
     accepted: msg.accepted === true,
     playing: Boolean(msg.game),
+    direct: msg.direct === true,
   }));
   app.players = [0, 1].map((index) => {
     const seat = msg.seats[index] || {};
@@ -1859,7 +1860,7 @@ function onOnlineState(msg) {
   app.prefs = {
     ...app.prefs,
     ...msg.settings,
-    theme: app.prefs.theme,
+    theme: msg.direct ? "classic" : app.prefs.theme,
     penStyle: app.prefs.penStyle,
     sound: app.prefs.sound,
   };
@@ -1928,7 +1929,8 @@ function renderLobby(msg) {
   const mine = msg.you;
   const seats = msg.seats || [];
   $("lobby-code").textContent = msg.code;
-  $("lobby-share").hidden = mine !== 0;
+  $("lobby-code").hidden = msg.direct === true;
+  $("lobby-share").hidden = msg.direct === true || mine !== 0;
   $("lobby-rules").textContent = tableText(msg.settings);
   $("lobby-seats").innerHTML = [0, 1].map((index) => {
     const seat = seats[index] || {};
@@ -1945,7 +1947,9 @@ function renderLobby(msg) {
   const both = seats[0]?.present && seats[1]?.present && seats[0]?.connected && seats[1]?.connected;
   const ready = msg.ready?.[0] && msg.ready?.[1];
   $("lobby-status").textContent = !seats[1]?.present
-    ? "Donne le code. La partie attend que l’autre arrive."
+    ? msg.direct
+      ? "La partie attend que l’autre arrive."
+      : "Donne le code. La partie attend que l’autre arrive."
     : !ready
       ? "Les deux doivent confirmer leur présence."
       : "Vous pouvez passer à la table.";
@@ -1988,6 +1992,7 @@ function resumeSavedRoom() {
       seats: Array.isArray(snap.seats) ? snap.seats : [],
       ready: Array.isArray(snap.ready) ? snap.ready : [false, false],
       accepted: snap.accepted === true,
+      direct: snap.direct === true,
     });
     $("lobby-status").textContent = "Reprise de la salle…";
     show("screen-lobby", "skip");
@@ -2025,7 +2030,18 @@ async function enterQueue() {
     playerId: playerId(),
     name: profile.name || "Joueur",
     photo: profile.photo || "",
-    settings: { ...app.prefs, p1Name: profile.name || "Joueur" },
+    settings: {
+      rows: 32,
+      cols: 24,
+      extraTurn: true,
+      timeMode: "none",
+      scoreLimit: 10,
+      theme: "classic",
+      closeMode: "auto",
+      p1Color: "blue",
+      p2Color: "black",
+      p1Name: profile.name || "Joueur",
+    },
   });
 }
 
