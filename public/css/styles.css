@@ -733,7 +733,7 @@ body[data-theme="dark"] .overlay { background: rgba(0, 0, 0, 0.45); }
 .stats strong { display: block; font-family: var(--display); font-size: 1.8rem; }
 .stats span, .history-item span { color: var(--muted); }
 #history-list {
-  max-height: min(420px, calc(100dvh - 340px));
+  max-height: calc(4 * 3.85rem + 3 * 8px);
   overflow-y: auto;
   display: grid;
   gap: 8px;
@@ -748,6 +748,10 @@ body[data-theme="dark"] .overlay { background: rgba(0, 0, 0, 0.45); }
   box-shadow: none;
   min-width: 0;
   flex-wrap: nowrap;
+  box-sizing: border-box;
+  height: 3.85rem;
+  padding: 6px 12px;
+  overflow: hidden;
 }
 .history-item div { display: grid; min-width: 0; }
 .history-item b { font-variant-numeric: tabular-nums; }
@@ -1299,17 +1303,21 @@ button.challenge-card:focus-visible { border-color: #f2f4f7; }
   .online-split { grid-template-columns: 1fr; }
   .challenge-list, .find-list { grid-template-columns: 1fr; }
 }
-.find-list { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 16px 0; }
+.find-list { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin: 10px 0; }
 .find-card {
-  display: grid;
-  justify-items: center;
+  display: flex;
+  align-items: center;
   gap: 8px;
-  min-height: 112px;
-  padding: 12px;
+  min-height: 0;
+  padding: 6px 8px;
   border: 1px solid rgba(255, 255, 255, 0.16);
   background: transparent;
   color: inherit;
   font: inherit;
+  text-align: left;
+  width: 100%;
 }
-.find-card .face { width: 48px; height: 48px; }
+.find-card .face { width: 28px; height: 28px; flex: 0 0 28px; }
+.find-card .face svg { width: 16px; height: 16px; }
+.find-card strong { font-size: 0.88rem; font-weight: 560; }
 .find-list .empty { grid-column: 1 / -1; margin: 0; }

@@ -493,6 +493,7 @@ async function uploadProfilePhoto(file) {
     const url = String(data?.secure_url || "");
     if (!res.ok || !CLOUD_PHOTO.test(url)) throw new Error("photo");
     const saved = saveProfile({ ...loadProfile(), photo: url });
+    announcePresence();
     fillProfileForm(saved);
     if (saved.name) syncProfile(saved);
     if (status) status.textContent = "Photo enregistrée.";
@@ -1555,6 +1556,7 @@ async function pullProfile() {
     }
     if (!profile.name) return;
     saveProfile(profile);
+    announcePresence();
     if (!$("screen-profile").hidden && !$("photo-btn")?.classList.contains("is-busy")) fillProfileForm(loadProfile());
   } catch {
     /* le profil reste dans le navigateur */
@@ -1905,6 +1907,7 @@ function ensureSocket() {
   app.socket.on("connect", () => {
     clearTimeout(app.reconnectNote);
     app.selfBackAt = null;
+    announcePresence();
     if (app.ignoreOnline) return;
     if (app.holdRejoin) {
       app.rejoinAfterHold = true;
@@ -1936,7 +1939,10 @@ function ensureSocket() {
       text: "Tu acceptes de rejoindre sa table ?",
       confirm: "Accepter",
       cancel: "Plus tard",
-      onYes: () => app.socket.emit("invite-answer", { token, yes: true }),
+      onYes: () => {
+        app.ignoreOnline = false;
+        app.socket.emit("invite-answer", { token, yes: true });
+      },
     });
   });
   app.socket.on("disconnect", (reason) => {
@@ -2204,11 +2210,27 @@ function resumeSavedRoom() {
 function renderFind(people) {
   const list = $("find-list");
   if (!people.length) {
-    list.innerHTML = `<p class="empty">Personne d’autre n’attend pour le moment.</p>`;
+    list.innerHTML = `<p class="empty">Personne d’autre n’est connecté pour le moment.</p>`;
     return;
   }
   list.innerHTML = people.map((person) => `<button type="button" class="find-card" data-token="${esc(person.token)}"><span class="face">${faceMarkup(person.photo, true)}</span><strong>${esc(person.name)}</strong></button>`).join("");
   bindFaceImages(list);
+}
+
+function announcePresence() {
+  const profile = loadProfile();
+  const name = (profile.name || "").trim();
+  if (!name) return;
+  const send = () => {
+    if (!app.socket?.connected) return;
+    app.socket.emit("presence", {
+      playerId: playerId(),
+      name,
+      photo: profile.photo || "",
+    });
+  };
+  if (app.socket?.connected) send();
+  else connectSocket().then(send).catch(() => {});
 }
 
 async function enterQueue() {
@@ -2602,6 +2624,7 @@ function finishAuth(profile) {
   saveSession({ connected: true, id: profile.id, email: profile.email });
   $("auth-dialog").hidden = true;
   paintUserChip();
+  announcePresence();
   pullHistory();
   if (!$("screen-profile").hidden) fillProfileForm(loadProfile());
 }
@@ -2906,6 +2929,7 @@ function bind() {
         return;
       }
       saveProfile({ name: data.name || name, email: data.email || email, photo: data.photo || photo, icon: data.icon });
+      announcePresence();
       const session = loadSession();
       if (session?.connected) saveSession({ ...session, email: data.email || email });
       paintUserChip();
@@ -3123,6 +3147,7 @@ function bind() {
     });
   });
   restoreAccount();
+  connectSocket().then(() => announcePresence()).catch(() => {});
   requestAnimationFrame(loop);
   window.egmonApp = app;
 }

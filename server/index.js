@@ -55,6 +55,7 @@ const io = new Server(httpServer, {
 });
 const rooms = new Map();
 const queue = new Map();
+const presence = new Map();
 const hits = new Map();
 const connections = new Map();
 const ROOM_LIMIT = 80;
@@ -607,10 +608,58 @@ function clearForfeit(room, seat) {
   }
 }
 
-function broadcastQueue() {
-  const people = [...queue.values()].map((item) => ({ token: item.token, name: item.name, photo: item.photo }));
+function presenceToken(current) {
+  if (current?.token) return current.token;
+  const reserved = new Set([...presence.values()].map((item) => `EGD-${item.token}`));
+  return makeRoomCode(reserved).slice(4);
+}
+
+function rememberPresence(socket, payload) {
+  const name = cleanName(payload.name, "");
+  if (!name) {
+    presence.delete(socket.id);
+    return null;
+  }
+  const current = presence.get(socket.id);
+  const photo = PHOTO_URL.test(payload.photo) ? payload.photo : "";
+  const next = {
+    token: presenceToken(current),
+    id: safePlayerId(payload.playerId, current?.id || socket.id),
+    name,
+    photo,
+    socketId: socket.id,
+  };
+  presence.set(socket.id, next);
+  return next;
+}
+
+function seated(socketId) {
+  const socket = io.sockets.sockets.get(socketId);
+  if (!socket?.data.roomCode) return false;
+  const room = rooms.get(socket.data.roomCode);
+  if (!room) return false;
+  const seat = seatOf(room, socket.data.playerId);
+  return seat >= 0 && room.players[seat]?.socketId === socketId;
+}
+
+function findPeople(except) {
+  const skipId = except?.id || "";
+  const byId = new Map();
+  for (const item of presence.values()) {
+    if (item.socketId === except?.socketId) continue;
+    if (skipId && item.id === skipId) continue;
+    if (!io.sockets.sockets.has(item.socketId) || seated(item.socketId)) continue;
+    byId.set(item.id || item.socketId, item);
+  }
+  return [...byId.values()]
+    .slice(0, 40)
+    .map((item) => ({ token: item.token, name: item.name, photo: item.photo }));
+}
+
+function broadcastFind() {
   for (const item of queue.values()) {
-    io.to(item.socketId).emit("queue", { people: people.filter((person) => person.token !== item.token).slice(0, 40) });
+    const mine = presence.get(item.socketId) || item;
+    io.to(item.socketId).emit("queue", { people: findPeople(mine) });
   }
 }
 
@@ -632,6 +681,7 @@ function leaveRoom(socket) {
     io.to(room.code).emit("closed");
     for (const index of [0, 1]) clearForfeit(room, index);
     rooms.delete(room.code);
+    broadcastFind();
     return;
   }
   if (!room.game && seat === 1) {
@@ -639,12 +689,14 @@ function leaveRoom(socket) {
     room.ready[1] = false;
     room.accepted = false;
     emitState(room, { type: "left" });
+    broadcastFind();
     return;
   }
   if (room.game?.status === "playing") {
     abandon(room.game, seat);
     emitState(room, { type: "abandon" });
   }
+  broadcastFind();
 }
 
 io.on("connection", (socket) => {
@@ -681,12 +733,13 @@ io.on("connection", (socket) => {
       opened: Date.now(),
     };
     rooms.set(code, room);
-    if (queue.delete(socket.id)) broadcastQueue();
+    queue.delete(socket.id);
     socket.join(code);
     socket.data.roomCode = code;
     socket.data.playerId = room.players[0].id;
     ack?.({ ok: true, code });
     emitState(room, { type: "created" });
+    broadcastFind();
     } catch {
       ack?.({ ok: false, error: "La salle n’a pas pu s’ouvrir." });
     }
@@ -726,10 +779,11 @@ io.on("connection", (socket) => {
     room.players[1] = { id: safePlayerId(payload.playerId, socket.id), name, color, socketId: socket.id, connected: true };
     room.ready[1] = false;
     room.accepted = false;
-    if (queue.delete(socket.id)) broadcastQueue();
+    queue.delete(socket.id);
     attach(socket, room, 1, room.players[1].id);
     ack?.({ ok: true, code });
     emitState(room, { type: "joined" });
+    broadcastFind();
     } catch {
       ack?.({ ok: false, error: "Impossible de rejoindre cette salle." });
     }
@@ -752,9 +806,11 @@ io.on("connection", (socket) => {
     }
     const live = liveRoom(socket);
     if (live && live.room.code !== room.code) return ack?.({ ok: false });
+    queue.delete(socket.id);
     attach(socket, room, seat, payload.playerId);
     ack?.({ ok: true, code: room.code });
     emitState(room, { type: "rejoin" });
+    broadcastFind();
   });
 
   socket.on("react", (emoji) => {
@@ -848,43 +904,41 @@ io.on("connection", (socket) => {
     emitState(room, { type: "start" });
   });
 
+  socket.on("presence", (payload = {}) => {
+    payload = asObject(payload);
+    if (limited(`${socket.id}:presence`, 30, 60_000)) return;
+    rememberPresence(socket, payload);
+    broadcastFind();
+  });
+
   socket.on("queue-join", (payload = {}) => {
     payload = asObject(payload);
     if (limited(`${socket.id}:queue`, 20, 60_000)) return;
+    const mine = rememberPresence(socket, payload);
     const live = liveRoom(socket);
     if (live?.room.game) {
-      const people = [...queue.values()].filter((item) => item.socketId !== socket.id).slice(0, 40);
-      socket.emit("queue", { people: people.map((item) => ({ token: item.token, name: item.name, photo: item.photo })) });
+      socket.emit("queue", { people: findPeople(mine) });
       return;
     }
     if (live) leaveRoom(socket);
+    if (!mine) return;
     if (queue.size >= QUEUE_LIMIT && !queue.has(socket.id)) return;
-    const name = cleanName(payload.name, "Joueur");
-    const photo = PHOTO_URL.test(payload.photo) ? payload.photo : "";
-    const current = queue.get(socket.id);
-    queue.set(socket.id, {
-      token: current?.token || makeRoomCode(new Set([...queue.values()].map((item) => `EGD-${item.token}`))).slice(4),
-      id: safePlayerId(payload.playerId, socket.id),
-      name,
-      photo,
-      settings: normalizeSettings(payload.settings || {}),
-      socketId: socket.id,
-    });
-    broadcastQueue();
+    queue.set(socket.id, mine);
+    broadcastFind();
   });
 
   socket.on("queue-leave", () => {
     if (!queue.delete(socket.id)) return;
-    broadcastQueue();
+    broadcastFind();
   });
 
   socket.on("invite", (payload = {}) => {
     payload = asObject(payload);
     if (limited(`${socket.id}:invite`, 8, 60_000)) return;
     const token = queueToken(payload.token);
-    const host = queue.get(socket.id);
-    const guest = token ? [...queue.values()].find((item) => item.token === token && item.socketId !== socket.id) : null;
-    if (!host || !guest) return;
+    const host = presence.get(socket.id);
+    const guest = token ? [...presence.values()].find((item) => item.token === token && item.socketId !== socket.id) : null;
+    if (!host || !guest || seated(host.socketId) || seated(guest.socketId)) return;
     io.to(guest.socketId).emit("invite", { from: host.name, token: host.token });
   });
 
@@ -892,8 +946,8 @@ io.on("connection", (socket) => {
     payload = asObject(payload);
     if (!payload.yes || limited(`${socket.id}:invite-answer`, 6, 60_000)) return;
     const token = queueToken(payload.token);
-    const guest = queue.get(socket.id);
-    const host = token ? [...queue.values()].find((item) => item.token === token) : null;
+    const guest = presence.get(socket.id);
+    const host = token ? [...presence.values()].find((item) => item.token === token) : null;
     const hostSocket = host ? io.sockets.sockets.get(host.socketId) : null;
     if (!guest || !host || !hostSocket || host.socketId === socket.id) return;
     if (liveRoom(socket)?.room.game || liveRoom(hostSocket)?.room.game) {
@@ -942,14 +996,16 @@ io.on("connection", (socket) => {
     queue.delete(guest.socketId);
     attach(hostSocket, room, 0, host.id);
     attach(socket, room, 1, guest.id);
-    broadcastQueue();
+    broadcastFind();
     emitState(room, { type: "joined" });
   });
 
   socket.on("leave", () => leaveRoom(socket));
 
   socket.on("disconnect", () => {
-    if (queue.delete(socket.id)) broadcastQueue();
+    presence.delete(socket.id);
+    queue.delete(socket.id);
+    broadcastFind();
     const room = rooms.get(socket.data.roomCode);
     if (!room) return;
     const seat = seatOf(room, socket.data.playerId);
