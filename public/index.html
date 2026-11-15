@@ -113,6 +113,10 @@
             <strong>Statistiques</strong>
             <span>Tes parties terminées.</span>
           </button>
+          <button type="button" class="mode" id="go-online-games">
+            <strong>Parties en ligne</strong>
+            <span>Noms, dates et total.</span>
+          </button>
           <button type="button" class="mode" id="go-rank">
             <strong>Classement</strong>
             <span>Les points de tout le monde.</span>
@@ -435,6 +439,15 @@
       </div>
     </section>
 
+    <section id="screen-online-games" class="screen" hidden>
+      <div class="rank-wrap">
+        <h1>Parties en ligne</h1>
+        <p id="online-total" class="online-total">Aucune partie en ligne.</p>
+        <div id="online-games"></div>
+        <button type="button" class="btn" data-home>Retour</button>
+      </div>
+    </section>
+
     <section id="screen-badges" class="screen" hidden>
       <div class="sheet narrow">
         <h1>Badges</h1>
@@ -519,6 +532,7 @@
         </span>
       </label>
       <p id="auth-error" hidden></p>
+      <button type="button" class="auth-link" id="auth-forgot" hidden>Mot de passe oublié</button>
       <div class="form-actions">
         <button type="button" class="btn" id="auth-known" hidden>J'ai déjà un compte</button>
         <button type="submit" class="btn primary" id="auth-go">Continuer</button>

@@ -693,7 +693,12 @@ body[data-page="play"] #screen-game {
   font: inherit;
 }
 #auth-back { display: block; margin: 0 0 12px; text-align: left; }
+#auth-forgot { display: block; width: 100%; margin: 2px 0 10px; text-align: center; }
 .auth-help { display: block; width: 100%; margin-top: 18px; text-align: center; }
+.online-total { margin: 8px 0 4px; font-size: 1.2rem; }
+.online-player { padding: 12px 0; border-top: 1px solid rgba(244, 246, 248, 0.12); }
+.online-player strong { display: block; font-size: 1.05rem; }
+.online-player span, .online-player p { margin: 2px 0 0; color: #9aa8ba; font-size: 0.9rem; }
 .overlay {
   position: absolute;
   inset: 0;

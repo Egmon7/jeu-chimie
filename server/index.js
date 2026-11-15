@@ -27,10 +27,12 @@ import {
   insertMessage,
   isUuid,
   listGames,
+  onlinePlay,
   ranking,
   progressOf,
   openSession,
   readProfile,
+  replacePassword,
   saveAccount,
   sessionPlayer,
   upsertProfile,
@@ -259,6 +261,30 @@ app.post("/api/auth/login", api(async (req, res) => {
   res.json({ id: account.id, name: account.name, email: account.email, icon: account.icon, photo: account.photo });
 }));
 
+app.post("/api/auth/reset", api(async (req, res) => {
+  if (!dbReady()) {
+    res.status(503).json({ error: "Base indisponible." });
+    return;
+  }
+  const email = cleanEmail(req.body?.email);
+  const password = String(req.body?.password || "");
+  if (!EMAIL_OK.test(email) || password.length < 6 || password.length > 80) {
+    res.status(400).json({ error: "E-mail ou mot de passe invalide." });
+    return;
+  }
+  if (limited(`${clientIp(req)}:reset`, 8, 10 * 60_000) || limited(`${email}:reset`, 5, 15 * 60_000)) {
+    res.status(429).json({ error: "Trop d'essais." });
+    return;
+  }
+  const saved = await replacePassword(email, await hashPassword(password));
+  if (saved.error) {
+    res.status(404).json({ error: saved.error });
+    return;
+  }
+  setSessionCookie(req, res, await openSession(saved.profile.id));
+  res.json({ id: saved.profile.id, name: saved.profile.name, email: saved.profile.email, icon: saved.profile.icon, photo: saved.profile.photo });
+}));
+
 app.get("/api/profile/:id", api(async (req, res) => {
   const id = apiPlayer(req, res);
   if (!id || !(await requireSession(req, res, id))) return;
@@ -325,6 +351,18 @@ app.get("/api/progress", api(async (req, res) => {
     return;
   }
   res.json(await progressOf(player));
+}));
+
+app.get("/api/online-games", api(async (req, res) => {
+  if (!dbReady()) {
+    res.status(503).json({ error: "Base indisponible." });
+    return;
+  }
+  if (limited(`${clientIp(req)}:online-games`, 60, 60_000)) {
+    res.status(429).json({ error: "Trop d'essais." });
+    return;
+  }
+  res.json(await onlinePlay());
 }));
 
 app.get("/api/games/:id", api(async (req, res) => {
