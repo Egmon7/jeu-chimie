@@ -1631,7 +1631,6 @@ function goHome() {
   app.mode = null;
   hideOverlay();
   show("screen-home", online ? "replace" : "push");
-  maybeAskAccount();
 }
 
 function confirmAbandon() {
@@ -2250,16 +2249,6 @@ function isConnected() {
   return session?.connected === true && session.id === playerId() && Boolean(loadProfile().name);
 }
 
-function livePlayOpen() {
-  try {
-    if (sessionStorage.getItem("egmon-live-match")) return true;
-    if (sessionStorage.getItem("egmon-room")) return true;
-  } catch {
-    /* ignore */
-  }
-  return document.body.dataset.page === "play";
-}
-
 function showAuthError(message) {
   const node = $("auth-error");
   node.hidden = false;
@@ -2293,23 +2282,32 @@ function hideSecrets() {
   });
 }
 
-function showAuthStep(step) {
-  auth.step = step;
-  const named = Boolean(loadProfile().name) && step === "identity";
-  $("auth-name-label").hidden = step !== "identity" || named;
-  $("auth-email-label").hidden = step !== "identity";
-  $("auth-password-label").hidden = step !== "password";
-  $("auth-confirm-label").hidden = step !== "password" || auth.exists;
+function showAuthFace(face) {
+  auth.step = face === "password" ? "password" : "identity";
+  const named = Boolean(loadProfile().name);
+  $("auth-name-label").hidden = face === "password" || face === "email";
+  $("auth-email-label").hidden = face === "password";
+  $("auth-password-label").hidden = face !== "password";
+  $("auth-confirm-label").hidden = face !== "password" || auth.exists;
+  $("auth-known").hidden = face !== "create";
   $("auth-error").hidden = true;
-  if (step === "identity") {
-    $("auth-title").textContent = named ? "Votre e-mail" : "Votre profil";
-    $("auth-text").textContent = !named
-      ? "Écris ton nom et prénom, puis ton e-mail."
-      : loadProfile().email
-        ? "Entre avec l’e-mail de ton profil."
-        : "Tu avais mentionné ton profil sans e-mail.";
+  if (face === "create") {
+    auth.mode = "create";
+    $("auth-kicker").textContent = "Création de compte";
+    $("auth-title").textContent = "Votre profil";
+    $("auth-text").textContent = "Écris ton nom et prénom, puis ton e-mail.";
     $("auth-go").textContent = "Continuer";
+  } else if (face === "email" || face === "known") {
+    auth.mode = "login";
+    $("auth-kicker").textContent = "Connexion";
+    $("auth-title").textContent = "Votre e-mail";
+    $("auth-text").textContent = face === "email"
+      ? "Entrez votre e-mail pour vous connecter."
+      : "Écris ton nom et ton e-mail.";
+    $("auth-go").textContent = "Continuer";
+    if (face === "known" && named) $("auth-name").value = loadProfile().name;
   } else {
+    $("auth-kicker").textContent = auth.exists ? "Connexion" : "Création de compte";
     $("auth-title").textContent = "Mot de passe";
     $("auth-text").textContent = auth.exists
       ? "Écris le mot de passe de ce profil."
@@ -2321,17 +2319,46 @@ function showAuthStep(step) {
 }
 
 function openAuth() {
-  if (!$("auth-dialog").hidden) return;
   auth.exists = false;
+  auth.mode = loadProfile().name ? "login" : "create";
   auth.name = loadProfile().name || "";
   auth.email = "";
   $("auth-name").value = "";
   $("auth-email").value = "";
   $("auth-password").value = "";
   $("auth-confirm").value = "";
-  showAuthStep("identity");
+  showAuthFace(loadProfile().name ? "email" : "create");
   $("auth-dialog").hidden = false;
   window.setTimeout(() => (loadProfile().name ? $("auth-email") : $("auth-name")).focus(), 30);
+}
+
+async function alreadyAccount() {
+  const profile = loadProfile();
+  const email = profile.email.trim();
+  if (!email) {
+    showAuthFace("known");
+    $("auth-name").focus();
+    return;
+  }
+  const looked = await authFetch("/api/auth/lookup", { email });
+  if (!looked.ok) {
+    showAuthError(looked.error || "Réessaie dans un instant.");
+    return;
+  }
+  if (!looked.data.exists) {
+    showAuthFace("known");
+    $("auth-email").value = email;
+    $("auth-name").focus();
+    return;
+  }
+  auth.exists = true;
+  auth.mode = "login";
+  auth.name = profile.name || $("auth-name").value.trim();
+  auth.email = email;
+  $("auth-password").value = "";
+  $("auth-confirm").value = "";
+  showAuthFace("password");
+  $("auth-password").focus();
 }
 
 function finishAuth(profile) {
@@ -2380,9 +2407,10 @@ async function sendAuth() {
     auth.name = name;
     auth.email = email;
     auth.exists = looked.data.exists === true;
+    auth.mode = auth.exists ? "login" : "create";
     $("auth-password").value = "";
     $("auth-confirm").value = "";
-    showAuthStep("password");
+    showAuthFace("password");
     $("auth-password").focus();
     return;
   }
@@ -2410,20 +2438,40 @@ async function sendAuth() {
   finishAuth(result.data);
 }
 
-async function maybeAskAccount() {
+async function restoreAccount() {
   const session = loadSession();
   if (session?.id) setPlayerId(session.id);
   paintUserChip();
+  if (!isConnected()) return;
+  try {
+    const response = await fetch(`/api/profile/${playerId()}`);
+    if (response.status === 401) {
+      saveSession(null);
+      paintUserChip();
+    }
+  } catch {
+    /* la partie locale reste disponible */
+  }
+}
+
+async function beginPlay() {
+  const session = loadSession();
+  if (session?.id) setPlayerId(session.id);
   if (isConnected()) {
     try {
       const response = await fetch(`/api/profile/${playerId()}`);
-      if (response.status !== 401) return;
+      if (response.status !== 401) {
+        try { sessionStorage.removeItem("egmon-hub"); } catch { /* ignore */ }
+        show("screen-modes");
+        return;
+      }
       saveSession(null);
     } catch {
+      try { sessionStorage.removeItem("egmon-hub"); } catch { /* ignore */ }
+      show("screen-modes");
       return;
     }
   }
-  if (livePlayOpen()) return;
   openAuth();
 }
 
@@ -2505,12 +2553,7 @@ function bind() {
   }
 
   $("create-match").addEventListener("click", () => {
-    if (!isConnected()) {
-      maybeAskAccount();
-      return;
-    }
-    try { sessionStorage.removeItem("egmon-hub"); } catch { /* ignore */ }
-    show("screen-modes");
+    beginPlay();
   });
   $("go-solo").addEventListener("click", () => {
     askDialog({
@@ -2571,7 +2614,8 @@ function bind() {
       const data = await response.json().catch(() => ({}));
       if (response.status === 401) {
         saveSession(null);
-        openAuth();
+        paintUserChip();
+        toast("Entre à nouveau avec Commencez.");
         return;
       }
       if (!response.ok) {
@@ -2771,6 +2815,7 @@ function bind() {
   applyTheme($("screen-game").hidden ? "classic" : app.prefs.theme);
   app.sounds.enabled = false;
   $("auth-form").addEventListener("submit", submitAuth);
+  $("auth-known").addEventListener("click", alreadyAccount);
   document.querySelectorAll(".secret-see").forEach((button) => {
     button.addEventListener("click", () => {
       const input = $(button.dataset.for);
@@ -2782,7 +2827,7 @@ function bind() {
       button.setAttribute("aria-label", shown ? "Masquer le mot de passe" : "Afficher le mot de passe");
     });
   });
-  maybeAskAccount();
+  restoreAccount();
   requestAnimationFrame(loop);
   window.egmonApp = app;
 }

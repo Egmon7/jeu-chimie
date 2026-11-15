@@ -679,7 +679,8 @@ body[data-page="play"] #screen-game {
 @media (max-width: 520px) {
   .podium { grid-template-columns: 1fr; grid-template-areas: "first" "second" "third"; }
 }
-#app-dialog .form-actions, #auth-form .form-actions { justify-content: center; }
+#app-dialog .form-actions { justify-content: center; }
+#auth-form .form-actions { flex-direction: column; align-items: center; }
 .overlay {
   position: absolute;
   inset: 0;

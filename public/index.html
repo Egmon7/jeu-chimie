@@ -479,7 +479,7 @@
   </div>
   <div id="auth-dialog" class="overlay page-dialog" hidden>
     <form id="auth-form" class="dialog">
-      <p class="eyebrow">Profil</p>
+      <p class="eyebrow" id="auth-kicker">Création de compte</p>
       <h2 id="auth-title">Votre profil</h2>
       <p id="auth-text"></p>
       <label id="auth-name-label">Nom et prénom
@@ -516,6 +516,7 @@
       </label>
       <p id="auth-error" hidden></p>
       <div class="form-actions">
+        <button type="button" class="btn" id="auth-known" hidden>J'ai déjà un compte</button>
         <button type="submit" class="btn primary" id="auth-go">Continuer</button>
       </div>
     </form>
