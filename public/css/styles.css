@@ -201,6 +201,7 @@ input[type="number"], input[type="text"], input[type="email"], #join-code, #join
 .swatches button:disabled, .choices button:disabled { opacity: 0.28; cursor: not-allowed; outline: none; }
 .score-cap { margin: 8px 0 0; font-size: 0.92rem; }
 .form-actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 16px; }
+#overlay-actions { justify-content: center; }
 .hint { margin-bottom: 0; color: var(--muted); }
 
 .lobby .code {
@@ -431,6 +432,7 @@ body[data-page="play"] #screen-game {
   font-weight: 700;
   animation: attach-blink 1s ease-in-out infinite;
 }
+#challenge-live { margin: 2px 0 0; color: #e7c56a; font-size: 0.95rem; }
 @keyframes attach-blink {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.15; }

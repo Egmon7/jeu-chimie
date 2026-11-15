@@ -35,6 +35,7 @@ import {
   replacePassword,
   saveAccount,
   sessionPlayer,
+  setOwnPassword,
   upsertProfile,
 } from "./db.js";
 
@@ -283,6 +284,34 @@ app.post("/api/auth/reset", api(async (req, res) => {
   }
   setSessionCookie(req, res, await openSession(saved.profile.id));
   res.json({ id: saved.profile.id, name: saved.profile.name, email: saved.profile.email, icon: saved.profile.icon, photo: saved.profile.photo });
+}));
+
+app.post("/api/auth/password", api(async (req, res) => {
+  if (!dbReady()) {
+    res.status(503).json({ error: "Base indisponible." });
+    return;
+  }
+  const id = await sessionPlayer(readCookie(req, "egmon_session"));
+  if (!id) {
+    res.status(401).json({ error: "Connexion requise." });
+    return;
+  }
+  const password = String(req.body?.password || "");
+  const confirm = String(req.body?.confirm || "");
+  if (password.length < 6 || password.length > 80 || password !== confirm) {
+    res.status(400).json({ error: "Le mot de passe doit avoir au moins 6 caractères, deux fois le même." });
+    return;
+  }
+  if (limited(`${id}:password`, 8, 10 * 60_000)) {
+    res.status(429).json({ error: "Trop d'essais." });
+    return;
+  }
+  const saved = await setOwnPassword(id, await hashPassword(password));
+  if (!saved) {
+    res.status(404).json({ error: "Profil introuvable." });
+    return;
+  }
+  res.json({ ok: true });
 }));
 
 app.get("/api/profile/:id", api(async (req, res) => {

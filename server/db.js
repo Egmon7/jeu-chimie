@@ -200,6 +200,17 @@ export async function replacePassword(email, passwordHash) {
   return rows[0] ? { profile: rows[0] } : { error: "Aucun mot de passe à remplacer." };
 }
 
+export async function setOwnPassword(id, passwordHash) {
+  const { rows } = await pool.query(
+    `UPDATE profiles
+     SET password_hash = $2, updated_at = now()
+     WHERE id = $1
+     RETURNING id`,
+    [id, passwordHash],
+  );
+  return Boolean(rows[0]);
+}
+
 function tokenHash(token) {
   return createHash("sha256").update(String(token)).digest("hex");
 }

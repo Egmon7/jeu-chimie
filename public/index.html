@@ -51,7 +51,7 @@
         <h1 id="modes-title">Commencez</h1>
         <div class="mode-list" id="mode-home">
           <button type="button" class="mode" data-open-hub="play">
-            <strong>Jouer</strong>
+            <strong>Jouer une partie</strong>
             <span>Robot, écran, ligne et recherche.</span>
           </button>
           <button type="button" class="mode" data-open-hub="competitions">
@@ -105,25 +105,25 @@
             <strong>Profil</strong>
             <span>Nom, e-mail et photo.</span>
           </button>
-          <button type="button" class="mode" id="go-progress">
-            <strong>Progression</strong>
-            <span>Niveau et XP.</span>
+          <button type="button" class="mode" id="go-rank">
+            <strong>Classement</strong>
+            <span>Les points de tout le monde.</span>
           </button>
           <button type="button" class="mode" id="go-history">
             <strong>Statistiques</strong>
             <span>Tes parties terminées.</span>
           </button>
+          <button type="button" class="mode" id="go-badges">
+            <strong>Badges</strong>
+            <span>Titres et niveaux.</span>
+          </button>
           <button type="button" class="mode" id="go-online-games">
             <strong>Parties en ligne</strong>
             <span>Noms, dates et total.</span>
           </button>
-          <button type="button" class="mode" id="go-rank">
-            <strong>Classement</strong>
-            <span>Les points de tout le monde.</span>
-          </button>
-          <button type="button" class="mode" id="go-badges">
-            <strong>Badges</strong>
-            <span>Titres et niveaux.</span>
+          <button type="button" class="mode" id="go-progress">
+            <strong>Progression</strong>
+            <span>Niveau et XP.</span>
           </button>
           <button type="button" class="mode" id="go-premium" data-soon>
             <strong>Premium</strong>
@@ -336,6 +336,7 @@
           <div class="board-meta">
             <p id="turn-label">Au tour du joueur</p>
             <p id="rule-chip"></p>
+            <p id="challenge-live" hidden></p>
             <p id="move-count"></p>
           </div>
           <aside id="reactions" class="reactions" aria-label="Réactions"></aside>
@@ -399,6 +400,8 @@
         </div>
         <label>Nom et prénom <input id="profile-name" type="text" maxlength="40" autocomplete="name" placeholder="Nom et prénom"></label>
         <label>E-mail <input id="profile-email" type="email" maxlength="80" autocomplete="email" placeholder="ton@email"></label>
+        <label>Nouveau mot de passe <input id="profile-password" type="password" maxlength="80" autocomplete="new-password" placeholder="Laisser vide pour le garder"></label>
+        <label>Confirmation <input id="profile-confirm" type="password" maxlength="80" autocomplete="new-password" placeholder="Le même mot de passe"></label>
         <div class="form-actions">
           <button type="button" class="btn" data-home>Retour</button>
           <button type="submit" class="btn primary">Enregistrer</button>
@@ -469,7 +472,6 @@
         <div id="history-list"></div>
         <div class="form-actions">
           <button type="button" class="btn" data-home>Retour</button>
-          <button type="button" class="btn" id="clear-history">Effacer</button>
         </div>
       </div>
     </section>

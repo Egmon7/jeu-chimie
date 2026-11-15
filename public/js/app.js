@@ -436,6 +436,8 @@ function bindFaceImages(root) {
 function fillProfileForm(profile) {
   $("profile-name").value = profile.name || "";
   $("profile-email").value = profile.email || "";
+  $("profile-password").value = "";
+  $("profile-confirm").value = "";
   const photo = $("profile-photo");
   const url = CLOUD_PHOTO.test(profile.photo) ? profile.photo : "";
   photo.hidden = !url;
@@ -560,7 +562,7 @@ const BADGE_GOALS = [
 ];
 
 const CHALLENGES = [
-  { id: "speed", name: "Moins de 8 minutes", text: "Terminer une partie en moins de 8 minutes.", xp: 40, test: (games) => games.some((game) => game.durationMs >= 1000 && game.durationMs <= 8 * 60 * 1000) },
+  { id: "speed", name: "Moins de 8 minutes", text: "Fermer 10 maisons en moins de 8 minutes.", xp: 40, test: (games) => games.some((game) => game.durationMs >= 1000 && game.durationMs <= 8 * 60 * 1000 && housesOf(game) >= 10) },
   { id: "precision", name: "Précision", text: "Fermer une maison à la main, sans erreur.", xp: 50, test: (games) => games.some((game) => game.clean === true) },
   { id: "dominate", name: "Domination", text: "Gagner en prenant au moins 10 maisons.", xp: 45, test: (games) => games.some((game) => wonGame(game) && housesOf(game) >= 10) },
   { id: "comeback", name: "Remontée", text: "Gagner après avoir été mené au score.", xp: 60, test: (games) => games.some((game) => game.behind === true && wonGame(game)) },
@@ -583,6 +585,44 @@ function housesOf(game, seat = 0) {
 
 function wonGame(game) {
   return String(game.winner) === "0";
+}
+
+function parisKey(date) {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Europe/Paris",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(date);
+}
+
+function shiftKey(key, delta) {
+  const [year, month, day] = key.split("-").map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  date.setUTCDate(date.getUTCDate() + delta);
+  return date.toISOString().slice(0, 10);
+}
+
+function streakProgress(need, games = loadHistory()) {
+  const keys = new Set(soloGames(games).map((game) => parisKey(new Date(game.at))));
+  const today = parisKey(new Date());
+  const doneToday = keys.has(today);
+  let cursor = doneToday ? today : shiftKey(today, -1);
+  let run = 0;
+  while (keys.has(cursor)) {
+    run += 1;
+    cursor = shiftKey(cursor, -1);
+  }
+  return { run, doneToday, remaining: Math.max(0, need - run) };
+}
+
+function streakLine(need, games) {
+  const progress = streakProgress(need, games);
+  if (progress.remaining <= 0) return "Série complète.";
+  if (progress.run > 0) {
+    return `Jour ${progress.run} passé. Il reste ${progress.remaining} jour${progress.remaining > 1 ? "s" : ""}.`;
+  }
+  return `Il reste ${need} jours.`;
 }
 
 function playStreak(games) {
@@ -619,7 +659,8 @@ function renderChallenges() {
   const box = $("challenge-list");
   if (!box) return;
   box.innerHTML = CHALLENGES.map((item) => {
-    return `<button type="button" class="challenge-card" data-challenge="${esc(item.id)}"><strong>${esc(item.name)}</strong><span>+${item.xp} XP</span><p>${esc(item.text)}</p><em>Jouer</em></button>`;
+    const extra = item.id === "streak" ? ` ${streakLine(3)}` : item.id === "week" ? ` ${streakLine(7)}` : "";
+    return `<button type="button" class="challenge-card" data-challenge="${esc(item.id)}"><strong>${esc(item.name)}</strong><span>+${item.xp} XP</span><p>${esc(item.text)}${esc(extra)}</p><em>Jouez une partie</em></button>`;
   }).join("");
   const status = $("challenge-status");
   if (status) status.textContent = "";
@@ -634,16 +675,35 @@ function startChallenge(id) {
     openProfile();
     return;
   }
-  const currentLimit = Number(app.prefs.scoreLimit) || 0;
+  const need = item.id === "week" ? 7 : item.id === "streak" ? 3 : 0;
+  if (need) {
+    const progress = streakProgress(need);
+    if (progress.doneToday || progress.remaining === 0) {
+      askDialog({
+        kicker: "Défi",
+        title: progress.remaining === 0 ? "Défi gagné" : "Série en cours",
+        text: streakLine(need),
+        confirm: "Compris",
+      });
+      return;
+    }
+  }
+  const previous = loadPrefs();
   const settings = normalizeSettings({
     ...app.prefs,
     p1Name: name,
     p2Name: "Robot",
     closeMode: item.id === "precision" ? "hand" : app.prefs.closeMode,
     difficulty: item.id === "expert" ? "expert" : app.prefs.difficulty,
-    scoreLimit: item.id === "dominate" && currentLimit > 0 && currentLimit < 10 ? 10 : currentLimit,
+    scoreLimit: item.id === "dominate" ? 10 : item.id === "speed" ? 0 : app.prefs.scoreLimit,
+    timeMode: item.id === "speed" ? "none" : app.prefs.timeMode,
   });
   startMatch(settings, "solo");
+  app.prefs = previous;
+  savePrefs(previous);
+  app.challengeId = item.id;
+  app.challengeMs = 0;
+  app.challengeVerdict = null;
 }
 
 function renderProgress(rows) {
@@ -839,6 +899,9 @@ function startMatch(settings, mode) {
   app.board.clearAnims();
   resetSheetZoom();
   app.startedAt = Date.now();
+  app.challengeId = null;
+  app.challengeMs = 0;
+  app.challengeVerdict = null;
   app.robotSpeak = {};
   app.wasBehind = false;
   app.handCloses = 0;
@@ -1260,6 +1323,18 @@ function updateTimers() {
       $(`p${index}-time`).textContent = formatClock(turnMs);
     }
   });
+  if (app.challengeId === "speed") {
+    const left = Math.max(0, 8 * 60 * 1000 - (app.challengeMs || 0));
+    $("clock").hidden = false;
+    $("clock").classList.toggle("low", left <= 30_000 && game.status === "playing");
+    $("clock").textContent = formatClock(left);
+  }
+  const live = $("challenge-live");
+  if (live) {
+    const text = challengeLiveText();
+    live.hidden = !text;
+    if (text) live.textContent = text;
+  }
   paintDisconnectBanner();
 }
 
@@ -1436,7 +1511,7 @@ function queueAi() {
       onTurnTimeout();
       return;
     }
-    const move = chooseMove(app.game, app.prefs.difficulty);
+    const move = chooseMove(app.game, app.game.settings?.difficulty || app.prefs.difficulty);
     if (!move) {
       app.inputLock = false;
       return;
@@ -1526,8 +1601,10 @@ function recordGame() {
     winner: game.winner,
     userSeat,
     reason: game.reason,
-    difficulty: app.mode === "solo" ? app.prefs.difficulty : null,
-    durationMs: app.startedAt ? Math.max(0, Date.now() - app.startedAt) : 0,
+    difficulty: app.mode === "solo" ? (app.game.settings?.difficulty || app.prefs.difficulty) : null,
+    durationMs: app.challengeId
+      ? Math.max(0, Math.round(app.challengeMs || 0))
+      : app.startedAt ? Math.max(0, Date.now() - app.startedAt) : 0,
     behind: app.wasBehind === true,
     clean: app.prefs.closeMode === "hand" && app.handCloses > 0 && !app.traceFaults,
   };
@@ -1539,8 +1616,101 @@ function recordGame() {
   else app.sounds.lose();
 }
 
+function challengeLiveText() {
+  const id = app.challengeId;
+  const game = app.game;
+  if (!id || !game) return "";
+  const mine = housesOf(game, 0);
+  const foe = housesOf(game, 1);
+  if (id === "speed") return `${mine} / 10 maisons`;
+  if (id === "precision") {
+    if (app.traceFaults) return "Erreur au tracé.";
+    return `Maisons fermées à la main : ${app.handCloses || 0}`;
+  }
+  if (id === "dominate") return `${mine} / 10 maisons`;
+  if (id === "comeback") {
+    if (!app.wasBehind) return "Tu n’es pas encore mené.";
+    if (foe > mine) return "Tu es mené.";
+    if (mine > foe) return "Tu as repris l’avance.";
+    return "Égalité après avoir été mené.";
+  }
+  if (id === "expert") return "Robot au niveau expert.";
+  if (id === "blank") return `Maisons laissées à l’autre : ${foe}`;
+  if (id === "streak") return streakLine(3);
+  if (id === "week") return streakLine(7);
+  return "";
+}
+
+function immediateChallengeVerdict() {
+  const id = app.challengeId;
+  const game = app.game;
+  if (!id || !game || game.status !== "playing") return null;
+  const mine = housesOf(game, 0);
+  const foe = housesOf(game, 1);
+  const elapsed = app.challengeMs || 0;
+  if (id === "speed") {
+    if (mine >= 10 && elapsed <= 8 * 60 * 1000) return "won";
+    if (elapsed >= 8 * 60 * 1000) return "lost";
+  }
+  if (id === "precision") {
+    if (app.traceFaults > 0) return "lost";
+    if (app.handCloses > 0) return "won";
+  }
+  if (id === "dominate" && mine >= 10 && mine > foe) return "won";
+  if (id === "comeback" && app.wasBehind && mine > foe) return "won";
+  if (id === "blank" && foe > 0) return "lost";
+  return null;
+}
+
+function finalChallengeVerdict() {
+  const id = app.challengeId;
+  const game = app.game;
+  if (!id || !game) return null;
+  const mine = housesOf(game, 0);
+  const foe = housesOf(game, 1);
+  const elapsed = app.challengeMs || 0;
+  if (id === "speed") return mine >= 10 && elapsed <= 8 * 60 * 1000 ? "won" : "lost";
+  if (id === "precision") return app.handCloses > 0 && !app.traceFaults ? "won" : "lost";
+  if (id === "dominate") return wonGame(game) && mine >= 10 ? "won" : "lost";
+  if (id === "comeback") return app.wasBehind === true && wonGame(game) ? "won" : "lost";
+  if (id === "expert") return game.reason === "abandon" ? "lost" : "won";
+  if (id === "blank") return wonGame(game) && foe === 0 && mine > 0 ? "won" : "lost";
+  if (id === "streak" || id === "week") {
+    const need = id === "week" ? 7 : 3;
+    return streakProgress(need).remaining === 0 ? "won" : "progress";
+  }
+  return null;
+}
+
+function finishChallenge(verdict) {
+  if (!app.game || app.game.status !== "playing") return;
+  app.challengeVerdict = verdict;
+  const mine = app.game.scores[0];
+  const foe = app.game.scores[1];
+  app.game.winner = mine === foe ? "draw" : mine > foe ? 0 : 1;
+  app.game.reason = app.game.reason || (verdict === "lost" && app.challengeId === "speed" ? "time" : "score");
+  app.game.status = "finished";
+  endLocal();
+}
+
 function resultCopy() {
   const game = app.game;
+  const scoreLine = `${app.players[0].name} ${game.scores[0]}  ·  ${game.scores[1]} ${app.players[1].name}`;
+  if (app.challengeId) {
+    const item = CHALLENGES.find((entry) => entry.id === app.challengeId);
+    const verdict = app.challengeVerdict || finalChallengeVerdict();
+    const need = app.challengeId === "week" ? 7 : app.challengeId === "streak" ? 3 : 0;
+    if (verdict === "progress" && need) {
+      return { kicker: "Défi", title: "Série en cours", text: `${streakLine(need)}\n${scoreLine}`, celebrate: false };
+    }
+    const won = verdict === "won";
+    return {
+      kicker: "Défi",
+      title: won ? "Défi gagné" : "Défi perdu",
+      text: `${item?.name || "Défi"}\n${scoreLine}`,
+      celebrate: won,
+    };
+  }
   let title = "Égalité";
   if (game.winner === 0 || game.winner === 1) {
     if (app.mode === "local") title = `${app.players[game.winner].name} gagne`;
@@ -1552,14 +1722,14 @@ function resultCopy() {
   }
   const earned = app.freshChallenges || [];
   const extra = earned.length ? `\n${earned.map((item) => `${item.name} · +${item.xp} XP`).join("\n")}` : "";
-  const text = `${app.players[0].name} ${game.scores[0]}  ·  ${game.scores[1]} ${app.players[1].name}\n${because}${extra}`;
+  const text = `${scoreLine}\n${because}${extra}`;
   return { title, text, celebrate: title === "Victoire" || (app.mode === "local" && title !== "Égalité") };
 }
 
 function showResult() {
-  const { title, text, celebrate } = resultCopy();
+  const { title, text, celebrate, kicker } = resultCopy();
   showOverlay({
-    kicker: "Partie terminée",
+    kicker: kicker || "Partie terminée",
     title,
     text,
     celebrate,
@@ -1692,8 +1862,11 @@ function loop(ts) {
   app.lastTs = ts;
   if (app.game && app.mode !== "online" && !app.paused && app.game.status === "playing") {
     const clock = tick(app.game, dt);
-    if (clock.timedOut && clock.kind === "turn") onTurnTimeout();
-    if (clock.timedOut && clock.kind === "global") endLocal();
+    if (app.challengeId) app.challengeMs = (app.challengeMs || 0) + dt;
+    const verdict = immediateChallengeVerdict();
+    if (verdict) finishChallenge(verdict);
+    else if (clock.timedOut && clock.kind === "turn") onTurnTimeout();
+    else if (clock.timedOut && clock.kind === "global") endLocal();
   }
   app.board?.frame(ts);
   if (app.game && !$("screen-game").hidden) updateTimers();
@@ -2223,7 +2396,7 @@ function soon() {
 }
 
 const HUB_TITLES = {
-  play: "Jouer",
+  play: "Jouer une partie",
   challenges: "Défis",
   competitions: "Compétitions",
   profiles: "Profils",
@@ -2775,6 +2948,21 @@ function bind() {
       const session = loadSession();
       if (session?.connected) saveSession({ ...session, email: data.email || email });
       paintUserChip();
+      const password = $("profile-password").value;
+      const confirm = $("profile-confirm").value;
+      if (password || confirm) {
+        if (password.length < 6 || password !== confirm) {
+          toast("Le mot de passe doit avoir au moins 6 caractères, deux fois le même.");
+          return;
+        }
+        const changed = await sendJson("/api/auth/password", "POST", { password, confirm });
+        if (!changed?.ok) {
+          toast("Le mot de passe n'a pas pu être changé.");
+          return;
+        }
+        $("profile-password").value = "";
+        $("profile-confirm").value = "";
+      }
       toast("Profil enregistré.");
     } catch {
       toast("Profil non enregistré.");
@@ -2850,12 +3038,6 @@ function bind() {
     }
     if (app.game) rematch();
   });
-  $("clear-history").addEventListener("click", () => {
-    clearHistory();
-    sendJson(`/api/games/${playerId()}`, "DELETE").catch(() => {});
-    renderHistory();
-  });
-
   $("brand").addEventListener("click", () => {
     if (document.body.dataset.page === "play") return;
     goHome();
