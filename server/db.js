@@ -119,6 +119,18 @@ export async function readProfile(id) {
   return rows[0] || null;
 }
 
+export async function findByName(name) {
+  const { rows } = await pool.query(
+    `SELECT id, name, email, icon, photo, password_hash
+     FROM profiles
+     WHERE lower(name) = lower($1)
+     ORDER BY (password_hash <> '') DESC, updated_at DESC
+     LIMIT 2`,
+    [name],
+  );
+  return rows;
+}
+
 export async function findAccount(email) {
   const { rows } = await pool.query(
     `SELECT id, name, email, icon, photo, password_hash
@@ -151,6 +163,7 @@ export async function saveAccount({ id, name, email, passwordHash }) {
   const byEmail = await findAccount(email);
   if (byEmail && byEmail.id !== id) return { error: "Cet e-mail a déjà un profil." };
   const byId = byEmail?.id === id ? byEmail : await accountById(id);
+  if (byId?.password_hash) return { error: "Ce profil a déjà un mot de passe." };
   try {
     const { rows } = byId
       ? await pool.query(

@@ -2229,7 +2229,7 @@ function openHub(name) {
   }
 }
 
-const auth = { step: "identity", exists: false, name: "", email: "" };
+const auth = { step: "identity", exists: false, name: "", email: "", accountId: "", knownMail: false };
 
 function firstNameGroup(name) {
   return String(name || "").trim().split(/\s+/)[0] || "";
@@ -2283,10 +2283,10 @@ function hideSecrets() {
 }
 
 function showAuthFace(face) {
-  auth.step = face === "password" ? "password" : "identity";
-  const named = Boolean(loadProfile().name);
-  $("auth-name-label").hidden = face === "password" || face === "email" || face === "add-email";
-  $("auth-email-label").hidden = face === "password";
+  auth.step = face === "password" ? "password" : face === "recover" ? "recover" : "identity";
+  $("auth-key-label").hidden = face !== "recover";
+  $("auth-name-label").hidden = face === "password" || face === "email" || face === "add-email" || face === "recover";
+  $("auth-email-label").hidden = face === "password" || face === "recover";
   $("auth-password-label").hidden = face !== "password";
   $("auth-confirm-label").hidden = face !== "password" || auth.exists;
   $("auth-known").hidden = face !== "create";
@@ -2303,21 +2303,25 @@ function showAuthFace(face) {
     $("auth-title").textContent = "Votre profil";
     $("auth-text").textContent = "Vous aviez inséré le profil et non le mail. Veuillez ajouter le mail.";
     $("auth-go").textContent = "Continuer";
-  } else if (face === "email" || face === "known") {
+  } else if (face === "recover") {
+    auth.mode = "login";
+    $("auth-kicker").textContent = "Connexion";
+    $("auth-title").textContent = "Votre profil";
+    $("auth-text").textContent = "Écris le nom du profil ou l'e-mail.";
+    $("auth-go").textContent = "Continuer";
+  } else if (face === "email") {
     auth.mode = "login";
     $("auth-kicker").textContent = "Connexion";
     $("auth-title").textContent = "Votre e-mail";
-    $("auth-text").textContent = face === "email"
-      ? "Entrez votre e-mail pour vous connecter."
-      : "Écris ton nom et ton e-mail.";
+    $("auth-text").textContent = "Entrez votre e-mail pour vous connecter.";
     $("auth-go").textContent = "Continuer";
-    if (face === "known" && named) $("auth-name").value = loadProfile().name;
   } else {
+    const known = auth.knownMail && auth.email ? `Vous aviez indiqué ${auth.email}. ` : "";
     $("auth-kicker").textContent = auth.exists ? "Connexion" : "Création de compte";
     $("auth-title").textContent = "Mot de passe";
     $("auth-text").textContent = auth.exists
-      ? "Écris le mot de passe que tu as créé."
-      : "Choisis un mot de passe, puis confirme-le.";
+      ? `${known}Écris le mot de passe que tu as créé.`
+      : `${known}Choisis un mot de passe, puis confirme-le.`;
     $("auth-go").textContent = auth.exists ? "Entrer" : "Créer le profil";
     $("auth-password").autocomplete = auth.exists ? "current-password" : "new-password";
     hideSecrets();
@@ -2332,8 +2336,11 @@ async function openAuth() {
   auth.mode = "create";
   auth.name = name;
   auth.email = "";
+  auth.accountId = "";
+  auth.knownMail = false;
   $("auth-name").value = "";
   $("auth-email").value = "";
+  $("auth-key").value = "";
   $("auth-password").value = "";
   $("auth-confirm").value = "";
 
@@ -2342,8 +2349,9 @@ async function openAuth() {
     if (looked.ok && looked.data.exists) {
       auth.exists = true;
       auth.mode = "login";
-      auth.name = name;
-      auth.email = email;
+      auth.name = looked.data.name || name;
+      auth.email = looked.data.email || email;
+      auth.knownMail = true;
       showAuthFace("password");
       $("auth-dialog").hidden = false;
       window.setTimeout(() => $("auth-password").focus(), 30);
@@ -2361,6 +2369,7 @@ async function openAuth() {
   if (name && email) {
     auth.email = email;
     auth.exists = false;
+    auth.knownMail = true;
     showAuthFace("password");
     $("auth-dialog").hidden = false;
     window.setTimeout(() => $("auth-password").focus(), 30);
@@ -2372,33 +2381,22 @@ async function openAuth() {
   window.setTimeout(() => $("auth-name").focus(), 30);
 }
 
-async function alreadyAccount() {
-  const profile = loadProfile();
-  const email = profile.email.trim();
-  if (!email) {
-    showAuthFace("known");
-    $("auth-name").focus();
-    return;
-  }
-  const looked = await authFetch("/api/auth/lookup", { email });
-  if (!looked.ok) {
-    showAuthError(looked.error || "Réessaie dans un instant.");
-    return;
-  }
-  if (!looked.data.exists) {
-    showAuthFace("known");
-    $("auth-email").value = email;
-    $("auth-name").focus();
-    return;
-  }
-  auth.exists = true;
+function alreadyAccount() {
   auth.mode = "login";
-  auth.name = profile.name || $("auth-name").value.trim();
-  auth.email = email;
-  $("auth-password").value = "";
-  $("auth-confirm").value = "";
-  showAuthFace("password");
-  $("auth-password").focus();
+  auth.accountId = "";
+  auth.knownMail = false;
+  $("auth-key").value = "";
+  showAuthFace("recover");
+  window.setTimeout(() => $("auth-key").focus(), 30);
+}
+
+function leaveAuth() {
+  $("auth-dialog").hidden = true;
+}
+
+function authHelp() {
+  $("auth-dialog").hidden = true;
+  openFeedback();
 }
 
 function finishAuth(profile) {
@@ -2427,7 +2425,47 @@ async function submitAuth(event) {
   }
 }
 
+function applyFoundAccount(found) {
+  auth.name = found.name || auth.name;
+  auth.email = found.email || "";
+  auth.accountId = found.id || "";
+  auth.exists = Boolean(found.exists);
+  auth.mode = auth.exists ? "login" : "create";
+  auth.knownMail = Boolean(auth.email);
+  $("auth-password").value = "";
+  $("auth-confirm").value = "";
+  if (!auth.email) {
+    showAuthFace("add-email");
+    window.setTimeout(() => $("auth-email").focus(), 30);
+    return;
+  }
+  showAuthFace("password");
+  window.setTimeout(() => $("auth-password").focus(), 30);
+}
+
 async function sendAuth() {
+  if (auth.step === "recover") {
+    const key = $("auth-key").value.trim();
+    if (!key) {
+      showAuthError("Écris ton nom ou ton e-mail.");
+      return;
+    }
+    const looked = await authFetch("/api/auth/lookup", { key });
+    if (!looked.ok) {
+      showAuthError(looked.error || "Réessaie dans un instant.");
+      return;
+    }
+    if (looked.data.many) {
+      showAuthError("Plusieurs profils portent ce nom. Écris l'e-mail.");
+      return;
+    }
+    if (!looked.data.found) {
+      showAuthError("Aucun profil avec ce nom ou cet e-mail.");
+      return;
+    }
+    applyFoundAccount(looked.data);
+    return;
+  }
   if (auth.step === "identity") {
     const name = loadProfile().name || $("auth-name").value.trim();
     const email = $("auth-email").value.trim();
@@ -2453,9 +2491,11 @@ async function sendAuth() {
     } else {
       auth.exists = true;
       auth.mode = "login";
+      auth.knownMail = true;
+      auth.accountId = "";
     }
-    auth.name = name;
-    auth.email = email;
+    auth.name = looked.data.name || name;
+    auth.email = looked.data.email || email;
     $("auth-password").value = "";
     $("auth-confirm").value = "";
     showAuthFace("password");
@@ -2474,7 +2514,7 @@ async function sendAuth() {
   const result = auth.exists
     ? await authFetch("/api/auth/login", { email: auth.email, password })
     : await authFetch("/api/auth/register", {
-      playerId: playerId(),
+      playerId: auth.accountId || playerId(),
       name: auth.name,
       email: auth.email,
       password,
@@ -2864,6 +2904,8 @@ function bind() {
   app.sounds.enabled = false;
   $("auth-form").addEventListener("submit", submitAuth);
   $("auth-known").addEventListener("click", alreadyAccount);
+  $("auth-back").addEventListener("click", leaveAuth);
+  $("auth-help").addEventListener("click", authHelp);
   document.querySelectorAll(".secret-see").forEach((button) => {
     button.addEventListener("click", () => {
       const input = $(button.dataset.for);

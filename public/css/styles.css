@@ -681,6 +681,19 @@ body[data-page="play"] #screen-game {
 }
 #app-dialog .form-actions { justify-content: center; }
 #auth-form .form-actions { flex-direction: column; align-items: center; }
+.auth-link {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: #c5d0dc;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+  padding: 0;
+  font: inherit;
+}
+#auth-back { display: block; margin: 0 0 12px; text-align: left; }
+.auth-help { display: block; width: 100%; margin-top: 18px; text-align: center; }
 .overlay {
   position: absolute;
   inset: 0;

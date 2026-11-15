@@ -21,6 +21,7 @@ import {
   dbReady,
   emailTaken,
   findAccount,
+  findByName,
   initDb,
   insertGame,
   insertMessage,
@@ -119,6 +120,18 @@ function cleanEmail(value) {
   return String(value || "").trim().toLowerCase().slice(0, 80);
 }
 
+function accountView(row) {
+  const exists = Boolean(row.password_hash);
+  return {
+    found: true,
+    many: false,
+    exists,
+    email: row.email || "",
+    name: row.name || "",
+    id: exists ? "" : row.id,
+  };
+}
+
 async function hashPassword(password) {
   const salt = randomBytes(16).toString("hex");
   const hash = await scryptAsync(password, salt, 32, SCRYPT);
@@ -171,17 +184,26 @@ app.post("/api/auth/lookup", api(async (req, res) => {
     res.status(429).json({ error: "Trop d'essais." });
     return;
   }
-  const email = cleanEmail(req.body?.email);
-  if (!EMAIL_OK.test(email)) {
-    res.status(400).json({ error: "Cet e-mail n’est pas valide." });
+  const key = String(req.body?.key || req.body?.email || "").trim().slice(0, 80);
+  if (!key) {
+    res.status(400).json({ error: "Écris un nom ou un e-mail." });
     return;
   }
-  if (limited(`${email}:lookup`, 12, 15 * 60_000)) {
+  if (limited(`${key.toLowerCase()}:lookup`, 12, 15 * 60_000)) {
     res.status(429).json({ error: "Trop d'essais." });
     return;
   }
-  const account = await findAccount(email);
-  res.json({ exists: Boolean(account?.password_hash) });
+  if (EMAIL_OK.test(key)) {
+    const account = await findAccount(cleanEmail(key));
+    res.json(account ? accountView(account) : { found: false, exists: false });
+    return;
+  }
+  const named = await findByName(key);
+  if (named.length > 1) {
+    res.json({ found: true, many: true, exists: false });
+    return;
+  }
+  res.json(named[0] ? accountView(named[0]) : { found: false, exists: false });
 }));
 
 app.post("/api/auth/register", api(async (req, res) => {
