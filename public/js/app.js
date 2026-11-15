@@ -2285,7 +2285,7 @@ function hideSecrets() {
 function showAuthFace(face) {
   auth.step = face === "password" ? "password" : "identity";
   const named = Boolean(loadProfile().name);
-  $("auth-name-label").hidden = face === "password" || face === "email";
+  $("auth-name-label").hidden = face === "password" || face === "email" || face === "add-email";
   $("auth-email-label").hidden = face === "password";
   $("auth-password-label").hidden = face !== "password";
   $("auth-confirm-label").hidden = face !== "password" || auth.exists;
@@ -2296,6 +2296,12 @@ function showAuthFace(face) {
     $("auth-kicker").textContent = "Création de compte";
     $("auth-title").textContent = "Votre profil";
     $("auth-text").textContent = "Écris ton nom et prénom, puis ton e-mail.";
+    $("auth-go").textContent = "Continuer";
+  } else if (face === "add-email") {
+    auth.mode = "create";
+    $("auth-kicker").textContent = "Profil";
+    $("auth-title").textContent = "Votre profil";
+    $("auth-text").textContent = "Vous aviez inséré le profil et non le mail. Veuillez ajouter le mail.";
     $("auth-go").textContent = "Continuer";
   } else if (face === "email" || face === "known") {
     auth.mode = "login";
@@ -2320,21 +2326,23 @@ function showAuthFace(face) {
 
 async function openAuth() {
   const profile = loadProfile();
+  const name = profile.name.trim();
+  const email = profile.email.trim();
   auth.exists = false;
-  auth.mode = profile.name ? "login" : "create";
-  auth.name = profile.name || "";
+  auth.mode = "create";
+  auth.name = name;
   auth.email = "";
   $("auth-name").value = "";
   $("auth-email").value = "";
   $("auth-password").value = "";
   $("auth-confirm").value = "";
-  const email = profile.email.trim();
+
   if (email) {
     const looked = await authFetch("/api/auth/lookup", { email });
     if (looked.ok && looked.data.exists) {
       auth.exists = true;
       auth.mode = "login";
-      auth.name = profile.name || "";
+      auth.name = name;
       auth.email = email;
       showAuthFace("password");
       $("auth-dialog").hidden = false;
@@ -2342,9 +2350,26 @@ async function openAuth() {
       return;
     }
   }
-  showAuthFace(profile.name ? "email" : "create");
+
+  if (name && !email) {
+    showAuthFace("add-email");
+    $("auth-dialog").hidden = false;
+    window.setTimeout(() => $("auth-email").focus(), 30);
+    return;
+  }
+
+  if (name && email) {
+    auth.email = email;
+    auth.exists = false;
+    showAuthFace("password");
+    $("auth-dialog").hidden = false;
+    window.setTimeout(() => $("auth-password").focus(), 30);
+    return;
+  }
+
+  showAuthFace("create");
   $("auth-dialog").hidden = false;
-  window.setTimeout(() => (profile.name ? $("auth-email") : $("auth-name")).focus(), 30);
+  window.setTimeout(() => $("auth-name").focus(), 30);
 }
 
 async function alreadyAccount() {
