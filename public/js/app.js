@@ -8,6 +8,7 @@ import {
   createGame,
   formatClock,
   legalMoves,
+  moveInfo,
   normalizeSettings,
   sheetHouseCap,
   tick,
@@ -833,6 +834,7 @@ function startMatch(settings, mode) {
   app.board.clearAnims();
   resetSheetZoom();
   app.startedAt = Date.now();
+  app.robotSpeak = {};
   app.wasBehind = false;
   app.handCloses = 0;
   app.traceFaults = 0;
@@ -1123,15 +1125,15 @@ function matchRuleText(game) {
   return parts.join(" · ");
 }
 
-function showReaction(emoji) {
+function showReaction(emoji, seat) {
   if (!REACTIONS.includes(emoji)) return;
   const stage = $("reaction-stage");
   if (!stage) return;
+  const side = seat === 1 ? 1 : 0;
+  stage.querySelector(`.side-${side}`)?.remove();
   const node = document.createElement("span");
-  node.className = "reaction-float";
+  node.className = `sheet-react side-${side}`;
   node.textContent = emoji;
-  node.style.right = `${10 + Math.round(Math.random() * 36)}%`;
-  node.style.bottom = `${16 + Math.round(Math.random() * 24)}%`;
   stage.appendChild(node);
   node.addEventListener("animationend", () => node.remove());
 }
@@ -1146,10 +1148,62 @@ function sendReaction(emoji, button) {
     void button.offsetWidth;
     button.classList.add("pop");
   }
-  showReaction(emoji);
+  const seat = app.mode === "online" ? app.seat : app.mode === "local" && app.game.current === 1 ? 1 : 0;
+  showReaction(emoji, seat);
   if (app.mode === "online" && app.socket?.connected && app.roomCode) {
     app.socket.emit("react", emoji);
   }
+}
+
+function foeWouldClose(game, move) {
+  const saved = game.current;
+  game.current = 1 - saved;
+  try {
+    return moveInfo(game, move).completes > 0;
+  } finally {
+    game.current = saved;
+  }
+}
+
+function pickReaction(list) {
+  return list[Math.floor(Math.random() * list.length)];
+}
+
+function robotMaySpeak(kind) {
+  if (kind === "capture") return true;
+  const now = Date.now();
+  if (!app.robotSpeak) app.robotSpeak = {};
+  const last = app.robotSpeak.block || 0;
+  if (now - last < 8000 || Math.random() > 0.4) return false;
+  app.robotSpeak.block = now;
+  return true;
+}
+
+function reactToMove(result, blocked) {
+  if (app.mode !== "solo" || !result?.ok) return;
+  const robot = app.players.findIndex((player) => player.kind === "ai");
+  if (robot < 0) return;
+  const human = 1 - robot;
+  const took = result.completed > 0 || result.eaten > 0;
+  let robotBefore = app.game.scores[robot];
+  let humanBefore = app.game.scores[human];
+  if (result.eaten > 0) humanBefore += result.eaten;
+  if (result.player === robot) robotBefore -= result.completed > 0 ? result.completed : result.eaten;
+  const cameBack = robotBefore < humanBefore && app.game.scores[robot] >= app.game.scores[human];
+  let emoji = "";
+  let kind = "capture";
+  if (took && result.player === human) {
+    emoji = Math.random() < 0.25 ? "❌" : pickReaction(["😅", "😭"]);
+  } else if (took && result.player === robot) {
+    const icons = ["🤣", "😂", "✅"];
+    if (cameBack) icons.push("😎", "😏");
+    emoji = pickReaction(icons);
+  } else if (blocked && result.player === robot) {
+    emoji = pickReaction(["😏", "😎"]);
+    kind = "block";
+  }
+  if (!emoji || !robotMaySpeak(kind)) return;
+  showReaction(emoji, robot);
 }
 
 function remaining(kind) {
@@ -1295,6 +1349,7 @@ function tryMove(move) {
 }
 
 function playLocal(move, fromTimeout) {
+  const blocked = app.players[app.game.current]?.kind === "ai" && foeWouldClose(app.game, move);
   const human = app.players[app.game.current]?.kind !== "ai";
   const manual = human && app.game.settings.closeMode === "hand";
   const result = applyMove(app.game, move, { autoClose: !manual });
@@ -1308,6 +1363,7 @@ function playLocal(move, fromTimeout) {
     popScore(result.player);
   }
   if (result.eaten) popScore(1 - result.player);
+  reactToMove(result, blocked);
   refreshHud();
   saveMatch();
   revealMove(move);
@@ -1663,7 +1719,7 @@ function ensureSocket() {
   app.socket.on("react", (msg) => {
     if (app.ignoreOnline || !msg || msg.code !== app.roomCode) return;
     if (msg.seat === app.seat) return;
-    showReaction(msg.emoji);
+    showReaction(msg.emoji, msg.seat);
   });
   app.socket.on("closed", () => {
     if (app.ignoreOnline) return;
@@ -2136,7 +2192,7 @@ function openHub(name) {
 function bind() {
   const rail = $("reactions");
   if (rail) {
-    rail.innerHTML = REACTIONS.map((emoji) => `<button type="button" data-react="${emoji}" aria-label="Réagir">${emoji}</button>`).join("");
+    rail.innerHTML = `<span class="reactions-label">Réactions</span>${REACTIONS.map((emoji) => `<button type="button" data-react="${emoji}" aria-label="Réagir">${emoji}</button>`).join("")}`;
     rail.addEventListener("click", (event) => {
       const button = event.target.closest("[data-react]");
       if (button) sendReaction(button.dataset.react, button);
@@ -2397,6 +2453,7 @@ function bind() {
     app.sounds.box();
     popScore(result.player);
     if (result.eaten) popScore(1 - result.player);
+    reactToMove(result, false);
     refreshHud();
     saveMatch();
     app.inputLock = true;
