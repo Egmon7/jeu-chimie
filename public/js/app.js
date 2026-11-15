@@ -2168,19 +2168,12 @@ function bind() {
 
   $("create-match").addEventListener("click", () => {
     const profile = loadProfile();
-    const next = () => askDialog({
-      kicker: "Avant de jouer",
-      title: "Configure bien les paramètres",
-      text: "Regarde la feuille, le score, le temps et la façon d'encercler avant de lancer.",
-      confirm: "Continuer",
-      cancel: "Retour",
-      onYes: () => {
-        try { sessionStorage.removeItem("egmon-hub"); } catch { /* ignore */ }
-        show("screen-modes");
-      },
-    });
+    const enter = () => {
+      try { sessionStorage.removeItem("egmon-hub"); } catch { /* ignore */ }
+      show("screen-modes");
+    };
     if (profile.name) {
-      next();
+      enter();
       return;
     }
     askDialog({
@@ -2193,7 +2186,7 @@ function bind() {
       onYes: (name) => {
         const saved = saveProfile({ name, email: profile.email, icon: profile.icon });
         syncProfile(saved);
-        next();
+        enter();
       },
     });
   });

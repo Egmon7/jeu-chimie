@@ -613,18 +613,31 @@ body[data-theme="dark"] .overlay { background: rgba(0, 0, 0, 0.45); }
 }
 .stats strong { display: block; font-family: var(--display); font-size: 1.8rem; }
 .stats span, .history-item span { color: var(--muted); }
+#history-list {
+  max-height: min(420px, calc(100dvh - 340px));
+  overflow-y: auto;
+  display: grid;
+  gap: 8px;
+  min-height: 0;
+}
 .history-item {
   display: flex;
   justify-content: space-between;
+  align-items: center;
   gap: 12px;
-  margin-bottom: 8px;
+  margin: 0;
   box-shadow: none;
   min-width: 0;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
 }
 .history-item div { display: grid; min-width: 0; }
 .history-item b { font-variant-numeric: tabular-nums; }
-.history-item span { overflow-wrap: anywhere; }
+.history-item span,
+.history-item strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .empty { color: var(--muted); }
 
 #toast {
