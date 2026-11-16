@@ -63,6 +63,7 @@ const ROOM_LIMIT = 80;
 const QUEUE_LIMIT = 80;
 const CONNECTIONS_PER_IP = 120;
 const WAITING_ROOM_MS = 20 * 60 * 1000;
+const PLAY_GRACE_MS = 150_000;
 const PHOTO_URL = /^https:\/\/res\.cloudinary\.com\/ka4h4lpk\/image\/upload\/[A-Za-z0-9_./%-]{1,360}$/;
 const PEN_COLORS = ["red", "blue", "black", "green", "purple"];
 
@@ -651,11 +652,13 @@ function rememberPresence(socket, payload) {
   }
   const current = presence.get(socket.id);
   const photo = PHOTO_URL.test(payload.photo) ? payload.photo : "";
+  const busy = typeof payload.busy === "boolean" ? payload.busy : current?.busy === true;
   const next = {
     token: presenceToken(current),
     id: safePlayerId(payload.playerId, current?.id || socket.id),
     name,
     photo,
+    busy,
     socketId: socket.id,
   };
   presence.set(socket.id, next);
@@ -671,18 +674,31 @@ function seated(socketId) {
   return seat >= 0 && room.players[seat]?.socketId === socketId;
 }
 
+function accountBusy(item) {
+  if (!item) return false;
+  for (const other of presence.values()) {
+    const same = other.socketId === item.socketId || (item.id && other.id === item.id);
+    if (!same) continue;
+    if (other.busy === true || seated(other.socketId)) return true;
+  }
+  return false;
+}
+
 function findPeople(except) {
   const skipId = except?.id || "";
   const byId = new Map();
   for (const item of presence.values()) {
     if (item.socketId === except?.socketId) continue;
     if (skipId && item.id === skipId) continue;
-    if (!io.sockets.sockets.has(item.socketId) || seated(item.socketId)) continue;
-    byId.set(item.id || item.socketId, item);
+    if (!io.sockets.sockets.has(item.socketId)) continue;
+    const key = item.id || item.socketId;
+    const current = byId.get(key);
+    if (!current || (accountBusy(item) && !accountBusy(current))) byId.set(key, item);
   }
   return [...byId.values()]
-    .slice(0, 40)
-    .map((item) => ({ token: item.token, name: item.name, photo: item.photo }));
+    .map((item) => ({ token: item.token, name: item.name, photo: item.photo, busy: accountBusy(item) }))
+    .sort((a, b) => Number(a.busy) - Number(b.busy) || a.name.localeCompare(b.name, "fr"))
+    .slice(0, 40);
 }
 
 function broadcastFind() {
@@ -967,7 +983,7 @@ io.on("connection", (socket) => {
     const token = queueToken(payload.token);
     const host = presence.get(socket.id);
     const guest = token ? [...presence.values()].find((item) => item.token === token && item.socketId !== socket.id) : null;
-    if (!host || !guest || seated(host.socketId) || seated(guest.socketId)) return;
+    if (!host || !guest || accountBusy(guest)) return;
     io.to(guest.socketId).emit("invite", { from: host.name, token: host.token });
   });
 
@@ -979,6 +995,10 @@ io.on("connection", (socket) => {
     const host = token ? [...presence.values()].find((item) => item.token === token) : null;
     const hostSocket = host ? io.sockets.sockets.get(host.socketId) : null;
     if (!guest || !host || !hostSocket || host.socketId === socket.id) return;
+    if (accountBusy(guest) || accountBusy(host)) {
+      socket.emit("notice", "Cette personne est occupée.");
+      return;
+    }
     if (liveRoom(socket)?.room.game || liveRoom(hostSocket)?.room.game) {
       socket.emit("notice", "Tu es déjà dans une partie.");
       return;
@@ -1044,7 +1064,7 @@ io.on("connection", (socket) => {
     if (room.game?.status === "playing") {
       room.players[seat].connected = false;
       if (!room.forfeitAt) room.forfeitAt = [null, null];
-      room.forfeitAt[seat] = Date.now() + 60_000;
+      room.forfeitAt[seat] = Date.now() + PLAY_GRACE_MS;
       emitState(room, { type: "presence" });
       room.forfeit[seat] = setTimeout(() => {
         const player = room.players[seat];
@@ -1053,7 +1073,7 @@ io.on("connection", (socket) => {
           abandon(room.game, seat);
           emitState(room, { type: "forfeit" });
         }
-      }, 60000);
+      }, PLAY_GRACE_MS);
       return;
     }
     room.forfeit[seat] = setTimeout(() => {

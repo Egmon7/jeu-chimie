@@ -914,6 +914,7 @@ function startMatch(settings, mode) {
   showModeReminder();
   if (mode === "solo" && app.game.current === 1) queueAi();
   saveMatch();
+  announcePresence();
 }
 
 function showModeReminder() {
@@ -1749,6 +1750,7 @@ function endLocal() {
   recordGame();
   updateTimers();
   showResult();
+  announcePresence();
 }
 
 function rematch() {
@@ -1768,6 +1770,7 @@ function rematch() {
   showModeReminder();
   if (app.mode === "solo" && app.game.current === 1) queueAi();
   saveMatch();
+  announcePresence();
 }
 
 function dropOnlineRoom() {
@@ -1779,6 +1782,7 @@ function dropOnlineRoom() {
   app.mode = null;
   app.game = null;
   app.roomCode = null;
+  announcePresence();
 }
 
 function leaveOnlineScreen() {
@@ -1806,6 +1810,7 @@ function goHome() {
   app.paused = false;
   app.mode = null;
   hideOverlay();
+  announcePresence();
   show("screen-home", online ? "replace" : "push");
 }
 
@@ -1931,7 +1936,7 @@ function ensureSocket() {
     leaveOnlineScreen();
   });
   app.socket.on("notice", (text) => {
-    if (text === "La table n’a pas pu s’ouvrir." || text === "Tu es déjà dans une partie.") toast(text);
+    if (text === "La table n’a pas pu s’ouvrir." || text === "Tu es déjà dans une partie." || text === "Cette personne est occupée.") toast(text);
   });
   app.socket.on("queue", (msg) => {
     if (!$("screen-find").hidden) renderFind(Array.isArray(msg.people) ? msg.people : []);
@@ -1955,7 +1960,7 @@ function ensureSocket() {
     const waiting = !$("screen-lobby").hidden;
     if (!playing && !waiting) return;
     if (playing) {
-      app.selfBackAt = Date.now() + 60_000;
+      app.selfBackAt = Date.now() + 150_000;
       app.inputLock = false;
       clearTimeout(app.moveWatch);
     }
@@ -2217,8 +2222,17 @@ function renderFind(people) {
     list.innerHTML = `<p class="empty">Personne d’autre n’est connecté pour le moment.</p>`;
     return;
   }
-  list.innerHTML = people.map((person) => `<button type="button" class="find-card" data-token="${esc(person.token)}"><span class="face">${faceMarkup(person.photo, true)}</span><strong>${esc(person.name)}</strong></button>`).join("");
+  list.innerHTML = people.map((person) => {
+    const busy = person.busy === true;
+    const state = busy ? "Occupé" : "Libre";
+    return `<button type="button" class="find-card${busy ? " is-taken" : ""}" data-token="${esc(person.token)}" data-busy="${busy ? "1" : "0"}"${busy ? " disabled" : ""}><span class="face">${faceMarkup(person.photo, true)}</span><span class="find-copy"><strong>${esc(person.name)}</strong><span class="find-state">${state}</span></span></button>`;
+  }).join("");
   bindFaceImages(list);
+}
+
+function matchBusy() {
+  if (app.mode === "online" && (app.roomCode || readRoomSnap())) return true;
+  return (app.mode === "solo" || app.mode === "local") && app.game?.status === "playing";
 }
 
 function announcePresence() {
@@ -2231,6 +2245,7 @@ function announcePresence() {
       playerId: playerId(),
       name,
       photo: profile.photo || "",
+      busy: matchBusy(),
     });
   };
   if (app.socket?.connected) send();
@@ -2253,6 +2268,7 @@ async function enterQueue() {
     playerId: playerId(),
     name: profile.name || "Joueur",
     photo: profile.photo || "",
+    busy: matchBusy(),
     settings: {
       rows: 32,
       cols: 24,
@@ -3088,6 +3104,10 @@ function bind() {
   $("find-list").addEventListener("click", (event) => {
     const card = event.target.closest("[data-token]");
     if (!card) return;
+    if (card.dataset.busy === "1") {
+      toast("Cette personne est occupée.");
+      return;
+    }
     app.socket?.emit("invite", { token: card.dataset.token });
     toast("Invitation envoyée.");
   });

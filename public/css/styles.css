@@ -1339,6 +1339,10 @@ button.challenge-card:focus-visible { border-color: #f2f4f7; }
 .find-card .face { width: 28px; height: 28px; flex: 0 0 28px; }
 .find-card .face svg { width: 16px; height: 16px; }
 .find-card strong { font-size: 0.88rem; font-weight: 560; }
+.find-copy { display: grid; min-width: 0; }
+.find-state { font-size: 0.75rem; color: #8fd18f; }
+.find-card.is-taken { opacity: 0.62; cursor: default; }
+.find-card.is-taken .find-state { color: #e7c56a; }
 .find-list .empty { grid-column: 1 / -1; margin: 0; }
 #screen-admin .stats { grid-template-columns: repeat(auto-fit, minmax(108px, 1fr)); }
 .admin-block { margin: 8px 0 18px; }
