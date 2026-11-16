@@ -347,6 +347,29 @@
               </div>
             </div>
             <div id="reaction-stage" class="reaction-stage" aria-hidden="true"></div>
+            <div id="chat-panel" class="chat-panel" hidden>
+              <div class="chat-head">
+                <strong>Discussion</strong>
+                <button type="button" class="chat-close" id="chat-close" aria-label="Fermer la discussion">×</button>
+              </div>
+              <div id="chat-log" class="chat-log"></div>
+              <form id="chat-form" class="chat-form">
+                <input id="chat-input" type="text" maxlength="200" placeholder="Écris un message" autocomplete="off" enterkeyhint="send">
+                <button type="submit" class="chat-send" aria-label="Envoyer">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M2.01 21 23 12 2.01 3 2 10l15 2-15 2 .01 7z"/>
+                  </svg>
+                </button>
+              </form>
+            </div>
+          </div>
+          <div class="match-chat">
+            <button type="button" class="icon-btn" id="chat-open" hidden aria-label="Discussion" aria-expanded="false">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M4.6 6.2A2.2 2.2 0 0 1 6.8 4h11.4A2.2 2.2 0 0 1 20.4 6.2v7.1a2.2 2.2 0 0 1-2.2 2.2H9.2L5 19.1a.7.7 0 0 1-1.1-.5V6.2Z"/>
+              </svg>
+              <span id="chat-light" class="chat-light" hidden></span>
+            </button>
           </div>
           <div class="sheet-zoom">
             <button type="button" class="icon-btn" id="sheet-zoom-out" aria-label="Éloigner la feuille">−</button>

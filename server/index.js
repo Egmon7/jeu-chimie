@@ -871,7 +871,27 @@ io.on("connection", (socket) => {
     }
   });
 
-  socket.on("move", (move, ack) => {
+socket.on("chat", (text) => {
+  if (typeof text !== "string") return;
+  const body = text.replace(/[\u0000-\u001f]/g, "").trim().slice(0, 200);
+  if (!body || limited(`${socket.id}:chat`, 12, 10_000)) return;
+  const found = liveRoom(socket);
+  if (!found?.room.game || found.room.game.status === "waiting") return;
+  if (!found.room.chat) found.room.chat = [];
+  found.room.chat.push({ seat: found.seat, text: body });
+  if (found.room.chat.length > 40) found.room.chat.shift();
+  const other = found.room.players[1 - found.seat];
+  const sock = other?.socketId ? io.sockets.sockets.get(other.socketId) : null;
+  sock?.emit("chat", { code: found.room.code, text: body, seat: found.seat });
+});
+
+socket.on("chat-sync", () => {
+  const found = liveRoom(socket);
+  if (!found) return;
+  socket.emit("chat-log", { code: found.room.code, lines: found.room.chat || [] });
+});
+
+socket.on("move", (move, ack) => {
     if (limited(`${socket.id}:move`, 300, 60_000)) return ack?.({ ok: false, error: "Trop de coups." });
     const room = rooms.get(socket.data.roomCode);
     const seat = room ? seatOf(room, socket.data.playerId) : -1;

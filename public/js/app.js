@@ -1176,6 +1176,11 @@ function refreshHud() {
     chip.classList.remove("attach");
   }
   $("pause-btn").hidden = app.mode === "online";
+  const chatBtn = $("chat-open");
+  if (chatBtn) {
+    chatBtn.hidden = app.mode !== "online";
+    if (app.mode !== "online") $("chat-panel").hidden = true;
+  }
   const name = app.players[game.current]?.name || "";
   const mine = app.mode !== "local" && game.current === (app.mode === "online" ? app.seat : 0);
   $("turn-label").textContent = game.status !== "playing"
@@ -1773,6 +1778,53 @@ function rematch() {
   announcePresence();
 }
 
+function setChatAlert(on) {
+  const light = $("chat-light");
+  const button = $("chat-open");
+  if (light) light.hidden = !on;
+  if (button) {
+    button.classList.toggle("has-mail", on);
+    button.setAttribute("aria-label", on ? "Nouveau message" : "Discussion");
+  }
+}
+
+function appendChat(text, mine) {
+  const body = String(text || "").trim();
+  if (!body) return;
+  const log = $("chat-log");
+  const line = document.createElement("p");
+  line.className = mine ? "chat-line mine" : "chat-line";
+  line.textContent = body;
+  log.append(line);
+  while (log.children.length > 40) log.firstChild.remove();
+  log.scrollTop = log.scrollHeight;
+}
+
+function toggleChat(open) {
+  const panel = $("chat-panel");
+  const next = typeof open === "boolean" ? open : panel.hidden;
+  panel.hidden = !next;
+  $("chat-open").setAttribute("aria-expanded", next ? "true" : "false");
+  if (next) {
+    setChatAlert(false);
+    $("chat-input").focus();
+  }
+}
+
+function sendChat(event) {
+  event.preventDefault();
+  const input = $("chat-input");
+  const text = input.value.trim().slice(0, 200);
+  if (!text) return;
+  if (app.mode !== "online" || !app.socket?.connected || !app.roomCode) {
+    toast("La discussion n'est pas disponible.");
+    return;
+  }
+  appendChat(text, true);
+  input.value = "";
+  app.socket.emit("chat", text);
+}
+
 function dropOnlineRoom() {
   const joined = app.mode === "online" || Boolean(sessionStorage.getItem("egmon-room"));
   app.ignoreOnline = true;
@@ -1782,6 +1834,9 @@ function dropOnlineRoom() {
   app.mode = null;
   app.game = null;
   app.roomCode = null;
+  app.chatRoom = "";
+  $("chat-log")?.replaceChildren();
+  setChatAlert(false);
   announcePresence();
 }
 
@@ -1930,6 +1985,20 @@ function ensureSocket() {
     if (msg.seat === app.seat) return;
     showReaction(msg.emoji, msg.seat);
   });
+  app.socket.on("chat", (msg) => {
+    if (!msg || msg.code !== app.roomCode || msg.seat === app.seat) return;
+    appendChat(msg.text, false);
+    if ($("chat-panel").hidden) setChatAlert(true);
+  });
+  app.socket.on("chat-log", (msg) => {
+    if (!msg || msg.code !== app.roomCode || !Array.isArray(msg.lines)) return;
+    const log = $("chat-log");
+    log.replaceChildren();
+    for (const line of msg.lines) appendChat(line.text, line.seat === app.seat);
+    log.scrollTop = log.scrollHeight;
+    const last = msg.lines.at(-1);
+    if (last && last.seat !== app.seat && $("chat-panel").hidden) setChatAlert(true);
+  });
   app.socket.on("closed", () => {
     if (app.ignoreOnline) return;
     toast("Le créateur a quitté la salle.");
@@ -2047,6 +2116,12 @@ function emitAck(event, payload) {
 function onOnlineState(msg) {
   if (app.ignoreOnline) return;
   app.mode = "online";
+  if (app.chatRoom !== msg.code) {
+    app.chatRoom = msg.code;
+    $("chat-log")?.replaceChildren();
+    setChatAlert(false);
+    app.socket?.emit("chat-sync");
+  }
   app.roomCode = msg.code;
   app.seat = msg.you;
   sessionStorage.setItem("egmon-room", JSON.stringify({
@@ -3092,6 +3167,9 @@ function bind() {
   $("lobby-present").addEventListener("click", () => sendInRoom("present"));
   $("lobby-accept").addEventListener("click", () => sendInRoom("accept"));
   $("lobby-launch").addEventListener("click", () => sendInRoom("launch"));
+  $("chat-open").addEventListener("click", () => toggleChat());
+  $("chat-close").addEventListener("click", () => toggleChat(false));
+  $("chat-form").addEventListener("submit", sendChat);
   $("find-back").addEventListener("click", () => {
     if (history.state?.page === "find") history.back();
     else show("screen-modes", "replace");
