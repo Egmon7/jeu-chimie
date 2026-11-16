@@ -404,7 +404,7 @@ body[data-page="play"] #screen-game {
   position: absolute;
   left: 8px;
   bottom: 8px;
-  z-index: 3;
+  z-index: 4;
 }
 .match-chat .icon-btn {
   position: relative;

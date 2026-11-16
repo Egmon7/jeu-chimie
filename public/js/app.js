@@ -119,6 +119,15 @@ function show(id, historyMode = "push") {
     }
     requestAnimationFrame(() => app.board.resize());
   }
+  if (id !== "screen-game") {
+    const chatBtn = $("chat-open");
+    if (chatBtn) {
+      chatBtn.hidden = true;
+      const panel = $("chat-panel");
+      if (panel) panel.hidden = true;
+      chatBtn.setAttribute("aria-expanded", "false");
+    }
+  }
   if (id === "screen-profile") {
     fillProfileForm(loadProfile());
     pullProfile();
@@ -1177,10 +1186,7 @@ function refreshHud() {
   }
   $("pause-btn").hidden = app.mode === "online";
   const chatBtn = $("chat-open");
-  if (chatBtn) {
-    chatBtn.hidden = app.mode !== "online";
-    if (app.mode !== "online") $("chat-panel").hidden = true;
-  }
+  if (chatBtn) chatBtn.hidden = false;
   const name = app.players[game.current]?.name || "";
   const mine = app.mode !== "local" && game.current === (app.mode === "online" ? app.seat : 0);
   $("turn-label").textContent = game.status !== "playing"
@@ -1410,8 +1416,8 @@ function showOverlay({ kicker, title, text, actions, note = false, celebrate = f
   }
   const extra = $("overlay-note");
   extra.replaceChildren();
-  extra.hidden = !(note && app.admin);
-  if (note && app.admin) {
+  extra.hidden = !note;
+  if (note) {
     const button = document.createElement("button");
     button.type = "button";
     button.textContent = "Une amélioration ou un bug ? Écris un message.";
@@ -1816,13 +1822,13 @@ function sendChat(event) {
   const input = $("chat-input");
   const text = input.value.trim().slice(0, 200);
   if (!text) return;
-  if (app.mode !== "online" || !app.socket?.connected || !app.roomCode) {
+  if (app.mode === "online" && (!app.socket?.connected || !app.roomCode)) {
     toast("La discussion n'est pas disponible.");
     return;
   }
   appendChat(text, true);
   input.value = "";
-  app.socket.emit("chat", text);
+  if (app.mode === "online") app.socket.emit("chat", text);
 }
 
 function dropOnlineRoom() {
