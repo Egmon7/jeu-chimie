@@ -78,6 +78,10 @@ export async function initDb() {
   await pool.query("ALTER TABLE games ADD COLUMN IF NOT EXISTS behind boolean NOT NULL DEFAULT false");
   await pool.query("ALTER TABLE games ADD COLUMN IF NOT EXISTS clean boolean NOT NULL DEFAULT false");
   await pool.query("ALTER TABLE profiles ADD COLUMN IF NOT EXISTS password_hash text NOT NULL DEFAULT ''");
+  await pool.query("ALTER TABLE profiles ADD COLUMN IF NOT EXISTS created_at timestamptz");
+  await pool.query("UPDATE profiles SET created_at = updated_at WHERE created_at IS NULL");
+  await pool.query("ALTER TABLE profiles ALTER COLUMN created_at SET DEFAULT now()");
+  await pool.query("ALTER TABLE profiles ALTER COLUMN created_at SET NOT NULL");
   try {
     await pool.query(`
       CREATE UNIQUE INDEX IF NOT EXISTS profiles_email_unique
@@ -290,6 +294,96 @@ export async function listGames(playerId) {
 
 export async function clearGames(playerId) {
   await pool.query("DELETE FROM games WHERE player_id = $1", [playerId]);
+}
+
+export async function adminOverview() {
+  const { rows: counts } = await pool.query(`
+    SELECT
+      (SELECT COUNT(*)::int FROM profiles) AS people,
+      (SELECT COUNT(*)::int FROM profiles WHERE password_hash <> '') AS accounts,
+      (SELECT COUNT(*)::int FROM games) AS games,
+      (SELECT COUNT(*)::int FROM games WHERE mode = 'solo') AS solo,
+      (SELECT COUNT(*)::int FROM games WHERE mode = 'local') AS local,
+      (SELECT COUNT(*)::int FROM games WHERE mode = 'online') AS online_rows,
+      (SELECT COUNT(*)::int FROM messages) AS messages
+  `);
+  const { rows: onlineRows } = await pool.query(`
+    SELECT COUNT(*)::int AS online FROM (
+      SELECT DISTINCT date_trunc('minute', played_at),
+        CASE WHEN jsonb_typeof(names) = 'array'
+          THEN (SELECT string_agg(lower(val), '|' ORDER BY lower(val)) FROM jsonb_array_elements_text(names) AS val)
+          ELSE '' END
+      FROM games WHERE mode = 'online'
+    ) matches
+  `);
+  const { rows: days } = await pool.query(`
+    WITH series AS (
+      SELECT generate_series(
+        ((now() AT TIME ZONE 'Europe/Paris')::date - 13),
+        (now() AT TIME ZONE 'Europe/Paris')::date,
+        interval '1 day'
+      )::date AS day
+    )
+    SELECT series.day::text AS day,
+      (SELECT COUNT(*)::int FROM profiles p
+        WHERE (p.created_at AT TIME ZONE 'Europe/Paris')::date <= series.day) AS people,
+      (SELECT COUNT(*)::int FROM games g
+        WHERE (g.played_at AT TIME ZONE 'Europe/Paris')::date = series.day) AS games,
+      (SELECT COUNT(*)::int FROM (
+        SELECT DISTINCT date_trunc('minute', g.played_at),
+          CASE WHEN jsonb_typeof(g.names) = 'array'
+            THEN (SELECT string_agg(lower(val), '|' ORDER BY lower(val)) FROM jsonb_array_elements_text(g.names) AS val)
+            ELSE '' END
+        FROM games g
+        WHERE g.mode = 'online'
+          AND (g.played_at AT TIME ZONE 'Europe/Paris')::date = series.day
+      ) matches) AS online
+    FROM series
+    ORDER BY series.day
+  `);
+  const { rows: players } = await pool.query(`
+    SELECT p.name, p.email,
+      COUNT(g.id)::int AS games,
+      COALESCE(SUM(CASE WHEN g.mode = 'online' THEN 1 ELSE 0 END), 0)::int AS online,
+      MAX(g.played_at) AS last_played
+    FROM profiles p
+    LEFT JOIN games g ON g.player_id = p.id
+    GROUP BY p.id
+    ORDER BY COUNT(g.id) DESC, p.created_at DESC
+    LIMIT 80
+  `);
+  const { rows: notes } = await pool.query(`
+    SELECT name, body, created_at FROM messages ORDER BY created_at DESC LIMIT 40
+  `);
+  const count = counts[0] || {};
+  return {
+    people: Number(count.people) || 0,
+    accounts: Number(count.accounts) || 0,
+    games: Number(count.games) || 0,
+    solo: Number(count.solo) || 0,
+    local: Number(count.local) || 0,
+    onlineRows: Number(count.online_rows) || 0,
+    online: Number(onlineRows[0]?.online) || 0,
+    messages: Number(count.messages) || 0,
+    days: days.map((row) => ({
+      day: row.day,
+      people: Number(row.people) || 0,
+      games: Number(row.games) || 0,
+      online: Number(row.online) || 0,
+    })),
+    players: players.map((row) => ({
+      name: row.name || "",
+      email: row.email || "",
+      games: Number(row.games) || 0,
+      online: Number(row.online) || 0,
+      lastPlayed: row.last_played ? new Date(row.last_played).toISOString() : "",
+    })),
+    notes: notes.map((row) => ({
+      name: row.name || "",
+      body: row.body || "",
+      at: row.created_at ? new Date(row.created_at).toISOString() : "",
+    })),
+  };
 }
 
 export async function insertMessage({ name, body }) {

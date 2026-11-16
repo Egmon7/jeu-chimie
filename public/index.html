@@ -125,6 +125,10 @@
             <strong>Premium</strong>
             <span>Bientôt disponible.</span>
           </button>
+          <button type="button" class="mode" id="go-admin" hidden>
+            <strong>Admin</strong>
+            <span>Joueurs, messages et activité.</span>
+          </button>
         </div>
         <button type="button" class="text-btn modes-back" id="modes-back">Retour</button>
       </div>
@@ -457,6 +461,37 @@
           <p><strong id="stat-draws">0</strong><span>Égalités</span></p>
         </div>
         <div id="history-list"></div>
+        <div class="form-actions">
+          <button type="button" class="btn" data-home>Retour</button>
+        </div>
+      </div>
+    </section>
+
+    <section id="screen-admin" class="screen" hidden>
+      <div class="sheet">
+        <p class="eyebrow">Réservé</p>
+        <h1>Admin</h1>
+        <div class="stats" id="admin-stats"></div>
+        <div class="admin-block">
+          <h2>Personnes</h2>
+          <div id="admin-chart-people" class="admin-chart"></div>
+        </div>
+        <div class="admin-block">
+          <h2>Parties jouées</h2>
+          <div id="admin-chart-games" class="admin-chart"></div>
+        </div>
+        <div class="admin-block">
+          <h2>Parties en ligne</h2>
+          <div id="admin-chart-online" class="admin-chart"></div>
+        </div>
+        <div class="admin-block">
+          <h2>Joueurs</h2>
+          <div id="admin-players" class="admin-scroll"></div>
+        </div>
+        <div class="admin-block">
+          <h2>Messages</h2>
+          <div id="admin-messages" class="admin-scroll"></div>
+        </div>
         <div class="form-actions">
           <button type="button" class="btn" data-home>Retour</button>
         </div>

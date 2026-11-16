@@ -75,6 +75,7 @@ const app = {
   socket: null,
   roomCode: null,
   queued: false,
+  admin: false,
   sounds: new Sounds(),
   board: null,
 };
@@ -94,9 +95,10 @@ const SCREEN_BY_PAGE = {
   progress: "screen-progress",
   rank: "screen-rank",
   badges: "screen-badges",
+  admin: "screen-admin",
 };
 
-const SHELL_PAGES = new Set(["home", "modes", "setup", "profile", "progress", "rank", "badges", "history"]);
+const SHELL_PAGES = new Set(["home", "modes", "setup", "profile", "progress", "rank", "badges", "history", "admin"]);
 
 function pageOf(id) {
   return Object.keys(SCREEN_BY_PAGE).find((key) => SCREEN_BY_PAGE[key] === id) || "home";
@@ -136,6 +138,7 @@ function show(id, historyMode = "push") {
   if (id === "screen-rank") loadRanking();
   if (id === "screen-badges") renderBadgeCatalog();
   if (id === "screen-history") pullHistory();
+  if (id === "screen-admin") loadAdmin();
   if (id === "screen-modes") openHub(savedHub());
   if (historyMode === "skip") return;
   const url = page === "home"
@@ -1401,8 +1404,8 @@ function showOverlay({ kicker, title, text, actions, note = false, celebrate = f
   }
   const extra = $("overlay-note");
   extra.replaceChildren();
-  extra.hidden = !note;
-  if (note) {
+  extra.hidden = !(note && app.admin);
+  if (note && app.admin) {
     const button = document.createElement("button");
     button.type = "button";
     button.textContent = "Une amélioration ou un bug ? Écris un message.";
@@ -1556,6 +1559,7 @@ async function pullProfile() {
     }
     if (!profile.name) return;
     saveProfile(profile);
+    noteAdmin(profile);
     announcePresence();
     if (!$("screen-profile").hidden && !$("photo-btn")?.classList.contains("is-busy")) fillProfileForm(loadProfile());
   } catch {
@@ -2338,6 +2342,85 @@ async function joinRoom(code, color) {
   }
 }
 
+function noteAdmin(profile) {
+  app.admin = profile?.admin === true;
+  const button = $("go-admin");
+  if (button) button.hidden = !app.admin;
+}
+
+function adminDate(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleString("fr-FR", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+}
+
+function adminBars(host, days, key) {
+  host.replaceChildren();
+  const max = Math.max(1, ...days.map((item) => Number(item[key]) || 0));
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 280 88");
+  svg.setAttribute("role", "img");
+  const slot = 280 / Math.max(1, days.length);
+  days.forEach((item, index) => {
+    const value = Number(item[key]) || 0;
+    const height = value ? Math.max(4, Math.round((value / max) * 74)) : 2;
+    const rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+    rect.setAttribute("x", String(index * slot + 2));
+    rect.setAttribute("y", String(80 - height));
+    rect.setAttribute("width", String(Math.max(2, slot - 4)));
+    rect.setAttribute("height", String(height));
+    rect.setAttribute("rx", "2");
+    svg.append(rect);
+  });
+  host.append(svg);
+  const caption = document.createElement("p");
+  const first = days[0] ? new Date(`${days[0].day}T12:00:00`).toLocaleDateString("fr-FR", { day: "numeric", month: "short" }) : "";
+  const last = days.at(-1) ? new Date(`${days.at(-1).day}T12:00:00`).toLocaleDateString("fr-FR", { day: "numeric", month: "short" }) : "";
+  caption.textContent = days.length ? `${first} – ${last}` : "";
+  host.append(caption);
+}
+
+function renderAdmin(data) {
+  const stats = $("admin-stats");
+  const cards = [
+    [data.people, "Personnes"],
+    [data.accounts, "Comptes"],
+    [data.games, "Parties"],
+    [data.online, "En ligne"],
+    [data.messages, "Messages"],
+  ];
+  stats.innerHTML = cards.map(([value, label]) => `<p><strong>${Number(value) || 0}</strong><span>${label}</span></p>`).join("");
+  adminBars($("admin-chart-people"), data.days || [], "people");
+  adminBars($("admin-chart-games"), data.days || [], "games");
+  adminBars($("admin-chart-online"), data.days || [], "online");
+  const players = $("admin-players");
+  players.innerHTML = (data.players || []).length
+    ? data.players.map((player) => {
+      const games = `${player.games} partie${player.games > 1 ? "s" : ""}`;
+      const online = player.online ? ` · ${player.online} en ligne` : "";
+      const when = player.lastPlayed ? adminDate(player.lastPlayed) : "Aucune partie";
+      return `<article class="history-item"><div><strong>${esc(player.name || "Sans nom")}</strong><span>${esc(player.email || "Sans e-mail")}</span></div><div><b>${esc(games)}${esc(online)}</b><span>${esc(when)}</span></div></article>`;
+    }).join("")
+    : `<p class="empty">Aucun joueur.</p>`;
+  const notes = $("admin-messages");
+  notes.innerHTML = (data.notes || []).length
+    ? data.notes.map((note) => `<article class="history-item admin-note"><div><strong>${esc(note.name || "Sans nom")}</strong><span>${esc(adminDate(note.at))}</span><p>${esc(note.body || "")}</p></div></article>`).join("")
+    : `<p class="empty">Aucun message.</p>`;
+}
+
+async function loadAdmin() {
+  const data = await sendJson("/api/admin", "GET");
+  if ($("screen-admin").hidden) return;
+  if (!data || !Array.isArray(data.days)) {
+    noteAdmin(null);
+    toast("Cette page n'est pas disponible.");
+    show("screen-modes", "replace");
+    return;
+  }
+  noteAdmin({ admin: true });
+  renderAdmin(data);
+}
+
 function renderHistory() {
   const history = loadHistory();
   const ranked = history.filter((item) => item.userSeat === 0 || item.userSeat === 1);
@@ -2625,6 +2708,7 @@ function finishAuth(profile) {
   $("auth-dialog").hidden = true;
   paintUserChip();
   announcePresence();
+  pullProfile();
   pullHistory();
   if (!$("screen-profile").hidden) fillProfileForm(loadProfile());
 }
@@ -2750,11 +2834,14 @@ async function restoreAccount() {
   paintUserChip();
   if (!isConnected()) return;
   try {
-    const response = await fetch(`/api/profile/${playerId()}`);
-    if (response.status === 401) {
-      saveSession(null);
-      paintUserChip();
-    }
+      const response = await fetch(`/api/profile/${playerId()}`);
+      if (response.status === 401) {
+        saveSession(null);
+        noteAdmin(null);
+        paintUserChip();
+      } else if (response.ok) {
+        noteAdmin(await response.json());
+      }
   } catch {
     /* la partie locale reste disponible */
   }
@@ -2893,6 +2980,7 @@ function bind() {
     renderHistory();
     show("screen-history");
   });
+  $("go-admin").addEventListener("click", () => show("screen-admin"));
   $("profile-file").addEventListener("change", (event) => {
     const file = event.target.files?.[0];
     event.target.value = "";
@@ -2929,6 +3017,7 @@ function bind() {
         return;
       }
       saveProfile({ name: data.name || name, email: data.email || email, photo: data.photo || photo, icon: data.icon });
+      noteAdmin(data);
       announcePresence();
       const session = loadSession();
       if (session?.connected) saveSession({ ...session, email: data.email || email });

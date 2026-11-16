@@ -24,6 +24,7 @@ import {
   findByName,
   initDb,
   insertGame,
+  adminOverview,
   insertMessage,
   isUuid,
   listGames,
@@ -167,6 +168,11 @@ function readCookie(req, name) {
 function setSessionCookie(req, res, token) {
   const secure = req.secure || req.headers["x-forwarded-proto"] === "https";
   res.setHeader("Set-Cookie", `egmon_session=${encodeURIComponent(token)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=31536000${secure ? "; Secure" : ""}`);
+}
+
+function isAdminAccount(profile) {
+  return String(profile?.email || "").trim().toLowerCase() === "egmonegmon340@gmail.com"
+    && String(profile?.name || "").trim().toLowerCase() === "ntotimbe";
 }
 
 async function requireSession(req, res, playerId) {
@@ -318,7 +324,7 @@ app.get("/api/profile/:id", api(async (req, res) => {
   const id = apiPlayer(req, res);
   if (!id || !(await requireSession(req, res, id))) return;
   const profile = await readProfile(id);
-  res.json(profile || { name: "", email: "" });
+  res.json(profile ? { ...profile, admin: isAdminAccount(profile) } : { name: "", email: "", admin: false });
 }));
 
 app.put("/api/profile/:id", api(async (req, res) => {
@@ -342,7 +348,8 @@ app.put("/api/profile/:id", api(async (req, res) => {
     ? rawPhoto
     : null;
   try {
-    res.json(await upsertProfile({ id, name, email, icon, photo }));
+    const saved = await upsertProfile({ id, name, email, icon, photo });
+    res.json({ ...saved, admin: isAdminAccount(saved) });
   } catch (error) {
     if (error.code === "23505") {
       res.status(409).json({ error: "Cet e-mail a déjà un profil." });
@@ -380,6 +387,28 @@ app.get("/api/progress", api(async (req, res) => {
     return;
   }
   res.json(await progressOf(player));
+}));
+
+app.get("/api/admin", api(async (req, res) => {
+  if (!dbReady()) {
+    res.status(503).json({ error: "Base indisponible." });
+    return;
+  }
+  const id = await sessionPlayer(readCookie(req, "egmon_session"));
+  if (!id) {
+    res.status(401).json({ error: "Connexion requise." });
+    return;
+  }
+  if (limited(`${id}:admin`, 40, 60_000)) {
+    res.status(429).json({ error: "Trop d'essais." });
+    return;
+  }
+  const profile = await readProfile(id);
+  if (!isAdminAccount(profile)) {
+    res.status(403).json({ error: "Accès refusé." });
+    return;
+  }
+  res.json(await adminOverview());
 }));
 
 app.get("/api/games/:id", api(async (req, res) => {
