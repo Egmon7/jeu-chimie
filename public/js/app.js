@@ -148,6 +148,7 @@ function show(id, historyMode = "push") {
   if (id === "screen-badges") renderBadgeCatalog();
   if (id === "screen-history") pullHistory();
   if (id === "screen-admin") loadAdmin();
+  else stopAdminWatch();
   if (id === "screen-modes") openHub(savedHub());
   if (historyMode === "skip") return;
   const url = page === "home"
@@ -748,10 +749,11 @@ function renderProgress(rows) {
   $("level-list").innerHTML = `<h2>Niveaux</h2><ul class="goal-list level-scroll">${levels}</ul><h2>Badges à atteindre</h2><ul class="goal-list">${badges}</ul>`;
 }
 
-let rankCache = null;
+let rankBoard = "general";
+const rankBoards = { general: null, online: null };
 
 function renderBoard(rows) {
-  rankCache = Array.isArray(rows) ? rows : null;
+  rankBoards[rankBoard] = Array.isArray(rows) ? rows : null;
   paintBoard();
 }
 
@@ -760,6 +762,7 @@ function paintBoard() {
   const list = $("rank-list");
   const count = $("rank-count");
   const query = foldName($("rank-search")?.value || "");
+  const rankCache = rankBoards[rankBoard];
   top.replaceChildren();
   list.replaceChildren();
   if (!rankCache) {
@@ -814,16 +817,27 @@ function renderBadgeCatalog() {
   $("badge-list").innerHTML = BADGE_GOALS.map((item) => `<p><img src="${item.img}" alt="">${esc(item.name)}</p>`).join("");
 }
 
+function selectRank(board) {
+  rankBoard = board === "online" ? "online" : "general";
+  $("rank-general").setAttribute("aria-pressed", rankBoard === "general" ? "true" : "false");
+  $("rank-online").setAttribute("aria-pressed", rankBoard === "online" ? "true" : "false");
+  if (rankBoards[rankBoard]) paintBoard();
+  else loadRanking();
+}
+
 async function loadRanking() {
+  const board = rankBoard;
   const count = $("rank-count");
-  if (count && !rankCache) count.textContent = "Chargement du classement…";
+  if (count && !rankBoards[board]) count.textContent = "Chargement du classement…";
   try {
-    const rows = await sendJson(`/api/ranking?player=${encodeURIComponent(playerId())}`, "GET");
+    const rows = await sendJson(`/api/ranking?player=${encodeURIComponent(playerId())}&board=${board}`, "GET");
     const list = Array.isArray(rows) ? rows : null;
-    if (!$("screen-rank").hidden) renderBoard(list);
+    if (list) rankBoards[board] = list;
+    if (board !== rankBoard || $("screen-rank").hidden) return;
+    renderBoard(list);
     if (!list && count) count.textContent = "Le classement n’a pas pu se charger.";
   } catch {
-    if (!$("screen-rank").hidden && count) count.textContent = "Le classement n’a pas pu se charger.";
+    if (board === rankBoard && !$("screen-rank").hidden && count) count.textContent = "Le classement n’a pas pu se charger.";
   }
 }
 
@@ -2477,7 +2491,22 @@ function adminBars(host, days, key) {
   host.append(caption);
 }
 
+let adminWatch = 0;
+
+function stopAdminWatch() {
+  clearInterval(adminWatch);
+  adminWatch = 0;
+}
+
 function renderAdmin(data) {
+  const live = data.live || {};
+  $("admin-live").innerHTML = [
+    [live.connected, "Connectés"],
+    [live.playing, "Jouent maintenant"],
+    [live.playingRooms, "Tables en cours"],
+    [live.waitingRooms, "Tables en attente"],
+    [live.rooms, "Salles ouvertes"],
+  ].map(([value, label]) => `<p><strong>${Number(value) || 0}</strong><span>${label}</span></p>`).join("");
   const stats = $("admin-stats");
   const cards = [
     [data.people, "Personnes"],
@@ -2509,6 +2538,7 @@ async function loadAdmin() {
   const data = await sendJson("/api/admin", "GET");
   if ($("screen-admin").hidden) return;
   if (!data || !Array.isArray(data.days)) {
+    if (adminWatch) return;
     noteAdmin(null);
     toast("Cette page n'est pas disponible.");
     show("screen-modes", "replace");
@@ -2516,6 +2546,7 @@ async function loadAdmin() {
   }
   noteAdmin({ admin: true });
   renderAdmin(data);
+  if (!adminWatch) adminWatch = setInterval(loadAdmin, 15000);
 }
 
 function renderHistory() {
@@ -3071,6 +3102,8 @@ function bind() {
   $("go-progress").addEventListener("click", openProgress);
   $("go-badges").addEventListener("click", openBadges);
   $("go-rank").addEventListener("click", () => show("screen-rank"));
+  $("rank-general").addEventListener("click", () => selectRank("general"));
+  $("rank-online").addEventListener("click", () => selectRank("online"));
   $("rank-me").addEventListener("click", scrollToMyRank);
   $("rank-search").addEventListener("input", paintBoard);
   $("go-history").addEventListener("click", () => {

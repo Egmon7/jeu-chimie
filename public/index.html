@@ -142,7 +142,7 @@
             <img class="mode-icon" src="img/hub/classe1.png" alt="">
             <span class="mode-copy">
               <strong>Classement</strong>
-              <span>Les points de tout le monde.</span>
+              <span>Général et parties en ligne.</span>
             </span>
           </button>
           <button type="button" class="mode" id="go-history">
@@ -503,6 +503,10 @@
     <section id="screen-rank" class="screen" hidden>
       <div class="rank-wrap">
         <h1>Classement</h1>
+        <div class="rank-switch" role="group" aria-label="Type de classement">
+          <button type="button" id="rank-general" aria-pressed="true">Classement général</button>
+          <button type="button" id="rank-online" aria-pressed="false">Parties en ligne</button>
+        </div>
         <div class="rank-head">
           <p id="rank-count"></p>
           <button type="button" class="text-btn" id="rank-me">Ma position</button>
@@ -543,6 +547,9 @@
       <div class="sheet">
         <p class="eyebrow">Réservé</p>
         <h1>Admin</h1>
+        <h2>En ce moment</h2>
+        <div class="stats" id="admin-live"></div>
+        <h2>Au total</h2>
         <div class="stats" id="admin-stats"></div>
         <div class="admin-block">
           <h2>Personnes</h2>

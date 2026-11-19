@@ -3,4 +3,5 @@ node_modules/
 *.log
 PHASES.md
 phase_mode.md
+phase_ajouts.md
 .env

@@ -1,6 +1,6 @@
 import express from "express";
 import { createServer } from "http";
-import { randomBytes, scrypt, timingSafeEqual } from "crypto";
+import { randomBytes, randomUUID, scrypt, timingSafeEqual } from "crypto";
 import { promisify } from "util";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -110,7 +110,7 @@ function apiPlayer(req, res) {
     res.status(503).json({ error: "Base indisponible." });
     return "";
   }
-  if (limited(`${clientIp(req)}:api`, 120, 60_000)) {
+  if (ipLimited(clientIp(req), "api", 120, 60_000)) {
     res.status(429).json({ error: "Trop d'essais." });
     return "";
   }
@@ -190,7 +190,7 @@ app.post("/api/auth/lookup", api(async (req, res) => {
     res.status(503).json({ error: "Base indisponible." });
     return;
   }
-  if (limited(`${clientIp(req)}:lookup`, 20, 10 * 60_000)) {
+  if (ipLimited(clientIp(req), "lookup", 20, 10 * 60_000)) {
     res.status(429).json({ error: "Trop d'essais." });
     return;
   }
@@ -221,7 +221,7 @@ app.post("/api/auth/register", api(async (req, res) => {
     res.status(503).json({ error: "Base indisponible." });
     return;
   }
-  if (limited(`${clientIp(req)}:register`, 10, 10 * 60_000)) {
+  if (ipLimited(clientIp(req), "register", 10, 10 * 60_000)) {
     res.status(429).json({ error: "Trop d'essais." });
     return;
   }
@@ -253,7 +253,7 @@ app.post("/api/auth/login", api(async (req, res) => {
     res.status(400).json({ error: "E-mail ou mot de passe invalide." });
     return;
   }
-  if (limited(`${clientIp(req)}:login`, 20, 10 * 60_000) || limited(`${email}:login`, 8, 15 * 60_000)) {
+  if (ipLimited(clientIp(req), "login", 20, 10 * 60_000) || limited(`${email}:login`, 8, 15 * 60_000)) {
     res.status(429).json({ error: "Trop d'essais." });
     return;
   }
@@ -280,7 +280,7 @@ app.post("/api/auth/reset", api(async (req, res) => {
     res.status(400).json({ error: "E-mail ou mot de passe invalide." });
     return;
   }
-  if (limited(`${clientIp(req)}:reset`, 8, 10 * 60_000) || limited(`${email}:reset`, 5, 15 * 60_000)) {
+  if (ipLimited(clientIp(req), "reset", 8, 10 * 60_000) || limited(`${email}:reset`, 5, 15 * 60_000)) {
     res.status(429).json({ error: "Trop d'essais." });
     return;
   }
@@ -365,12 +365,13 @@ app.get("/api/ranking", api(async (req, res) => {
     res.status(503).json({ error: "Base indisponible." });
     return;
   }
-  if (limited(`${clientIp(req)}:rank`, 120, 60_000)) {
+  if (ipLimited(clientIp(req), "rank", 120, 60_000)) {
     res.status(429).json({ error: "Trop d'essais." });
     return;
   }
   const player = isUuid(req.query.player) ? req.query.player : null;
-  res.json(await ranking(player));
+  const board = req.query.board === "online" ? "online" : "general";
+  res.json(await ranking(player, board));
 }));
 
 app.get("/api/progress", api(async (req, res) => {
@@ -378,7 +379,7 @@ app.get("/api/progress", api(async (req, res) => {
     res.status(503).json({ error: "Base indisponible." });
     return;
   }
-  if (limited(`${clientIp(req)}:progress`, 120, 60_000)) {
+  if (ipLimited(clientIp(req), "progress", 120, 60_000)) {
     res.status(429).json({ error: "Trop d'essais." });
     return;
   }
@@ -409,7 +410,8 @@ app.get("/api/admin", api(async (req, res) => {
     res.status(403).json({ error: "Accès refusé." });
     return;
   }
-  res.json(await adminOverview());
+  const overview = await adminOverview();
+  res.json({ ...overview, live: liveSnapshot() });
 }));
 
 app.get("/api/games/:id", api(async (req, res) => {
@@ -426,6 +428,10 @@ app.post("/api/games/:id", api(async (req, res) => {
     res.status(400).json({ error: "Partie invalide." });
     return;
   }
+  if (entry.mode === "online") {
+    res.json({ ok: true });
+    return;
+  }
   if (limited(`${id}:game`, 30, 60 * 60 * 1000)) {
     res.status(429).json({ error: "Trop de parties enregistrées." });
     return;
@@ -439,7 +445,7 @@ app.post("/api/messages", api(async (req, res) => {
     res.status(503).json({ error: "Base indisponible." });
     return;
   }
-  if (limited(`${clientIp(req)}:message`, 30, 60 * 60 * 1000)) {
+  if (ipLimited(clientIp(req), "message", 30, 60 * 60 * 1000)) {
     res.status(429).json({ error: "Trop de messages." });
     return;
   }
@@ -516,6 +522,17 @@ function clientIp(req) {
   return peer || "unknown";
 }
 
+function publicIp(ip) {
+  if (!ip || ip === "unknown" || isPrivate(ip)) return "";
+  return ip;
+}
+
+function ipLimited(ip, label, max, windowMs) {
+  const key = publicIp(ip);
+  if (!key) return false;
+  return limited(`${key}:${label}`, max, windowMs);
+}
+
 function asObject(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
@@ -555,13 +572,15 @@ function validGame(entry) {
 io.use((socket, next) => {
   const ip = clientIp(socket.request);
   socket.data.ip = ip;
-  const count = connections.get(ip) || 0;
+  const real = publicIp(ip);
+  if (!real) return next();
+  const count = connections.get(real) || 0;
   if (count >= CONNECTIONS_PER_IP) return next(new Error("Trop de connexions."));
-  connections.set(ip, count + 1);
+  connections.set(real, count + 1);
   socket.on("disconnect", () => {
-    const left = (connections.get(ip) || 1) - 1;
-    if (left <= 0) connections.delete(ip);
-    else connections.set(ip, left);
+    const left = (connections.get(real) || 1) - 1;
+    if (left <= 0) connections.delete(real);
+    else connections.set(real, left);
   });
   next();
 });
@@ -594,8 +613,44 @@ function snapshot(room, event = null) {
   };
 }
 
+function saveOnlineMatch(room) {
+  const game = room.game;
+  if (!game || game.status !== "finished" || room.saved || room.saving) return;
+  room.saving = true;
+  const at = Date.now();
+  const duration = room.startedAt ? Math.max(1, at - room.startedAt) : null;
+  const names = [0, 1].map((seat) => cleanName(room.players[seat]?.name, `Joueur ${seat + 1}`));
+  const scores = [Number(game.scores?.[0]) || 0, Number(game.scores?.[1]) || 0];
+  Promise.all([0, 1].map((seat) => {
+    const player = room.players[seat];
+    if (!isUuid(player?.id)) return null;
+    return insertGame(player.id, {
+      id: randomUUID(),
+      at,
+      mode: "online",
+      size: `${game.rows}×${game.cols}`,
+      names,
+      scores,
+      winner: game.winner,
+      userSeat: seat,
+      reason: game.reason,
+      difficulty: null,
+      durationMs: duration,
+      behind: false,
+      clean: false,
+    });
+  })).then(() => {
+    room.saved = true;
+  }).catch((error) => {
+    console.error("Partie en ligne non enregistrée:", error.message);
+  }).finally(() => {
+    room.saving = false;
+  });
+}
+
 function emitState(room, event = null) {
   room.touched = Date.now();
+  if (room.game?.status === "finished") saveOnlineMatch(room);
   const sent = new Set();
   const send = (sock, seat) => {
     if (!sock || sent.has(sock.id)) return;
@@ -716,6 +771,76 @@ function liveRoom(socket) {
   return { room, seat };
 }
 
+function socketAlive(socketId) {
+  return Boolean(socketId && io.sockets.sockets.has(socketId));
+}
+
+function dropRoom(room) {
+  for (const index of [0, 1]) clearForfeit(room, index);
+  io.to(room.code).emit("closed");
+  rooms.delete(room.code);
+}
+
+function reapRooms() {
+  const now = Date.now();
+  for (const [code, room] of rooms) {
+    for (const player of room.players) {
+      if (player && !socketAlive(player.socketId)) player.connected = false;
+    }
+    const anyone = room.players.some((player) => player?.connected && socketAlive(player.socketId));
+    if (!room.game) {
+      const hostGone = !socketAlive(room.players[0]?.socketId);
+      if ((hostGone && now - room.touched > 30_000) || now - (room.opened || room.touched) > WAITING_ROOM_MS) {
+        dropRoom(room);
+      }
+      continue;
+    }
+    if (room.game.status === "playing") {
+      const waiting = [0, 1].some((index) => {
+        const player = room.players[index];
+        return player && !socketAlive(player.socketId) && Number(room.forfeitAt?.[index]) > now;
+      });
+      if (waiting || anyone) continue;
+      if (now - room.touched > PLAY_GRACE_MS) rooms.delete(code);
+      continue;
+    }
+    if (!anyone && now - room.touched > 60_000) rooms.delete(code);
+  }
+}
+
+function createBlocked(socket) {
+  if (limited(`${socket.id}:create`, 4, 60_000)) return true;
+  const ip = socket.data.ip;
+  if (!ip || ip === "unknown" || isPrivate(ip)) return false;
+  return limited(`${ip}:create`, 40, 60_000);
+}
+
+function liveSnapshot() {
+  reapRooms();
+  const people = new Set();
+  for (const item of presence.values()) {
+    if (item?.id) people.add(item.id);
+  }
+  let playing = 0;
+  let playingRooms = 0;
+  let waitingRooms = 0;
+  for (const room of rooms.values()) {
+    if (room.game?.status === "playing") {
+      playingRooms += 1;
+      playing += room.players.filter((player) => player?.connected).length;
+    } else if (!room.game) {
+      waitingRooms += 1;
+    }
+  }
+  return {
+    connected: people.size,
+    playing,
+    playingRooms,
+    waitingRooms,
+    rooms: rooms.size,
+  };
+}
+
 function leaveRoom(socket) {
   const live = liveRoom(socket);
   if (!live) return;
@@ -723,9 +848,7 @@ function leaveRoom(socket) {
   socket.leave(room.code);
   socket.data.roomCode = "";
   if (!room.game && seat === 0) {
-    io.to(room.code).emit("closed");
-    for (const index of [0, 1]) clearForfeit(room, index);
-    rooms.delete(room.code);
+    dropRoom(room);
     broadcastFind();
     return;
   }
@@ -737,10 +860,14 @@ function leaveRoom(socket) {
     broadcastFind();
     return;
   }
+  room.players[seat].connected = false;
+  room.players[seat].socketId = "";
+  room.touched = Date.now();
   if (room.game?.status === "playing") {
     abandon(room.game, seat);
     emitState(room, { type: "abandon" });
   }
+  if (!room.players.some((player) => player?.connected && socketAlive(player.socketId))) dropRoom(room);
   broadcastFind();
 }
 
@@ -749,10 +876,9 @@ io.on("connection", (socket) => {
     try {
     payload = asObject(payload);
     if (liveRoom(socket)) return ack?.({ ok: false, error: "Quitte d’abord la salle en cours." });
+    reapRooms();
     if (rooms.size >= ROOM_LIMIT) return ack?.({ ok: false, error: "Le serveur est plein." });
-    if (limited(`${socket.id}:create`, 4, 60_000) || limited(`${socket.data.ip}:create`, 40, 60_000)) {
-      return ack?.({ ok: false, error: "Trop de salles créées." });
-    }
+    if (createBlocked(socket)) return ack?.({ ok: false, error: "Trop de salles créées." });
     const settings = normalizeSettings({ ...payload.settings, p1Name: payload.name });
     const code = makeRoomCode(rooms);
     const room = {
@@ -922,6 +1048,9 @@ socket.on("move", (move, ack) => {
     if (room.rematch[0] && room.rematch[1]) {
       const starter = room.game.starter === 0 ? 1 : 0;
       room.game = createGame(room.settings, starter);
+      room.startedAt = Date.now();
+      room.saved = false;
+      room.saving = false;
       room.rematch = [false, false];
       emitState(room, { type: "rematch" });
     } else {
@@ -966,6 +1095,9 @@ socket.on("move", (move, ack) => {
     if (!room || seat !== 0 || room.game || limited(`${socket.id}:launch`, 8, 60_000)) return;
     if (!room.players[1]?.connected || !room.ready[0] || !room.ready[1]) return;
     room.game = createGame(room.settings, 0);
+    room.startedAt = Date.now();
+    room.saved = false;
+    room.saving = false;
     emitState(room, { type: "start" });
   });
 
@@ -1023,7 +1155,8 @@ socket.on("move", (move, ack) => {
       socket.emit("notice", "Tu es déjà dans une partie.");
       return;
     }
-    if (rooms.size >= ROOM_LIMIT || limited(`${socket.data.ip}:create`, 40, 60_000)) {
+    reapRooms();
+    if (rooms.size >= ROOM_LIMIT) {
       socket.emit("notice", "La table n’a pas pu s’ouvrir.");
       return;
     }
@@ -1122,6 +1255,7 @@ function attach(socket, room, seat, playerId) {
 }
 
 setInterval(() => {
+  reapRooms();
   const now = Date.now();
   for (const [code, room] of rooms) {
     const playing = room.game?.status === "playing" && room.players[0]?.connected && room.players[1]?.connected;
@@ -1142,13 +1276,6 @@ setInterval(() => {
     } else {
       room.clockAt = now;
     }
-    const empty = room.players.every((player) => !player?.connected);
-    if (!room.game && now - (room.opened || room.touched) > WAITING_ROOM_MS) {
-      io.to(code).emit("closed");
-      rooms.delete(code);
-      continue;
-    }
-    if (empty && now - room.touched > 10 * 60 * 1000) rooms.delete(code);
   }
   for (const [key, times] of hits) {
     const fresh = times.filter((time) => now - time < 60 * 60 * 1000);

@@ -471,7 +471,25 @@ export async function progressOf(playerId) {
   };
 }
 
-export async function ranking(playerId) {
+function packRank(rows) {
+  return rows.map((row) => ({
+    name: row.name,
+    icon: row.icon,
+    photo: typeof row.photo === "string" && row.photo.startsWith("https://res.cloudinary.com/ka4h4lpk/") ? row.photo : "",
+    xp: row.xp,
+    houses: row.houses,
+    best: row.best,
+    games: row.games,
+    wins: row.wins,
+    expertWins: row.expert_wins,
+    rank: Number(row.rank),
+    people: Number(row.people),
+    you: row.you === true,
+  }));
+}
+
+export async function ranking(playerId, board = "general") {
+  if (board === "online") return onlineRanking(playerId);
   const { rows } = await pool.query(
     `WITH per_game AS (
        SELECT g.player_id,
@@ -559,18 +577,47 @@ export async function ranking(playerId) {
      ORDER BY rank`,
     [playerId],
   );
-  return rows.map((row) => ({
-    name: row.name,
-    icon: row.icon,
-    photo: typeof row.photo === "string" && row.photo.startsWith("https://res.cloudinary.com/ka4h4lpk/") ? row.photo : "",
-    xp: row.xp,
-    houses: row.houses,
-    best: row.best,
-    games: row.games,
-    wins: row.wins,
-    expertWins: row.expert_wins,
-    rank: Number(row.rank),
-    people: Number(row.people),
-    you: row.you === true,
-  }));
+  return packRank(rows);
+}
+
+async function onlineRanking(playerId) {
+  const { rows } = await pool.query(
+    `WITH per_game AS (
+       SELECT g.player_id,
+         (CASE
+            WHEN jsonb_typeof(g.scores) = 'array' THEN g.scores ->> g.user_seat
+            ELSE g.scores ->> g.user_seat::text
+          END)::int AS houses,
+         CASE WHEN g.winner = g.user_seat::text THEN 15 ELSE 0 END AS win_bonus
+       FROM games g
+       WHERE g.mode = 'online'
+         AND g.user_seat IN (0, 1)
+         AND (CASE
+            WHEN jsonb_typeof(g.scores) = 'array' THEN g.scores ->> g.user_seat
+            ELSE g.scores ->> g.user_seat::text
+          END) ~ '^[0-9]+$'
+     ),
+     scored AS (
+       SELECT p.id, p.name, p.icon, COALESCE(p.photo, '') AS photo,
+         COALESCE(SUM(20 + houses * 3 + win_bonus), 0)::int AS xp,
+         COALESCE(SUM(houses), 0)::int AS houses,
+         COALESCE(MAX(houses), 0)::int AS best,
+         COUNT(pg.player_id)::int AS games,
+         COALESCE(SUM(CASE WHEN win_bonus > 0 THEN 1 ELSE 0 END), 0)::int AS wins,
+         0::int AS expert_wins
+       FROM profiles p
+       LEFT JOIN per_game pg ON pg.player_id = p.id
+       GROUP BY p.id
+     ),
+     ranked AS (
+       SELECT *, ROW_NUMBER() OVER (ORDER BY xp DESC, best DESC, games DESC, name) AS rank,
+              COUNT(*) OVER () AS people
+       FROM scored
+     )
+     SELECT name, icon, photo, xp, houses, best, games, wins, expert_wins, rank, people, (id = $1) AS you
+     FROM ranked
+     ORDER BY rank`,
+    [playerId],
+  );
+  return packRank(rows);
 }
