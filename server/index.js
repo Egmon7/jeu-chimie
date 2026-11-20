@@ -25,10 +25,13 @@ import {
   initDb,
   insertGame,
   adminOverview,
+  recordVisit,
   insertMessage,
   isUuid,
   listGames,
+  gameStats,
   ranking,
+  playerCard,
   progressOf,
   openSession,
   readProfile,
@@ -43,7 +46,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const httpServer = createServer(app);
 const io = new Server(httpServer, {
-  maxHttpBufferSize: 16_000,
+  maxHttpBufferSize: 700_000,
   allowRequest(req, callback) {
     const origin = req.headers.origin;
     if (!origin) return callback(null, true);
@@ -63,7 +66,7 @@ const ROOM_LIMIT = 80;
 const QUEUE_LIMIT = 80;
 const CONNECTIONS_PER_IP = 120;
 const WAITING_ROOM_MS = 20 * 60 * 1000;
-const PLAY_GRACE_MS = 150_000;
+const PLAY_GRACE_MS = 50_000;
 const PHOTO_URL = /^https:\/\/res\.cloudinary\.com\/ka4h4lpk\/image\/upload\/[A-Za-z0-9_./%-]{1,360}$/;
 const PEN_COLORS = ["red", "blue", "black", "green", "purple"];
 
@@ -82,6 +85,7 @@ app.use((req, res, next) => {
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
     "font-src 'self' https://fonts.gstatic.com",
     "img-src 'self' data: blob: https://res.cloudinary.com",
+    "media-src 'self' blob: data:",
     "connect-src 'self' https://api.cloudinary.com",
     "frame-ancestors 'none'",
     "base-uri 'self'",
@@ -374,6 +378,29 @@ app.get("/api/ranking", api(async (req, res) => {
   res.json(await ranking(player, board));
 }));
 
+app.get("/api/player-card", api(async (req, res) => {
+  if (!dbReady()) {
+    res.status(503).json({ error: "Base indisponible." });
+    return;
+  }
+  if (ipLimited(clientIp(req), "rank", 120, 60_000)) {
+    res.status(429).json({ error: "Trop d'essais." });
+    return;
+  }
+  const id = isUuid(req.query.id) ? req.query.id : "";
+  if (!id) {
+    res.status(404).json({ error: "Profil introuvable." });
+    return;
+  }
+  const viewer = isUuid(req.query.player) ? req.query.player : null;
+  const card = await playerCard(id, viewer);
+  if (!card) {
+    res.status(404).json({ error: "Profil introuvable." });
+    return;
+  }
+  res.json(card);
+}));
+
 app.get("/api/progress", api(async (req, res) => {
   if (!dbReady()) {
     res.status(503).json({ error: "Base indisponible." });
@@ -417,7 +444,7 @@ app.get("/api/admin", api(async (req, res) => {
 app.get("/api/games/:id", api(async (req, res) => {
   const id = apiPlayer(req, res);
   if (!id || !(await requireSession(req, res, id))) return;
-  res.json(await listGames(id));
+  res.json({ games: await listGames(id), stats: await gameStats(id) });
 }));
 
 app.post("/api/games/:id", api(async (req, res) => {
@@ -708,16 +735,30 @@ function rememberPresence(socket, payload) {
   const current = presence.get(socket.id);
   const photo = PHOTO_URL.test(payload.photo) ? payload.photo : "";
   const busy = typeof payload.busy === "boolean" ? payload.busy : current?.busy === true;
+  const activity = payload.activity === "robot" || payload.activity === "duo" ? payload.activity : "";
   const next = {
     token: presenceToken(current),
     id: safePlayerId(payload.playerId, current?.id || socket.id),
     name,
     photo,
     busy,
+    activity: activity || (busy ? current?.activity || "" : ""),
     socketId: socket.id,
   };
   presence.set(socket.id, next);
+  noteVisit(next.id);
   return next;
+}
+
+const visitSeen = new Set();
+
+function noteVisit(playerId) {
+  if (!isUuid(playerId) || !dbReady()) return;
+  const day = new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/Paris" }).format(new Date());
+  const key = `${playerId}:${day}`;
+  if (visitSeen.has(key)) return;
+  visitSeen.add(key);
+  recordVisit(playerId).catch(() => visitSeen.delete(key));
 }
 
 function seated(socketId) {
@@ -751,7 +792,17 @@ function findPeople(except) {
     if (!current || (accountBusy(item) && !accountBusy(current))) byId.set(key, item);
   }
   return [...byId.values()]
-    .map((item) => ({ token: item.token, name: item.name, photo: item.photo, busy: accountBusy(item) }))
+    .map((item) => {
+      const seatedNow = seated(item.socketId);
+      const activity = seatedNow ? "duo" : (item.activity === "robot" || item.activity === "duo" ? item.activity : "");
+      return {
+        token: item.token,
+        name: item.name,
+        photo: item.photo,
+        busy: accountBusy(item) || activity !== "",
+        activity,
+      };
+    })
     .sort((a, b) => Number(a.busy) - Number(b.busy) || a.name.localeCompare(b.name, "fr"))
     .slice(0, 40);
 }
@@ -997,6 +1048,18 @@ io.on("connection", (socket) => {
     }
   });
 
+function trimChat(room) {
+  if (!Array.isArray(room.chat)) return;
+  let voices = room.chat.filter((line) => line.audio).length;
+  while (voices > 6) {
+    const index = room.chat.findIndex((line) => line.audio);
+    if (index < 0) break;
+    room.chat.splice(index, 1);
+    voices -= 1;
+  }
+  while (room.chat.length > 40) room.chat.shift();
+}
+
 socket.on("chat", (text) => {
   if (typeof text !== "string") return;
   const body = text.replace(/[\u0000-\u001f]/g, "").trim().slice(0, 200);
@@ -1005,10 +1068,37 @@ socket.on("chat", (text) => {
   if (!found?.room.game || found.room.game.status === "waiting") return;
   if (!found.room.chat) found.room.chat = [];
   found.room.chat.push({ seat: found.seat, text: body });
-  if (found.room.chat.length > 40) found.room.chat.shift();
+  trimChat(found.room);
   const other = found.room.players[1 - found.seat];
   const sock = other?.socketId ? io.sockets.sockets.get(other.socketId) : null;
   sock?.emit("chat", { code: found.room.code, text: body, seat: found.seat });
+});
+
+function cleanVoice(value) {
+  const audio = String(value || "").replace(/\s/g, "");
+  if (audio.length < 80 || audio.length > 560000) return "";
+  if (!/^data:(audio|video)\/[a-z0-9.+-]+[^,]*,[A-Za-z0-9+/=]+$/.test(audio)) return "";
+  return audio;
+}
+
+socket.on("voice", (payload) => {
+  const body = payload && typeof payload === "object" ? payload : { audio: payload };
+  const clip = cleanVoice(body.audio);
+  const id = String(body.id || "").replace(/[^a-zA-Z0-9-]/g, "").slice(0, 40);
+  const seconds = Math.max(0, Math.min(12, Math.round(Number(body.seconds) || 0)));
+  if (!clip || !id || limited(`${socket.id}:voice`, 6, 60_000)) return;
+  const found = liveRoom(socket);
+  if (!found?.room.game || found.room.game.status === "waiting") return;
+  if (!found.room.chat) found.room.chat = [];
+  if (found.room.chat.some((line) => line.id === id)) return;
+  found.room.chat.push({ seat: found.seat, audio: clip, id, seconds });
+  trimChat(found.room);
+  const message = { code: found.room.code, audio: clip, seat: found.seat, id, seconds };
+  for (const seat of [0, 1]) {
+    const player = found.room.players[seat];
+    const sock = player?.socketId ? io.sockets.sockets.get(player.socketId) : null;
+    sock?.emit("voice", message);
+  }
 });
 
 socket.on("chat-sync", () => {
@@ -1056,6 +1146,15 @@ socket.on("move", (move, ack) => {
     } else {
       emitState(room, { type: "rematch-wait" });
     }
+  });
+
+  socket.on("rematch-no", () => {
+    const room = rooms.get(socket.data.roomCode);
+    const seat = room ? seatOf(room, socket.data.playerId) : -1;
+    if (!room?.game || seat < 0 || room.game.status !== "finished") return;
+    if (!room.rematch.some(Boolean)) return;
+    room.rematch = [false, false];
+    emitState(room, { type: "rematch-no" });
   });
 
   socket.on("present", () => {

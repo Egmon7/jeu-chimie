@@ -55,6 +55,15 @@ const REASON = {
   score: "L’objectif de score est atteint.",
   time: "Le temps global est écoulé.",
   abandon: "Un joueur a abandonné.",
+  robot: "Le robot abandonne.",
+};
+
+const ROBOT_GAP = {
+  easy: [6, 10],
+  medium: [7, 12],
+  hard: [8, 15],
+  veryhard: [10, 18],
+  expert: [12, 22],
 };
 
 const app = {
@@ -68,6 +77,7 @@ const app = {
   inputLock: false,
   timeoutQueued: null,
   recorded: false,
+  rematchOffer: "",
   ignoreOnline: false,
   starterFlip: 0,
   lastTs: 0,
@@ -117,10 +127,14 @@ function show(id, historyMode = "push") {
       wrap.style.setProperty("--sheet-w", String(app.game.cols));
       wrap.style.setProperty("--sheet-h", String(app.game.rows));
     }
-    requestAnimationFrame(() => app.board.resize());
+    requestAnimationFrame(() => {
+      app.board.resize();
+      fitSheet();
+    });
   }
   if (id !== "screen-game") {
     const chatBtn = $("chat-open");
+    cancelVoice();
     if (chatBtn) {
       chatBtn.hidden = true;
       const panel = $("chat-panel");
@@ -780,7 +794,8 @@ function paintBoard() {
     const card = document.createElement("article");
     const rank = Number(row.rank);
     card.className = `podium-card rank-${rank}${row.you ? " you" : ""}`;
-    card.innerHTML = `<img class="podium-medal" src="img/medaille-${rank}.png" alt=""><span class="face">${faceMarkup(row.photo, true)}</span>${row.you ? `<em class="you-tag">Toi</em>` : ""}<strong>${esc(row.name)}</strong><p class="podium-xp">${Number(row.xp) || 0} XP</p>`;
+    if (row.id) card.dataset.player = row.id;
+    card.innerHTML = `<img class="podium-medal" src="img/medaille-${rank}.png" alt=""><span class="face">${faceMarkup(row.photo, true)}</span>${row.you ? `<em class="you-tag">Toi</em>` : ""}${rankNameButton(row)}<p class="podium-xp">${Number(row.xp) || 0} XP</p>`;
     top.append(card);
   }
   bindFaceImages(top);
@@ -793,10 +808,56 @@ function paintBoard() {
   for (const row of rest) {
     const item = document.createElement("li");
     item.className = row.you ? "rank-row you" : "rank-row";
-    item.innerHTML = `<span class="rank-num">${Number(row.rank)}</span><span class="face">${faceMarkup(row.photo, true)}</span><strong>${esc(row.name)}</strong>${row.you ? `<em class="you-tag">Toi</em>` : ""}<span class="rank-points">${Number(row.xp) || 0} XP</span>`;
+    if (row.id) item.dataset.player = row.id;
+    item.innerHTML = `<span class="rank-num">${Number(row.rank)}</span><span class="face">${faceMarkup(row.photo, true)}</span>${rankNameButton(row)}${row.you ? `<em class="you-tag">Toi</em>` : ""}<span class="rank-points">${Number(row.xp) || 0} XP</span>`;
     list.append(item);
   }
   bindFaceImages(list);
+}
+
+function rankNameButton(row) {
+  return `<button type="button" class="rank-name" data-player="${esc(row.id || "")}">${esc(row.name)}</button>`;
+}
+
+function boardPlace(row) {
+  if (!row) return "Pas dans ce classement.";
+  const place = Number(row.rank);
+  return `${place}${place === 1 ? "er" : "e"} sur ${row.people} · ${Number(row.xp) || 0} XP`;
+}
+
+async function showPlayerCard(id) {
+  const dialog = $("rank-card");
+  const body = $("rank-card-body");
+  if (!dialog || !body || !id) return;
+  body.innerHTML = `<p>Chargement…</p>`;
+  dialog.hidden = false;
+  const card = await sendJson(`/api/player-card?id=${encodeURIComponent(id)}&player=${encodeURIComponent(playerId())}`, "GET");
+  if (dialog.hidden) return;
+  if (!card?.name) {
+    dialog.hidden = true;
+    toast("La fiche n’a pas pu se charger.");
+    return;
+  }
+  const self = id === playerId();
+  const onlineOnly = rankBoard === "online";
+  const block = onlineOnly ? card.stats?.online : card.stats?.general;
+  const played = Number(block?.played ?? (onlineOnly ? card.online?.games : card.games)) || 0;
+  const wins = Number(block?.wins ?? (onlineOnly ? card.online?.wins : card.wins)) || 0;
+  const losses = Number(block?.losses) || 0;
+  const draws = Number(block?.draws) || 0;
+  const place = onlineOnly ? boardPlace(card.online) : boardPlace(card.general);
+  body.innerHTML = `<div class="rank-card-top"><span class="face">${faceMarkup(card.photo, true)}</span><strong>${esc(card.name)}</strong></div>
+    <p><span>Profil</span> Enregistré.</p>
+    <p><span>${onlineOnly ? "Parties en ligne" : "Parties jouées"}</span> ${played}</p>
+    ${self || onlineOnly ? "" : `<p><span>Parties avec toi</span> ${Number(card.together) || 0}</p>`}
+    <p><span>${onlineOnly ? "Classement en ligne" : "Classement général"}</span> ${esc(place)}</p>
+    ${onlineOnly ? "" : `<p><span>En ligne</span> ${esc(boardPlace(card.online))}</p>`}
+    <p><span>Maisons</span> ${Number(onlineOnly ? card.online?.houses : card.houses) || 0} · record ${Number(onlineOnly ? card.online?.best : card.best) || 0}</p>
+    <p><span>Victoires</span> ${wins}</p>
+    <p><span>Défaites</span> ${losses}</p>
+    <p><span>Égalités</span> ${draws}</p>
+    ${onlineOnly ? "" : `<p><span>Expert battu</span> ${Number(card.expertWins) || 0}</p>`}`;
+  bindFaceImages(body);
 }
 
 function scrollToMyRank() {
@@ -842,20 +903,33 @@ async function loadRanking() {
 }
 
 function progressFromHistory(games) {
-  const perHouse = { easy: 2, medium: 3, hard: 5, veryhard: 7, expert: 10 };
+  const perHouse = { easy: 7, medium: 8, hard: 9, veryhard: 10, expert: 10 };
   const stats = { xp: 0, houses: 0, best: 0, games: 0, wins: 0, expertWins: 0 };
   for (const game of games || []) {
     if (game.mode !== "solo" || Number(game.userSeat) !== 0) continue;
     const houses = Number(Array.isArray(game.scores) ? game.scores[0] : game.scores?.[0]);
     if (!Number.isFinite(houses)) continue;
-    const per = perHouse[game.difficulty] || 3;
+    const per = perHouse[game.difficulty] || 8;
     const win = String(game.winner) === "0" ? 15 : 0;
-    stats.xp += 20 + houses * per + win;
+    stats.xp += 15 + houses * per + win;
     stats.houses += houses;
     stats.best = Math.max(stats.best, houses);
     stats.games += 1;
     if (win) stats.wins += 1;
-    if (win && per === 10) stats.expertWins += 1;
+    if (win && game.difficulty === "expert") stats.expertWins += 1;
+  }
+  for (const game of games || []) {
+    if (game.mode !== "online") continue;
+    const seat = Number(game.userSeat);
+    if (seat !== 0 && seat !== 1) continue;
+    const houses = Number(Array.isArray(game.scores) ? game.scores[seat] : game.scores?.[seat]);
+    if (!Number.isFinite(houses)) continue;
+    const win = String(game.winner) === String(seat) ? 15 : 0;
+    stats.xp += 15 + houses * 9 + win;
+    stats.houses += houses;
+    stats.best = Math.max(stats.best, houses);
+    stats.games += 1;
+    if (win) stats.wins += 1;
   }
   stats.xp += challengeBonus(games);
   return stats;
@@ -912,6 +986,7 @@ function startMatch(settings, mode) {
   app.roomCode = null;
   app.starterFlip = 0;
   app.game = createGame(settings, 0);
+  app.game.settings.difficulty = settings.difficulty;
   app.seat = 0;
   app.players = [
     { name: settings.p1Name, color: settings.p1Color, kind: "human" },
@@ -992,16 +1067,29 @@ function applySheetZoom(next, anchorX, anchorY) {
   app.board?.resize();
 }
 
-function resetSheetZoom() {
+let pendingSheetFit = false;
+
+function fitSheet() {
+  if (!pendingSheetFit) return;
   const stage = document.querySelector(".board-stage");
   const wrap = document.querySelector(".board-wrap");
-  sheetZoom.value = 1;
-  wrap?.style.setProperty("--sheet-zoom", "1");
-  if (stage) {
-    stage.scrollLeft = 0;
-    stage.scrollTop = 0;
-  }
+  if (!stage || !wrap || stage.clientWidth < 20) return;
+  const zoom = sheetZoomBounds(stage).min;
+  sheetZoom.value = zoom;
+  wrap.style.setProperty("--sheet-zoom", zoom.toFixed(4));
+  stage.scrollLeft = 0;
+  stage.scrollTop = 0;
+  pendingSheetFit = false;
   app.board?.resize();
+}
+
+function resetSheetZoom() {
+  pendingSheetFit = true;
+  const wrap = document.querySelector(".board-wrap");
+  sheetZoom.value = 0.35;
+  wrap?.style.setProperty("--sheet-zoom", "0.35");
+  fitSheet();
+  requestAnimationFrame(() => requestAnimationFrame(fitSheet));
 }
 
 function bindSheetZoom() {
@@ -1199,6 +1287,7 @@ function refreshHud() {
     chip.classList.remove("attach");
   }
   $("pause-btn").hidden = app.mode === "online";
+  paintChatMate();
   const chatBtn = $("chat-open");
   if (chatBtn) chatBtn.hidden = false;
   const name = app.players[game.current]?.name || "";
@@ -1425,7 +1514,8 @@ function showOverlay({ kicker, title, text, actions, note = false, celebrate = f
     button.type = "button";
     button.className = action.primary ? "btn primary" : "btn";
     button.textContent = action.label;
-    button.addEventListener("click", action.on);
+    if (action.disabled) button.disabled = true;
+    else button.addEventListener("click", action.on);
     box.appendChild(button);
   }
   const extra = $("overlay-note");
@@ -1523,6 +1613,15 @@ function afterMove() {
   if (app.mode === "solo" && app.players[app.game.current]?.kind === "ai" && !app.paused) queueAi();
 }
 
+function robotBehind() {
+  const game = app.game;
+  if (!game || game.status !== "playing") return false;
+  const level = ROBOT_GAP[game.settings?.difficulty] ? game.settings.difficulty : "medium";
+  const openSheet = !(Number(game.settings?.scoreLimit) > 0);
+  const need = ROBOT_GAP[level][openSheet ? 1 : 0];
+  return game.scores[0] - game.scores[1] >= need;
+}
+
 function queueAi() {
   app.inputLock = true;
   window.setTimeout(() => {
@@ -1537,6 +1636,13 @@ function queueAi() {
     if (app.timeoutQueued != null && app.game.turnRemaining === 0) {
       app.inputLock = false;
       onTurnTimeout();
+      return;
+    }
+    if (robotBehind()) {
+      app.game.winner = 0;
+      app.game.reason = "robot";
+      app.game.status = "finished";
+      endLocal();
       return;
     }
     const move = chooseMove(app.game, app.game.settings?.difficulty || app.prefs.difficulty);
@@ -1599,10 +1705,13 @@ function syncGame(entry) {
 
 async function pullHistory() {
   try {
-    const games = await sendJson(`/api/games/${playerId()}`, "GET");
+    const payload = await sendJson(`/api/games/${playerId()}`, "GET");
+    const games = Array.isArray(payload) ? payload : payload?.games;
     if (!Array.isArray(games)) return false;
+    gameStats = payload?.stats || null;
     if (!games.length) {
       loadHistory().forEach((entry) => syncGame(entry));
+      if (!$("screen-history").hidden) renderHistory();
       return true;
     }
     replaceHistory(games);
@@ -1758,15 +1867,32 @@ function resultCopy() {
 
 function showResult() {
   const { title, text, celebrate, kicker } = resultCopy();
+  const offer = app.mode === "online" ? app.rematchOffer : "";
+  let actions = [
+    { label: "Accueil", on: () => goHome() },
+    { label: "Revanche", primary: true, on: () => askRematch() },
+  ];
+  let line = text;
+  if (offer === "theirs") {
+    line = `${text}\nRevanche proposée.`;
+    actions = [
+      { label: "Accueil", on: () => goHome() },
+      { label: "Refuser", on: () => declineRematch() },
+      { label: "Accepter", primary: true, on: () => acceptRematch() },
+    ];
+  } else if (offer === "mine") {
+    actions = [
+      { label: "Accueil", on: () => goHome() },
+      { label: "En attente…", primary: true, disabled: true },
+    ];
+  }
   showOverlay({
     kicker: kicker || "Partie terminée",
     title,
-    text,
+    text: line,
     celebrate,
     note: true,
-    actions: [
-      { label: "Accueil", primary: true, on: () => goHome() },
-    ],
+    actions,
   });
 }
 
@@ -1778,14 +1904,44 @@ function endLocal() {
   announcePresence();
 }
 
-function rematch() {
-  if (app.mode === "online") {
-    app.socket.emit("rematch");
-    toast("Revanche proposée.");
+function askRematch() {
+  if (app.mode !== "online") {
+    rematch();
     return;
   }
+  if (!app.socket?.connected) {
+    toast("La connexion a sauté.");
+    return;
+  }
+  app.rematchOffer = "mine";
+  app.socket.emit("rematch");
+  showResult();
+}
+
+function acceptRematch() {
+  if (!app.socket?.connected) {
+    toast("La connexion a sauté.");
+    return;
+  }
+  app.socket.emit("rematch");
+}
+
+function declineRematch() {
+  app.rematchOffer = "";
+  app.socket?.emit("rematch-no");
+  showResult();
+}
+
+function rematch() {
+  if (app.mode === "online") {
+    askRematch();
+    return;
+  }
+  hideOverlay();
+  app.rematchOffer = "";
   app.starterFlip = app.starterFlip === 0 ? 1 : 0;
   app.game = createGame(app.prefs, app.starterFlip);
+  app.game.settings.difficulty = app.prefs.difficulty;
   app.paused = false;
   app.inputLock = false;
   app.recorded = false;
@@ -1798,6 +1954,28 @@ function rematch() {
   announcePresence();
 }
 
+let chatRemind = 0;
+
+function otherSeat() {
+  if (app.mode === "online") return app.seat === 1 ? 0 : 1;
+  if (app.mode === "solo") return 1;
+  const mine = (loadProfile().name || "").trim();
+  const index = (app.players || []).findIndex((player) => player?.name !== mine);
+  return index >= 0 ? index : 1;
+}
+
+let mateKey = "";
+
+function paintChatMate() {
+  const title = $("chat-mate");
+  const player = app.players?.[otherSeat()];
+  if (title) title.textContent = player?.name || "Discussion";
+  const key = player?.name ? `${player.kind || "human"}|${player.name}` : "";
+  if (key === mateKey) return;
+  mateKey = key;
+  paintMate(player);
+}
+
 function setChatAlert(on) {
   const light = $("chat-light");
   const button = $("chat-open");
@@ -1806,18 +1984,473 @@ function setChatAlert(on) {
     button.classList.toggle("has-mail", on);
     button.setAttribute("aria-label", on ? "Nouveau message" : "Discussion");
   }
+  if (!on) {
+    clearTimeout(chatRemind);
+    chatRemind = 0;
+  }
 }
 
-function appendChat(text, mine) {
+function sheetChatNote(text) {
+  const note = $("chat-note");
+  if (!note) return;
+  note.textContent = text;
+  note.hidden = false;
+  clearTimeout(sheetChatNote.timer);
+  sheetChatNote.timer = setTimeout(() => { note.hidden = true; }, 1500);
+}
+
+function noteIncomingChat() {
+  setChatAlert(true);
+  sheetChatNote("Un nouveau message. Discuter.");
+  clearTimeout(chatRemind);
+  chatRemind = setTimeout(() => {
+    if ($("chat-light")?.hidden) return;
+    sheetChatNote("Clique sur l’icône de message.");
+  }, 4500);
+}
+
+const VOICE_PLAY = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5.5v13l11-6.5-11-6.5z"/></svg>`;
+const VOICE_PAUSE = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 5h4v14H7V5zm6 0h4v14h-4V5z"/></svg>`;
+
+function voiceClock(seconds) {
+  const n = Math.max(0, Math.round(Number(seconds) || 0));
+  return `${Math.floor(n / 60)}:${String(n % 60).padStart(2, "0")}`;
+}
+
+function voiceBars(host, count) {
+  host.replaceChildren();
+  for (let i = 0; i < count; i += 1) {
+    const bar = document.createElement("i");
+    bar.style.setProperty("--n", String(i));
+    host.append(bar);
+  }
+}
+
+function paintVoiceBars(host, ratio) {
+  const bars = [...host.children];
+  const lit = Math.round(Math.min(1, Math.max(0, ratio)) * bars.length);
+  bars.forEach((bar, index) => bar.classList.toggle("is-on", index < lit));
+}
+
+function mixDown(buffer, rate) {
+  const length = buffer.length;
+  const mono = new Float32Array(length);
+  for (let channel = 0; channel < buffer.numberOfChannels; channel += 1) {
+    const data = buffer.getChannelData(channel);
+    for (let i = 0; i < length; i += 1) mono[i] += data[i] / buffer.numberOfChannels;
+  }
+  if (buffer.sampleRate === rate) return mono;
+  const outLength = Math.max(1, Math.round(mono.length * rate / buffer.sampleRate));
+  const out = new Float32Array(outLength);
+  for (let i = 0; i < outLength; i += 1) {
+    const pos = i * buffer.sampleRate / rate;
+    const left = Math.floor(pos);
+    const right = Math.min(mono.length - 1, left + 1);
+    const mix = pos - left;
+    out[i] = mono[left] * (1 - mix) + mono[right] * mix;
+  }
+  return out;
+}
+
+function encodeWav(samples, rate) {
+  const buffer = new ArrayBuffer(44 + samples.length * 2);
+  const view = new DataView(buffer);
+  const text = (offset, value) => {
+    for (let i = 0; i < value.length; i += 1) view.setUint8(offset + i, value.charCodeAt(i));
+  };
+  text(0, "RIFF");
+  view.setUint32(4, 36 + samples.length * 2, true);
+  text(8, "WAVE");
+  text(12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, rate, true);
+  view.setUint32(28, rate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  text(36, "data");
+  view.setUint32(40, samples.length * 2, true);
+  let offset = 44;
+  for (let i = 0; i < samples.length; i += 1) {
+    const sample = Math.max(-1, Math.min(1, samples[i]));
+    view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
+    offset += 2;
+  }
+  return new Blob([buffer], { type: "audio/wav" });
+}
+
+function readDataUrl(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function wavBlob(blob, rate) {
+  const ctx = new AudioContext();
+  try {
+    const decoded = await ctx.decodeAudioData((await blob.arrayBuffer()).slice(0));
+    return encodeWav(mixDown(decoded, rate), rate);
+  } finally {
+    ctx.close().catch(() => {});
+  }
+}
+
+async function clipFromTake(blob) {
+  const pack = async (rate) => {
+    const wav = await wavBlob(blob, rate);
+    const audio = voiceClip(await readDataUrl(wav));
+    return audio ? { audio, blob: wav } : null;
+  };
+  try {
+    return (await pack(16000)) || (await pack(8000));
+  } catch {
+    const audio = voiceClip(await readDataUrl(blob));
+    return audio ? { audio, blob } : null;
+  }
+}
+
+function voiceUrl(clip) {
+  const comma = String(clip).indexOf(",");
+  if (comma < 0) return clip;
+  try {
+    const mime = clip.slice(5, comma).split(";")[0] || "audio/webm";
+    const raw = atob(clip.slice(comma + 1));
+    const bytes = new Uint8Array(raw.length);
+    for (let i = 0; i < raw.length; i += 1) bytes[i] = raw.charCodeAt(i);
+    return URL.createObjectURL(new Blob([bytes], { type: mime }));
+  } catch {
+    return clip;
+  }
+}
+
+const localVoices = new Map();
+
+function rememberVoice(id, blob) {
+  if (!id || !blob) return;
+  const previous = localVoices.get(id);
+  if (previous) URL.revokeObjectURL(previous);
+  localVoices.set(id, URL.createObjectURL(blob));
+}
+
+function voiceBubble(clip, seconds, voiceId) {
+  const box = document.createElement("div");
+  box.className = "chat-audio";
+  const known = Math.max(0, Math.min(12, Math.round(Number(seconds) || 0)));
+  const sound = document.createElement("audio");
+  sound.preload = "auto";
+  sound.setAttribute("playsinline", "");
+  sound.src = (voiceId && localVoices.get(voiceId)) || voiceUrl(clip);
+  sound.volume = 1;
+  sound.style.cssText = "position:absolute;width:0;height:0;opacity:0;pointer-events:none";
+  const play = document.createElement("button");
+  play.type = "button";
+  play.className = "chat-audio-btn";
+  play.setAttribute("aria-label", "Écouter");
+  play.innerHTML = VOICE_PLAY;
+  const bars = document.createElement("div");
+  bars.className = "voice-bars";
+  voiceBars(bars, 16);
+  const time = document.createElement("span");
+  time.className = "chat-audio-time";
+  time.textContent = voiceClock(known);
+  const length = () => {
+    const real = sound.duration;
+    if (Number.isFinite(real) && real > 0 && real < 60) return real;
+    return known;
+  };
+  const paint = () => {
+    const dur = length();
+    const at = sound.currentTime || 0;
+    time.textContent = voiceClock(!sound.paused || at > 0.2 ? at : dur);
+    paintVoiceBars(bars, dur ? Math.min(1, at / dur) : 0);
+  };
+  const showPlay = () => {
+    play.innerHTML = VOICE_PLAY;
+    play.setAttribute("aria-label", "Écouter");
+  };
+  sound.addEventListener("loadedmetadata", paint);
+  sound.addEventListener("durationchange", paint);
+  sound.addEventListener("timeupdate", paint);
+  sound.addEventListener("ended", () => {
+    sound.currentTime = 0;
+    showPlay();
+    paint();
+  });
+  play.addEventListener("click", () => {
+    if (sound.paused) {
+      document.querySelectorAll(".chat-audio audio").forEach((node) => {
+        if (node !== sound) node.pause();
+      });
+      const local = voiceId && localVoices.get(voiceId);
+      if (local && sound.src !== local) sound.src = local;
+      sound.play().then(() => {
+        play.innerHTML = VOICE_PAUSE;
+        play.setAttribute("aria-label", "Pause");
+      }).catch(() => toast("Le vocal ne peut pas être lu."));
+      return;
+    }
+    sound.pause();
+    showPlay();
+  });
+  bars.addEventListener("click", (event) => {
+    const dur = length();
+    if (!Number.isFinite(dur) || dur <= 0) return;
+    const rect = bars.getBoundingClientRect();
+    const ratio = Math.min(1, Math.max(0, (event.clientX - rect.left) / Math.max(1, rect.width)));
+    sound.currentTime = ratio * dur;
+    paint();
+  });
+  box.append(sound, play, bars, time);
+  return box;
+}
+
+function voiceClip(value) {
+  const audio = String(value || "").replace(/\s/g, "");
+  if (audio.length < 80 || audio.length > 560000) return "";
+  return /^data:(audio|video)\/[a-z0-9.+-]+[^,]*,[A-Za-z0-9+/=]+$/.test(audio) ? audio : "";
+}
+
+function appendChat(text, mine, audio, voiceId, seconds) {
   const body = String(text || "").trim();
-  if (!body) return;
+  const clip = voiceClip(audio);
+  const id = String(voiceId || "").replace(/[^a-zA-Z0-9-]/g, "").slice(0, 40);
+  if (id && document.querySelector(`[data-voice="${id}"]`)) return;
+  if (!body && !clip) return;
   const log = $("chat-log");
   const line = document.createElement("p");
   line.className = mine ? "chat-line mine" : "chat-line";
-  line.textContent = body;
+  if (id) line.dataset.voice = id;
+  if (clip) line.append(voiceBubble(clip, seconds, id));
+  else line.textContent = body;
   log.append(line);
   while (log.children.length > 40) log.firstChild.remove();
   log.scrollTop = log.scrollHeight;
+}
+
+let voiceRec = null;
+let voiceChunks = [];
+let voiceTimer = 0;
+let voiceTick = 0;
+let voiceMark = 0;
+let voiceSkip = false;
+let voiceDraft = "";
+let voiceTake = null;
+let voiceSeconds = 0;
+let voicePreview = null;
+let voicePreviewUrl = "";
+
+function setVoiceButton(on) {
+  const button = $("chat-voice");
+  if (!button) return;
+  button.classList.toggle("is-on", on);
+  button.setAttribute("aria-pressed", on ? "true" : "false");
+  button.setAttribute("aria-label", on ? "Arrêter le vocal" : "Message vocal");
+}
+
+function showVoiceStage(live) {
+  const stage = $("voice-stage");
+  const form = $("chat-form");
+  if (!stage || !form) return;
+  const bars = $("voice-bars");
+  if (bars && !bars.children.length) voiceBars(bars, 18);
+  stage.hidden = false;
+  stage.classList.toggle("is-live", live);
+  form.hidden = true;
+  $("voice-done").hidden = !live;
+  $("voice-hear").hidden = live;
+  $("voice-send").hidden = live;
+  if (live) paintVoiceBars(bars, 0);
+}
+
+function hideVoiceStage() {
+  clearInterval(voiceTick);
+  voiceTick = 0;
+  const stage = $("voice-stage");
+  const form = $("chat-form");
+  if (stage) {
+    stage.hidden = true;
+    stage.classList.remove("is-live");
+  }
+  if (form) form.hidden = false;
+  if (voicePreview) {
+    voicePreview.pause();
+    voicePreview.remove();
+    voicePreview = null;
+  }
+  if (voicePreviewUrl) {
+    URL.revokeObjectURL(voicePreviewUrl);
+    voicePreviewUrl = "";
+  }
+  voiceTake = null;
+  voiceDraft = "";
+  const hear = $("voice-hear");
+  if (hear) hear.innerHTML = VOICE_PLAY;
+}
+
+function startVoiceClock() {
+  clearInterval(voiceTick);
+  voiceMark = Date.now();
+  const time = $("voice-time");
+  if (time) time.textContent = "0:00";
+  voiceTick = setInterval(() => {
+    if (time) time.textContent = voiceClock((Date.now() - voiceMark) / 1000);
+  }, 200);
+}
+
+function releaseVoice(rec) {
+  rec?.stream?.getTracks().forEach((track) => track.stop());
+}
+
+function cancelVoice() {
+  clearTimeout(voiceTimer);
+  voiceTimer = 0;
+  const rec = voiceRec;
+  voiceRec = null;
+  voiceChunks = [];
+  setVoiceButton(false);
+  hideVoiceStage();
+  if (!rec) return;
+  voiceSkip = true;
+  if (rec.state !== "inactive") rec.stop();
+  else voiceSkip = false;
+  releaseVoice(rec);
+}
+
+function finishVoice(rec) {
+  releaseVoice(rec);
+  setVoiceButton(false);
+  clearInterval(voiceTick);
+  voiceTick = 0;
+  const chunks = voiceChunks;
+  const seconds = Math.max(1, Math.round((Date.now() - voiceMark) / 1000));
+  voiceChunks = [];
+  if (voiceSkip) {
+    voiceSkip = false;
+    return;
+  }
+  const blob = new Blob(chunks, { type: rec.mimeType || "audio/webm" });
+  if (blob.size < 500) {
+    hideVoiceStage();
+    return;
+  }
+  if (blob.size > 48000) {
+    hideVoiceStage();
+    toast("Le vocal est trop long.");
+    return;
+  }
+  clipFromTake(blob).then((taken) => {
+    if (!taken?.audio) {
+      hideVoiceStage();
+      toast("Le vocal est trop long.");
+      return;
+    }
+    voiceDraft = taken.audio;
+    voiceTake = taken.blob;
+    voiceSeconds = seconds;
+    voicePreviewUrl = URL.createObjectURL(taken.blob);
+    voicePreview = document.createElement("audio");
+    voicePreview.preload = "auto";
+    voicePreview.setAttribute("playsinline", "");
+    voicePreview.src = voicePreviewUrl;
+    voicePreview.volume = 1;
+    voicePreview.style.cssText = "position:absolute;width:0;height:0;opacity:0;pointer-events:none";
+    $("voice-stage")?.append(voicePreview);
+    voicePreview.addEventListener("loadedmetadata", () => {
+      const time = $("voice-time");
+      const real = voicePreview.duration;
+      if (time) time.textContent = voiceClock(Number.isFinite(real) && real > 0 && real < 60 ? real : seconds);
+    });
+    voicePreview.addEventListener("ended", () => {
+      const hear = $("voice-hear");
+      if (hear) hear.innerHTML = VOICE_PLAY;
+    });
+    showVoiceStage(false);
+  }).catch(() => {
+    hideVoiceStage();
+    toast("Le vocal n'a pas pu être préparé.");
+  });
+}
+
+function hearVoiceDraft() {
+  if (!voicePreview) return;
+  const hear = $("voice-hear");
+  if (voicePreview.paused) {
+    voicePreview.play().then(() => {
+      if (hear) hear.innerHTML = VOICE_PAUSE;
+    }).catch(() => toast("Le vocal ne peut pas être lu."));
+    return;
+  }
+  voicePreview.pause();
+  if (hear) hear.innerHTML = VOICE_PLAY;
+}
+
+function sendVoiceDraft() {
+  const audio = voiceDraft;
+  if (!audio) return;
+  const id = crypto.randomUUID();
+  const seconds = voiceSeconds;
+  if (voiceTake) rememberVoice(id, voiceTake);
+  appendChat("", true, audio, id, seconds);
+  if (app.mode === "online") {
+    if (!app.socket?.connected || !app.roomCode) toast("La discussion n'est pas disponible.");
+    else app.socket.emit("voice", { id, audio, seconds });
+  }
+  voiceDraft = "";
+  hideVoiceStage();
+}
+
+async function toggleVoice() {
+  if (voiceRec) {
+    clearTimeout(voiceTimer);
+    voiceTimer = 0;
+    const rec = voiceRec;
+    voiceRec = null;
+    if (rec.state !== "inactive") rec.stop();
+    return;
+  }
+  if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
+    toast("Le micro n'est pas disponible.");
+    return;
+  }
+  if (app.mode === "online" && (!app.socket?.connected || !app.roomCode)) {
+    toast("La discussion n'est pas disponible.");
+    return;
+  }
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch {
+    toast("Autorise le micro pour envoyer un vocal.");
+    return;
+  }
+  const mime = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"].find((type) => MediaRecorder.isTypeSupported(type)) || "";
+  let rec;
+  try {
+    rec = new MediaRecorder(stream, mime ? { mimeType: mime, audioBitsPerSecond: 16000 } : { audioBitsPerSecond: 16000 });
+  } catch {
+    releaseVoice({ stream });
+    toast("Le micro n'est pas disponible.");
+    return;
+  }
+  voiceSkip = false;
+  voiceDraft = "";
+  voiceChunks = [];
+  voiceRec = rec;
+  rec.ondataavailable = (event) => { if (event.data?.size) voiceChunks.push(event.data); };
+  rec.onstop = () => finishVoice(rec);
+  rec.start();
+  setVoiceButton(true);
+  showVoiceStage(true);
+  startVoiceClock();
+  voiceTimer = setTimeout(() => {
+    if (voiceRec !== rec || rec.state === "inactive") return;
+    voiceRec = null;
+    rec.stop();
+  }, 12000);
 }
 
 function toggleChat(open) {
@@ -1827,8 +2460,76 @@ function toggleChat(open) {
   $("chat-open").setAttribute("aria-expanded", next ? "true" : "false");
   if (next) {
     setChatAlert(false);
+    paintChatMate();
     $("chat-input").focus();
   }
+}
+
+function rankPlace(row) {
+  if (!row) return "Pas dans ce classement";
+  const place = Number(row.rank);
+  return `${place}${place === 1 ? "er" : "e"} sur ${row.people}`;
+}
+
+function sameNames(rows, name) {
+  const key = foldName(name);
+  return (rows || []).filter((row) => foldName(row.name) === key);
+}
+
+function mateLine(label, rows, row) {
+  if (rows.length > 1) return `<p><span>${label}</span> Plusieurs profils ont ce nom.</p>`;
+  if (!row) return `<p><span>${label}</span> · Pas dans ce classement.</p>`;
+  return `<p><span>${label}</span> · ${esc(rankPlace(row))}</p>`;
+}
+
+async function paintMate(player) {
+  const card = $("mate-card");
+  if (!card) return;
+  if (!player?.name) {
+    setMatePlayer("");
+    card.hidden = true;
+    card.replaceChildren();
+    return;
+  }
+  const key = mateKey;
+  card.hidden = false;
+  if (player.kind === "ai") {
+    setMatePlayer("");
+    card.innerHTML = `${mateLine("Classement général", [], null)}${mateLine("En ligne", [], null)}`;
+    return;
+  }
+  setMatePlayer("");
+  card.innerHTML = `<p>Chargement…</p>`;
+  const [general, online] = await Promise.all([
+    sendJson(`/api/ranking?player=${encodeURIComponent(playerId())}&board=general`, "GET"),
+    sendJson(`/api/ranking?player=${encodeURIComponent(playerId())}&board=online`, "GET"),
+  ]);
+  if (key !== mateKey) return;
+  const generalRows = sameNames(general, player.name);
+  const onlineRows = sameNames(online, player.name);
+  const one = (rows) => (rows.length === 1 ? rows[0] : null);
+  const ids = new Set([...generalRows, ...onlineRows].map((row) => row?.id).filter(Boolean));
+  setMatePlayer(ids.size === 1 ? [...ids][0] : "");
+  card.innerHTML = `${mateLine("Classement général", generalRows, one(generalRows))}${mateLine("En ligne", onlineRows, one(onlineRows))}`;
+}
+
+function setMatePlayer(id) {
+  const title = $("chat-mate");
+  if (!title) return;
+  if (id) title.dataset.player = id;
+  else delete title.dataset.player;
+}
+
+function openSeatCard(seat) {
+  const player = app.players?.[seat];
+  if (!player || player.kind === "ai") {
+    toast("Pas de fiche pour ce joueur.");
+    return;
+  }
+  const mine = app.mode === "online" ? app.seat : 0;
+  const id = seat === mine ? playerId() : ($("chat-mate")?.dataset.player || "");
+  if (id) showPlayerCard(id);
+  else toast("Pas de fiche pour ce joueur.");
 }
 
 function sendChat(event) {
@@ -1853,11 +2554,45 @@ function dropOnlineRoom() {
   try { sessionStorage.removeItem("egmon-room"); } catch { /* ignore */ }
   app.mode = null;
   app.game = null;
+  cancelVoice();
   app.roomCode = null;
   app.chatRoom = "";
   $("chat-log")?.replaceChildren();
+  mateKey = "";
+  const mate = $("mate-card");
+  if (mate) {
+    mate.hidden = true;
+    mate.replaceChildren();
+  }
+  const note = $("chat-note");
+  if (note) note.hidden = true;
   setChatAlert(false);
   announcePresence();
+}
+
+let allowLeave = false;
+
+function inLiveMatch() {
+  return Boolean(app.game && app.game.status === "playing" && !$("screen-game").hidden);
+}
+
+function inOpenLobby() {
+  return !$("screen-lobby").hidden && (app.mode === "online" || Boolean(sessionStorage.getItem("egmon-room")));
+}
+
+function confirmLeave(onYes, lobby = false) {
+  askDialog({
+    kicker: "Quitter",
+    title: lobby ? "Quitter la salle ?" : "Quitter la partie ?",
+    text: lobby
+      ? "Tu vas sortir de la salle."
+      : app.mode === "online"
+        ? "L’adversaire sera déclaré vainqueur."
+        : "La partie en cours sera arrêtée.",
+    confirm: "Quitter",
+    cancel: "Rester",
+    onYes,
+  });
 }
 
 function leaveOnlineScreen() {
@@ -1867,6 +2602,7 @@ function leaveOnlineScreen() {
     history.back();
     return;
   }
+  allowLeave = false;
   show("screen-modes", "replace");
 }
 
@@ -1886,7 +2622,8 @@ function goHome() {
   app.mode = null;
   hideOverlay();
   announcePresence();
-  show("screen-home", online ? "replace" : "push");
+  show("screen-home", online || allowLeave ? "replace" : "push");
+  allowLeave = false;
 }
 
 function confirmAbandon() {
@@ -1936,7 +2673,7 @@ function showPause() {
         },
       },
       { label: "Abandonner", on: () => confirmAbandon() },
-      { label: "Accueil", on: () => goHome() },
+      { label: "Accueil", on: () => confirmLeave(() => goHome()) },
     ],
   });
 }
@@ -1957,6 +2694,8 @@ function loop(ts) {
   requestAnimationFrame(loop);
 }
 
+let rejoinSince = 0;
+
 function rejoinSavedRoom() {
   if (app.ignoreOnline || !app.socket?.connected) return;
   const saved = sessionStorage.getItem("egmon-room");
@@ -1964,13 +2703,20 @@ function rejoinSavedRoom() {
   try {
     const { code } = JSON.parse(saved);
     if (!code) return;
-    const tryRejoin = (attempt) => {
+    if (!rejoinSince) rejoinSince = Date.now();
+    const tryRejoin = () => {
+      if (app.ignoreOnline || !readRoomSnap()) return;
       app.socket.emit("rejoin", { playerId: playerId(), code }, (res) => {
-        if (res?.ok || app.ignoreOnline) return;
-        if (attempt < 2) {
-          window.setTimeout(() => tryRejoin(attempt + 1), 500);
+        if (res?.ok) {
+          rejoinSince = 0;
           return;
         }
+        if (app.ignoreOnline) return;
+        if (Date.now() - rejoinSince < 45_000) {
+          window.setTimeout(tryRejoin, 2000);
+          return;
+        }
+        rejoinSince = 0;
         try { sessionStorage.removeItem("egmon-room"); } catch { /* ignore */ }
         if (!$("screen-lobby").hidden || !$("screen-game").hidden) {
           toast("La salle n’est plus ouverte.");
@@ -1978,7 +2724,7 @@ function rejoinSavedRoom() {
         }
       });
     };
-    tryRejoin(0);
+    tryRejoin();
   } catch {
     sessionStorage.removeItem("egmon-room");
   }
@@ -2008,16 +2754,22 @@ function ensureSocket() {
   app.socket.on("chat", (msg) => {
     if (!msg || msg.code !== app.roomCode || msg.seat === app.seat) return;
     appendChat(msg.text, false);
-    if ($("chat-panel").hidden) setChatAlert(true);
+    if ($("chat-panel").hidden) noteIncomingChat();
+  });
+  app.socket.on("voice", (msg) => {
+    if (!msg || msg.code !== app.roomCode) return;
+    const mine = msg.seat === app.seat;
+    appendChat("", mine, msg.audio, msg.id, msg.seconds);
+    if (!mine && $("chat-panel").hidden) noteIncomingChat();
   });
   app.socket.on("chat-log", (msg) => {
     if (!msg || msg.code !== app.roomCode || !Array.isArray(msg.lines)) return;
     const log = $("chat-log");
     log.replaceChildren();
-    for (const line of msg.lines) appendChat(line.text, line.seat === app.seat);
+    for (const line of msg.lines) appendChat(line.text, line.seat === app.seat, line.audio, line.id, line.seconds);
     log.scrollTop = log.scrollHeight;
     const last = msg.lines.at(-1);
-    if (last && last.seat !== app.seat && $("chat-panel").hidden) setChatAlert(true);
+    if (last && last.seat !== app.seat && $("chat-panel").hidden) noteIncomingChat();
   });
   app.socket.on("closed", () => {
     if (app.ignoreOnline) return;
@@ -2049,7 +2801,7 @@ function ensureSocket() {
     const waiting = !$("screen-lobby").hidden;
     if (!playing && !waiting) return;
     if (playing) {
-      app.selfBackAt = Date.now() + 150_000;
+      app.selfBackAt = Date.now() + 50_000;
       app.inputLock = false;
       clearTimeout(app.moveWatch);
     }
@@ -2139,6 +2891,12 @@ function onOnlineState(msg) {
   if (app.chatRoom !== msg.code) {
     app.chatRoom = msg.code;
     $("chat-log")?.replaceChildren();
+    mateKey = "";
+    const mate = $("mate-card");
+    if (mate) {
+      mate.hidden = true;
+      mate.replaceChildren();
+    }
     setChatAlert(false);
     app.socket?.emit("chat-sync");
   }
@@ -2154,6 +2912,7 @@ function onOnlineState(msg) {
     accepted: msg.accepted === true,
     playing: Boolean(msg.game),
     direct: msg.direct === true,
+    game: msg.game || null,
   }));
   app.players = [0, 1].map((index) => {
     const seat = msg.seats[index] || {};
@@ -2193,6 +2952,7 @@ function onOnlineState(msg) {
   }
   const event = msg.event || {};
   if (event.type === "rematch" || event.type === "start") {
+    app.rematchOffer = "";
     app.board.clearAnims();
     app.recorded = false;
     app.inputLock = false;
@@ -2220,7 +2980,11 @@ function onOnlineState(msg) {
     return;
   }
   if (event.type === "rematch-wait") {
-    toast(msg.rematch?.[app.seat] ? "En attente de l’adversaire." : "Votre adversaire propose une revanche.");
+    app.rematchOffer = msg.rematch?.[app.seat] ? "mine" : "theirs";
+  }
+  if (event.type === "rematch-no") {
+    app.rematchOffer = "";
+    toast("Revanche refusée.");
   }
   if (app.game.status === "finished") finishOnline();
 }
@@ -2245,13 +3009,12 @@ function renderLobby(msg) {
     const state = !seat.present
       ? "En attente"
       : msg.ready?.[index]
-        ? "Présent"
+        ? "Ok"
         : seat.connected === false
           ? "Déconnecté"
           : "Pas encore confirmé";
     return `<p><strong>${label}</strong><span>${state}</span></p>`;
   }).join("");
-  const both = seats[0]?.present && seats[1]?.present && seats[0]?.connected && seats[1]?.connected;
   const ready = msg.ready?.[0] && msg.ready?.[1];
   $("lobby-status").textContent = !seats[1]?.present
     ? msg.direct
@@ -2260,12 +3023,10 @@ function renderLobby(msg) {
     : !ready
       ? "Les deux doivent confirmer leur présence."
       : "Vous pouvez passer à la table.";
-  $("lobby-present").disabled = false;
-  $("lobby-present").setAttribute("aria-pressed", msg.ready?.[mine] ? "true" : "false");
-  $("lobby-present").textContent = msg.ready?.[mine] ? "Présence confirmée" : "Je suis là";
-  $("lobby-accept").hidden = mine !== 1 || !both;
-  $("lobby-accept").disabled = msg.accepted === true;
-  $("lobby-accept").textContent = msg.accepted ? "Réglages acceptés" : "J’accepte";
+  const here = msg.ready?.[mine] === true;
+  $("lobby-present").disabled = here;
+  $("lobby-present").setAttribute("aria-pressed", here ? "true" : "false");
+  $("lobby-present").textContent = here ? "Ok" : "Je suis là";
   $("lobby-launch").hidden = mine !== 0 || !ready;
   $("lobby-launch").disabled = !ready;
 }
@@ -2287,7 +3048,20 @@ function resumeSavedRoom() {
   app.roomCode = snap.code;
   app.seat = Number(snap.you) || 0;
   if (snap.playing) {
+    if (snap.game?.dots) {
+      app.game = snap.game;
+      app.players = [0, 1].map((index) => {
+        const seat = Array.isArray(snap.seats) ? (snap.seats[index] || {}) : {};
+        return {
+          name: seat.name || "Joueur",
+          color: seat.color || (index === 0 ? "blue" : "red"),
+          kind: "human",
+          connected: seat.connected !== false,
+        };
+      });
+    }
     show("screen-game", "skip");
+    if (app.game) paintMatch();
     const banner = $("conn-banner");
     banner.hidden = false;
     banner.textContent = "Reprise de la partie…";
@@ -2318,16 +3092,26 @@ function renderFind(people) {
     return;
   }
   list.innerHTML = people.map((person) => {
-    const busy = person.busy === true;
-    const state = busy ? "Occupé" : "Libre";
+    const busy = person.busy === true || person.activity === "duo" || person.activity === "robot";
+    const state = person.activity === "robot"
+      ? "Occupé · match robot"
+      : busy
+        ? "Occupé · match à 2"
+        : "Libre";
     return `<button type="button" class="find-card${busy ? " is-taken" : ""}" data-token="${esc(person.token)}" data-busy="${busy ? "1" : "0"}"${busy ? " disabled" : ""}><span class="face">${faceMarkup(person.photo, true)}</span><span class="find-copy"><strong>${esc(person.name)}</strong><span class="find-state">${state}</span></span></button>`;
   }).join("");
   bindFaceImages(list);
 }
 
+function matchActivity() {
+  if (app.mode === "online" && (app.roomCode || readRoomSnap())) return "duo";
+  if (app.mode === "local" && app.game?.status === "playing") return "duo";
+  if (app.mode === "solo" && app.game?.status === "playing") return "robot";
+  return "";
+}
+
 function matchBusy() {
-  if (app.mode === "online" && (app.roomCode || readRoomSnap())) return true;
-  return (app.mode === "solo" || app.mode === "local") && app.game?.status === "playing";
+  return matchActivity() !== "";
 }
 
 function announcePresence() {
@@ -2341,6 +3125,7 @@ function announcePresence() {
       name,
       photo: profile.photo || "",
       busy: matchBusy(),
+      activity: matchActivity(),
     });
   };
   if (app.socket?.connected) send();
@@ -2364,6 +3149,7 @@ async function enterQueue() {
     name: profile.name || "Joueur",
     photo: profile.photo || "",
     busy: matchBusy(),
+    activity: matchActivity(),
     settings: {
       rows: 32,
       cols: 24,
@@ -2438,8 +3224,10 @@ async function joinRoom(code, color) {
       color,
     });
     if (!res?.ok) toast(res?.error || "Impossible de rejoindre. Réessaie.");
+    return res;
   } catch {
     toast("Impossible de rejoindre. Réessaie.");
+    return null;
   } finally {
     app.holdRejoin = false;
     if (app.rejoinAfterHold) {
@@ -2465,7 +3253,50 @@ function adminDate(value) {
   return date.toLocaleString("fr-FR", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
 }
 
-function adminBars(host, days, key) {
+const ADMIN_RANGES = [
+  ["today", "Aujourd’hui"],
+  ["yesterday", "Hier"],
+  ["week", "7 jours"],
+  ["month", "Ce mois"],
+  ["days30", "30 jours"],
+];
+const ADMIN_RANGE_TEXT = {
+  today: "aujourd’hui",
+  yesterday: "hier",
+  week: "sur 7 jours",
+  month: "ce mois",
+  days30: "sur 30 jours",
+};
+let adminData = null;
+let adminRange = "week";
+let adminPick = "";
+
+function shiftDay(day, delta) {
+  const date = new Date(`${day}T12:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + delta);
+  return date.toISOString().slice(0, 10);
+}
+
+function adminDayLabel(day) {
+  const date = new Date(`${day}T12:00:00`);
+  if (Number.isNaN(date.getTime())) return day;
+  return date.toLocaleDateString("fr-FR", { day: "numeric", month: "short" });
+}
+
+function adminWindow(days) {
+  const today = days.at(-1)?.day || "";
+  if (!today) return [];
+  if (adminRange === "today") return days.filter((item) => item.day === today);
+  if (adminRange === "yesterday") {
+    const yesterday = shiftDay(today, -1);
+    return days.filter((item) => item.day === yesterday);
+  }
+  if (adminRange === "week") return days.slice(-7);
+  if (adminRange === "month") return days.filter((item) => item.day.slice(0, 7) === today.slice(0, 7));
+  return days.slice(-30);
+}
+
+function adminBars(host, days, key, unit) {
   host.replaceChildren();
   const max = Math.max(1, ...days.map((item) => Number(item[key]) || 0));
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -2481,13 +3312,22 @@ function adminBars(host, days, key) {
     rect.setAttribute("width", String(Math.max(2, slot - 4)));
     rect.setAttribute("height", String(height));
     rect.setAttribute("rx", "2");
+    if (adminPick === item.day) rect.classList.add("is-on");
+    const title = document.createElementNS("http://www.w3.org/2000/svg", "title");
+    title.textContent = `${adminDayLabel(item.day)} · ${value}`;
+    rect.append(title);
+    rect.addEventListener("click", () => {
+      adminPick = adminPick === item.day ? "" : item.day;
+      if (adminData) renderAdmin(adminData);
+    });
     svg.append(rect);
   });
   host.append(svg);
   const caption = document.createElement("p");
-  const first = days[0] ? new Date(`${days[0].day}T12:00:00`).toLocaleDateString("fr-FR", { day: "numeric", month: "short" }) : "";
-  const last = days.at(-1) ? new Date(`${days.at(-1).day}T12:00:00`).toLocaleDateString("fr-FR", { day: "numeric", month: "short" }) : "";
-  caption.textContent = days.length ? `${first} – ${last}` : "";
+  const picked = days.find((item) => item.day === adminPick);
+  if (picked) caption.textContent = `${adminDayLabel(picked.day)} · ${Number(picked[key]) || 0} ${unit}`;
+  else if (days.length === 1) caption.textContent = `${adminDayLabel(days[0].day)} · ${Number(days[0][key]) || 0} ${unit}`;
+  else if (days.length) caption.textContent = `${adminDayLabel(days[0].day)} – ${adminDayLabel(days.at(-1).day)}`;
   host.append(caption);
 }
 
@@ -2499,6 +3339,7 @@ function stopAdminWatch() {
 }
 
 function renderAdmin(data) {
+  adminData = data;
   const live = data.live || {};
   $("admin-live").innerHTML = [
     [live.connected, "Connectés"],
@@ -2516,9 +3357,28 @@ function renderAdmin(data) {
     [data.messages, "Messages"],
   ];
   stats.innerHTML = cards.map(([value, label]) => `<p><strong>${Number(value) || 0}</strong><span>${label}</span></p>`).join("");
-  adminBars($("admin-chart-people"), data.days || [], "people");
-  adminBars($("admin-chart-games"), data.days || [], "games");
-  adminBars($("admin-chart-online"), data.days || [], "online");
+  const filters = $("admin-filters");
+  filters.replaceChildren();
+  for (const [id, label] of ADMIN_RANGES) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = label;
+    button.classList.toggle("is-on", adminRange === id);
+    button.addEventListener("click", () => {
+      adminRange = id;
+      adminPick = "";
+      renderAdmin(data);
+    });
+    filters.append(button);
+  }
+  const reach = data.reach || {};
+  const people = Number(reach[adminRange]) || 0;
+  $("admin-reach").textContent = `${people} personne${people > 1 ? "s" : ""} connectée${people > 1 ? "s" : ""} ${ADMIN_RANGE_TEXT[adminRange] || ""}`;
+  const days = adminWindow(data.days || []);
+  if (adminPick && !days.some((item) => item.day === adminPick)) adminPick = "";
+  adminBars($("admin-chart-people"), days, "connected", "personnes");
+  adminBars($("admin-chart-games"), days, "games", "parties");
+  adminBars($("admin-chart-online"), days, "online", "en ligne");
   const players = $("admin-players");
   players.innerHTML = (data.players || []).length
     ? data.players.map((player) => {
@@ -2549,13 +3409,41 @@ async function loadAdmin() {
   if (!adminWatch) adminWatch = setInterval(loadAdmin, 15000);
 }
 
+let gameStats = null;
+
+function tallyHistory(items) {
+  const box = { played: items.length, wins: 0, losses: 0, draws: 0 };
+  for (const item of items) {
+    if (item.winner === "draw") {
+      box.draws += 1;
+      continue;
+    }
+    const seat = Number(item.userSeat);
+    if (seat !== 0 && seat !== 1) continue;
+    if (Number(item.winner) === seat) box.wins += 1;
+    else box.losses += 1;
+  }
+  return box;
+}
+
+function paintStat(prefix, box) {
+  const node = (name) => $(prefix ? `stat-${prefix}-${name}` : `stat-${name}`);
+  const played = node("played");
+  const wins = node("wins");
+  const losses = node("losses");
+  const draws = node("draws");
+  if (played) played.textContent = String(Number(box?.played) || 0);
+  if (wins) wins.textContent = String(Number(box?.wins) || 0);
+  if (losses) losses.textContent = String(Number(box?.losses) || 0);
+  if (draws) draws.textContent = String(Number(box?.draws) || 0);
+}
+
 function renderHistory() {
   const history = loadHistory();
-  const ranked = history.filter((item) => item.userSeat === 0 || item.userSeat === 1);
-  $("stat-played").textContent = String(history.length);
-  $("stat-wins").textContent = String(ranked.filter((item) => item.winner === item.userSeat).length);
-  $("stat-losses").textContent = String(ranked.filter((item) => item.winner !== "draw" && item.winner !== item.userSeat).length);
-  $("stat-draws").textContent = String(ranked.filter((item) => item.winner === "draw").length);
+  const general = gameStats?.general || tallyHistory(history);
+  const online = gameStats?.online || tallyHistory(history.filter((item) => item.mode === "online"));
+  paintStat("", general);
+  paintStat("online", online);
   const list = $("history-list");
   if (!history.length) {
     list.innerHTML = `<p class="empty">Aucune partie enregistrée. Le papier est encore vierge.</p>`;
@@ -2578,12 +3466,40 @@ function renderHistory() {
     const diff = item.difficulty ? ` · ${DIFF_LABEL[item.difficulty] || ""}` : "";
     const left = Number(item.scores?.[0]) || 0;
     const right = Number(item.scores?.[1]) || 0;
-    return `<article class="history-item"><div><strong>${result}</strong><span>${esc(item.size)} · ${modeLabel[item.mode] || ""}${esc(diff)}</span></div><div><b>${left} – ${right}</b><span>${esc(when)}</span></div></article>`;
+    const names = Array.isArray(item.names) ? item.names : [];
+    const foeIndex = item.userSeat === 1 ? 0 : 1;
+    const foe = item.mode === "online" ? (names[foeIndex] || "Adversaire") : "";
+    const mine = item.userSeat === 0 || item.userSeat === 1 ? item.userSeat : null;
+    const myScore = mine == null ? left : (Number(item.scores?.[mine]) || 0);
+    const foeScore = mine == null ? right : (Number(item.scores?.[1 - mine]) || 0);
+    const cause = item.mode === "online" && REASON[item.reason] ? ` · ${REASON[item.reason]}` : "";
+    const detail = item.mode === "online"
+      ? `Contre ${esc(foe)} · ${esc(item.size || "")}${esc(cause)}`
+      : `${esc(item.size)} · ${modeLabel[item.mode] || ""}${esc(diff)}`;
+    const score = item.mode === "online" ? `${myScore} – ${foeScore}` : `${left} – ${right}`;
+    return `<article class="history-item"><div><strong>${result}</strong><span>${detail}</span></div><div><b>${score}</b><span>${esc(when)}</span></div></article>`;
   }).join("");
 }
 
-function copyText(text) {
-  navigator.clipboard?.writeText(text).then(() => toast("Copié.")).catch(() => toast(text));
+function copyText(text, done = "Copié.") {
+  navigator.clipboard?.writeText(text).then(() => toast(done)).catch(() => toast(text));
+}
+
+function roomLink(code) {
+  const url = new URL(location.href);
+  url.hash = "";
+  url.search = "";
+  url.searchParams.set("room", code);
+  return url.toString();
+}
+
+function copyRoomLink() {
+  const code = String(app.roomCode || $("lobby-code").textContent || "").trim().toUpperCase();
+  if (!/^EGD-[A-Z2-9]{6}$/.test(code)) {
+    toast("Le lien n’est pas encore prêt.");
+    return;
+  }
+  copyText(roomLink(code), "Lien copié.");
 }
 
 function soon() {
@@ -2636,6 +3552,7 @@ function openHub(name) {
 }
 
 const auth = { step: "identity", exists: false, name: "", email: "", accountId: "", knownMail: false };
+let pendingRoom = "";
 
 function firstNameGroup(name) {
   return String(name || "").trim().split(/\s+/)[0] || "";
@@ -2653,6 +3570,63 @@ function paintUserChip() {
 function isConnected() {
   const session = loadSession();
   return session?.connected === true && session.id === playerId() && Boolean(loadProfile().name);
+}
+
+function validRoomCode(value) {
+  const code = String(value || "").trim().toUpperCase();
+  return /^EGD-[A-Z2-9]{6}$/.test(code) ? code : "";
+}
+
+async function accountReady() {
+  if (!isConnected()) return false;
+  try {
+    const response = await fetch(`/api/profile/${playerId()}`);
+    if (response.status === 401) {
+      saveSession(null);
+      noteAdmin(null);
+      paintUserChip();
+      return false;
+    }
+    return true;
+  } catch {
+    return isConnected();
+  }
+}
+
+async function claimRoomLink(code) {
+  const room = validRoomCode(code);
+  if (!room) return;
+  pendingRoom = room;
+  if (!(await accountReady())) {
+    openAuth();
+    return;
+  }
+  enterSharedRoom();
+}
+
+async function enterSharedRoom() {
+  const code = pendingRoom;
+  if (!code || !(await accountReady())) {
+    if (code) openAuth();
+    return;
+  }
+  const name = loadProfile().name || "";
+  if ($("join-name")) $("join-name").value = name;
+  if ($("join-code")) $("join-code").value = code;
+  const res = await joinRoom(code, app.prefs.p2Color);
+  if (!res?.ok) {
+    const lead = $("online-lead");
+    if (lead) {
+      lead.hidden = false;
+      lead.textContent = "Une invitation est prête. Entre le code, puis rejoins.";
+    }
+    show("screen-online");
+    return;
+  }
+  pendingRoom = "";
+  const url = new URL(location.href);
+  url.searchParams.delete("room");
+  history.replaceState(history.state, "", `${url.pathname}${url.search}${url.hash}`);
 }
 
 function showAuthError(message) {
@@ -2839,6 +3813,7 @@ function finishAuth(profile) {
   pullProfile();
   pullHistory();
   if (!$("screen-profile").hidden) fillProfileForm(loadProfile());
+  if (pendingRoom) enterSharedRoom();
 }
 
 async function submitAuth(event) {
@@ -3010,6 +3985,10 @@ function bind() {
   });
   document.addEventListener("keydown", (event) => {
     if (event.key !== "Escape") return;
+    if (!$("rank-card").hidden) {
+      $("rank-card").hidden = true;
+      return;
+    }
     if (!$("app-dialog").hidden) {
       $("app-dialog").hidden = true;
       return;
@@ -3102,6 +4081,16 @@ function bind() {
   $("go-progress").addEventListener("click", openProgress);
   $("go-badges").addEventListener("click", openBadges);
   $("go-rank").addEventListener("click", () => show("screen-rank"));
+  const openRankCard = (event) => {
+    const host = event.target.closest("[data-player]");
+    if (host?.dataset.player) showPlayerCard(host.dataset.player);
+  };
+  $("rank-top").addEventListener("click", openRankCard);
+  $("rank-list").addEventListener("click", openRankCard);
+  $("rank-card").addEventListener("click", (event) => {
+    if (event.target === $("rank-card")) $("rank-card").hidden = true;
+  });
+  $("rank-card-close").addEventListener("click", () => { $("rank-card").hidden = true; });
   $("rank-general").addEventListener("click", () => selectRank("general"));
   $("rank-online").addEventListener("click", () => selectRank("online"));
   $("rank-me").addEventListener("click", scrollToMyRank);
@@ -3202,13 +4191,25 @@ function bind() {
     joinRoom(code, app.prefs.p2Color);
   });
   $("copy-code").addEventListener("click", () => copyText(app.roomCode || $("lobby-code").textContent));
-  $("lobby-cancel").addEventListener("click", () => leaveOnlineScreen());
+  $("copy-link").addEventListener("click", copyRoomLink);
+  $("lobby-cancel").addEventListener("click", () => confirmLeave(() => {
+    allowLeave = true;
+    leaveOnlineScreen();
+  }, true));
   $("lobby-present").addEventListener("click", () => sendInRoom("present"));
-  $("lobby-accept").addEventListener("click", () => sendInRoom("accept"));
   $("lobby-launch").addEventListener("click", () => sendInRoom("launch"));
   $("chat-open").addEventListener("click", () => toggleChat());
   $("chat-close").addEventListener("click", () => toggleChat(false));
+  $("chat-mate").addEventListener("click", () => openSeatCard(otherSeat()));
+  for (const card of document.querySelectorAll(".player")) {
+    card.addEventListener("click", () => openSeatCard(card.id === "p1-card" ? 1 : 0));
+  }
   $("chat-form").addEventListener("submit", sendChat);
+  $("chat-voice").addEventListener("click", () => { toggleVoice(); });
+  $("voice-done").addEventListener("click", () => { toggleVoice(); });
+  $("voice-cancel").addEventListener("click", cancelVoice);
+  $("voice-hear").addEventListener("click", hearVoiceDraft);
+  $("voice-send").addEventListener("click", sendVoiceDraft);
   $("find-back").addEventListener("click", () => {
     if (history.state?.page === "find") history.back();
     else show("screen-modes", "replace");
@@ -3291,28 +4292,24 @@ function bind() {
   new ResizeObserver(() => app.board.resize()).observe($("board").parentElement);
 
   const params = new URLSearchParams(location.search);
-  const room = params.get("room");
-  const resumed = !room && resumeSavedRoom();
-  if (room) {
-    $("join-code").value = room.toUpperCase();
-    const lead = $("online-lead");
-    if (lead) {
-      lead.hidden = false;
-      lead.textContent = "Une invitation est prête. Entre le code, puis rejoins.";
-    }
-    show("screen-online");
-  }
+  const room = validRoomCode(params.get("room"));
+  const sameRoom = room && readRoomSnap()?.code === room;
+  const resumed = (!room || sameRoom) && resumeSavedRoom();
+  if (room && !sameRoom) claimRoomLink(room);
+  const kept = !resumed && !room && restoreMatch();
 
   const opened = (location.hash || "#home").slice(1);
   const first = resumed
     ? (readRoomSnap()?.playing ? "game" : "lobby")
-    : (SCREEN_BY_PAGE[opened] ? opened : "home");
+    : kept
+      ? "game"
+      : (SCREEN_BY_PAGE[opened] ? opened : "home");
   history.replaceState(
     { page: first, ...(first === "lobby" || (first === "game" && resumed) ? { flow: "online" } : {}) },
     "",
     first === "home" ? `${location.pathname}${location.search}` : `${location.pathname}${location.search}#${first}`,
   );
-  if (!resumed && !room) {
+  if (!resumed && !room && !kept) {
     if (first === "history") renderHistory();
     if (first === "game") {
       if (!restoreMatch()) show("screen-home", "replace");
@@ -3324,7 +4321,27 @@ function bind() {
       show(SCREEN_BY_PAGE[first], "skip");
     }
   }
+  window.addEventListener("beforeunload", (event) => {
+    if (!inLiveMatch()) return;
+    event.preventDefault();
+    event.returnValue = "";
+  });
   window.addEventListener("popstate", (event) => {
+    if ((inLiveMatch() || inOpenLobby()) && !allowLeave) {
+      const page = inLiveMatch() ? "game" : "lobby";
+      history.pushState(
+        { page, ...(app.mode === "online" ? { flow: "online" } : {}) },
+        "",
+        `${location.pathname}${location.search}#${page}`,
+      );
+      confirmLeave(() => {
+        allowLeave = true;
+        if (page === "lobby") leaveOnlineScreen();
+        else goHome();
+      }, page === "lobby");
+      return;
+    }
+    if (allowLeave) allowLeave = false;
     const page = event.state?.page || "home";
     if (page !== "lobby" && page !== "game" && (app.mode === "online" || sessionStorage.getItem("egmon-room"))) {
       dropOnlineRoom();
@@ -3374,6 +4391,7 @@ function bind() {
   });
   restoreAccount();
   connectSocket().then(() => announcePresence()).catch(() => {});
+  window.addEventListener("pagehide", () => saveMatch());
   requestAnimationFrame(loop);
   window.egmonApp = app;
 }

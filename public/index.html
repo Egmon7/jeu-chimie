@@ -10,7 +10,7 @@
     [hidden] { display: none !important; }
     body:not(.ready) { visibility: hidden; }
   </style>
-  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="icon" href="img/logo-jeu.jpg" type="image/jpeg">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,560;9..144,680&family=Outfit:wght@380;500;640&display=swap" rel="stylesheet">
@@ -19,13 +19,7 @@
 <body data-theme="classic" data-page="home">
   <header class="topbar">
     <button type="button" class="brand" id="brand">
-        <svg class="mark" viewBox="0 0 64 64" aria-hidden="true">
-        <circle cx="16" cy="16" r="4"/>
-        <circle cx="48" cy="16" r="4"/>
-        <circle cx="48" cy="48" r="4"/>
-        <circle cx="16" cy="48" r="4"/>
-        <circle class="mark-in" cx="32" cy="32" r="4"/>
-      </svg>
+      <img class="mark" src="img/logo-jeu1.png" alt="">
       <span>Jeu - chimie</span>
     </button>
     <p id="user-chip" class="user-chip" hidden>
@@ -43,6 +37,21 @@
         <h1>Jeu - chimie</h1>
         <p class="home-lead">Retrouvez le plaisir des heures d’école, quand une feuille quadrillée et deux stylos suffisaient. Fermez les carrés, et revivez ce moment.</p>
         <button type="button" class="home-cta" id="create-match">Commencez</button>
+        <p class="home-social-lead">Suis-nous et rejoins la communauté.</p>
+        <nav class="home-social" aria-label="Réseaux">
+          <a href="https://www.facebook.com/share/197S7paQEW/?mibextid=wwXIfr" target="_blank" rel="noopener noreferrer" aria-label="Facebook">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M15.12 5.32H17V2.14A26 26 0 0 0 14.26 2C11.54 2 9.68 3.66 9.68 6.7v2.3H7v3.56h2.68V22h3.56v-9.44h2.8l.44-3.56h-3.24V7.05c0-1.03.28-1.73 1.88-1.73z"/></svg>
+          </a>
+          <a href="https://www.instagram.com/jeuchimie.egmon/" target="_blank" rel="noopener noreferrer" aria-label="Instagram">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" fill-rule="evenodd" d="M7 3h10a4 4 0 0 1 4 4v10a4 4 0 0 1-4 4H7a4 4 0 0 1-4-4V7a4 4 0 0 1 4-4zm5 4.4a4.6 4.6 0 1 0 .01 9.2 4.6 4.6 0 0 0-.01-9.2z"/><circle cx="12" cy="12" r="2.15" fill="currentColor"/><circle cx="17.25" cy="6.75" r="1.05" fill="currentColor"/></svg>
+          </a>
+          <a href="https://www.tiktok.com/@jeu.chimie.egmon" target="_blank" rel="noopener noreferrer" aria-label="TikTok">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M19.59 6.69a4.83 4.83 0 0 1-3.77-4.25V2h-3.45v13.67a2.89 2.89 0 0 1-2.88 2.5 2.89 2.89 0 0 1-2.89-2.89 2.89 2.89 0 0 1 2.89-2.89c.28 0 .54.04.79.1V9.01a6.27 6.27 0 0 0-.79-.05 6.34 6.34 0 0 0-6.34 6.34 6.34 6.34 0 0 0 6.34 6.34 6.34 6.34 0 0 0 6.33-6.34V8.69a8.18 8.18 0 0 0 4.77 1.52V6.76a4.85 4.85 0 0 1-1-.07z"/></svg>
+          </a>
+          <a href="https://chat.whatsapp.com/JoIu4RFcxdkFKoFIxvBkIP" target="_blank" rel="noopener noreferrer" aria-label="Communauté WhatsApp">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12.04 2C6.58 2 2.15 6.4 2.15 11.83c0 1.74.46 3.44 1.34 4.94L2 22l5.39-1.4a10 10 0 0 0 4.65 1.18h.01c5.46 0 9.89-4.4 9.89-9.83C21.94 6.4 17.5 2 12.04 2zm5.76 13.88c-.24.68-1.4 1.3-1.94 1.38-.5.08-1.12.11-1.81-.11-.42-.14-.95-.31-1.64-.6-2.88-1.24-4.76-4.14-4.9-4.33-.14-.19-1.16-1.54-1.16-2.94s.73-2.08 1-2.37c.24-.27.64-.4.86-.4h.62c.2 0 .46-.07.72.55.27.64.92 2.22.99 2.38.08.16.13.35.03.56-.1.22-.15.35-.3.54-.14.19-.3.42-.43.56-.14.16-.29.33-.12.63.16.3.73 1.2 1.56 1.94 1.08.96 1.98 1.26 2.28 1.4.3.14.47.12.65-.07.18-.2.76-.88.96-1.18.2-.3.4-.25.67-.15.27.1 1.72.81 2.02.96.29.14.49.22.56.34.07.12.07.7-.17 1.38z"/></svg>
+          </a>
+        </nav>
       </div>
     </section>
 
@@ -358,10 +367,10 @@
         <div id="lobby-seats" class="lobby-seats"></div>
         <div class="lobby-actions" id="lobby-share">
           <button type="button" class="btn slim" id="copy-code">Copier le code</button>
+          <button type="button" class="btn slim" id="copy-link">Copier le lien</button>
         </div>
         <div class="lobby-actions">
           <button type="button" class="btn slim" id="lobby-present" aria-pressed="false">Je suis là</button>
-          <button type="button" class="btn slim" id="lobby-accept" hidden>J’accepte</button>
           <button type="button" class="btn slim primary" id="lobby-launch" hidden>Lancer</button>
           <button type="button" class="btn slim" id="lobby-cancel">Quitter</button>
         </div>
@@ -396,14 +405,38 @@
               </div>
             </div>
             <div id="reaction-stage" class="reaction-stage" aria-hidden="true"></div>
+            <p id="chat-note" class="chat-note" hidden></p>
             <div id="chat-panel" class="chat-panel" hidden>
               <div class="chat-head">
-                <strong>Discussion</strong>
+                <div class="chat-id">
+                  <button type="button" id="chat-mate" class="chat-mate">Discussion</button>
+                  <p class="chat-mate-hint">Cliquer sur le nom pour voir les infos</p>
+                </div>
                 <button type="button" class="chat-close" id="chat-close" aria-label="Fermer la discussion">×</button>
               </div>
+              <div id="mate-card" class="mate-card" hidden></div>
               <div id="chat-log" class="chat-log"></div>
+              <div id="voice-stage" class="voice-stage" hidden>
+                <button type="button" class="chat-audio-btn" id="voice-cancel" aria-label="Annuler">×</button>
+                <div class="voice-bars" id="voice-bars" aria-hidden="true"></div>
+                <span id="voice-time" class="chat-audio-time">0:00</span>
+                <button type="button" class="chat-audio-btn" id="voice-done" aria-label="Terminer">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7h10v10H7z"/></svg>
+                </button>
+                <button type="button" class="chat-audio-btn" id="voice-hear" aria-label="Écouter" hidden>
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5.5v13l11-6.5-11-6.5z"/></svg>
+                </button>
+                <button type="button" class="chat-send" id="voice-send" aria-label="Envoyer le vocal" hidden>
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.01 21 23 12 2.01 3 2 10l15 2-15 2 .01 7z"/></svg>
+                </button>
+              </div>
               <form id="chat-form" class="chat-form">
                 <input id="chat-input" type="text" maxlength="200" placeholder="Écris un message" autocomplete="off" enterkeyhint="send">
+                <button type="button" class="chat-voice" id="chat-voice" aria-label="Message vocal" aria-pressed="false">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V20H9v2h6v-2h-2v-2.08A7 7 0 0 0 19 11h-2z"/>
+                  </svg>
+                </button>
                 <button type="submit" class="chat-send" aria-label="Envoyer">
                   <svg viewBox="0 0 24 24" aria-hidden="true">
                     <path d="M2.01 21 23 12 2.01 3 2 10l15 2-15 2 .01 7z"/>
@@ -512,6 +545,7 @@
           <button type="button" class="text-btn" id="rank-me">Ma position</button>
         </div>
         <input id="rank-search" type="search" placeholder="Chercher un nom" maxlength="40" autocomplete="off" enterkeyhint="search">
+        <p class="rank-hint">Cliquer sur un nom pour voir les infos.</p>
         <div id="rank-top"></div>
         <ol id="rank-list"></ol>
         <button type="button" class="btn" data-home>Retour</button>
@@ -530,11 +564,19 @@
       <div class="sheet">
         <p class="eyebrow">Carnet</p>
         <h1>Statistiques</h1>
+        <h2 class="stat-title">Général</h2>
         <div class="stats">
           <p><strong id="stat-played">0</strong><span>Parties</span></p>
           <p><strong id="stat-wins">0</strong><span>Victoires</span></p>
           <p><strong id="stat-losses">0</strong><span>Défaites</span></p>
           <p><strong id="stat-draws">0</strong><span>Égalités</span></p>
+        </div>
+        <h2 class="stat-title">En ligne</h2>
+        <div class="stats">
+          <p><strong id="stat-online-played">0</strong><span>Parties</span></p>
+          <p><strong id="stat-online-wins">0</strong><span>Victoires</span></p>
+          <p><strong id="stat-online-losses">0</strong><span>Défaites</span></p>
+          <p><strong id="stat-online-draws">0</strong><span>Égalités</span></p>
         </div>
         <div id="history-list"></div>
         <div class="form-actions">
@@ -551,8 +593,10 @@
         <div class="stats" id="admin-live"></div>
         <h2>Au total</h2>
         <div class="stats" id="admin-stats"></div>
+        <div class="admin-filters" id="admin-filters"></div>
+        <p id="admin-reach" class="admin-reach"></p>
         <div class="admin-block">
-          <h2>Personnes</h2>
+          <h2>Personnes connectées</h2>
           <div id="admin-chart-people" class="admin-chart"></div>
         </div>
         <div class="admin-block">
@@ -577,6 +621,12 @@
       </div>
     </section>
   </main>
+  <div id="rank-card" class="overlay page-dialog" hidden>
+    <div class="dialog rank-card" role="dialog" aria-modal="true" aria-label="Fiche du joueur">
+      <button type="button" class="chat-close rank-card-close" id="rank-card-close" aria-label="Fermer">×</button>
+      <div id="rank-card-body"></div>
+    </div>
+  </div>
   <div id="app-dialog" class="overlay page-dialog" hidden>
     <div class="dialog">
       <p class="eyebrow" id="app-dialog-kicker"></p>

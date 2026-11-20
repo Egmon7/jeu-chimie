@@ -99,7 +99,35 @@ export async function initDb() {
     )
   `);
   await pool.query("CREATE INDEX IF NOT EXISTS sessions_player ON sessions (player_id)");
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS visits (
+      player_id uuid NOT NULL,
+      day date NOT NULL,
+      PRIMARY KEY (player_id, day)
+    )
+  `);
+  await pool.query("CREATE INDEX IF NOT EXISTS visits_day ON visits (day)");
+  await pool.query(`
+    INSERT INTO visits (player_id, day)
+    SELECT DISTINCT player_id, (played_at AT TIME ZONE 'Europe/Paris')::date FROM games
+    ON CONFLICT DO NOTHING
+  `);
+  await pool.query(`
+    INSERT INTO visits (player_id, day)
+    SELECT DISTINCT player_id, (created_at AT TIME ZONE 'Europe/Paris')::date FROM sessions
+    ON CONFLICT DO NOTHING
+  `);
   ready = true;
+}
+
+export async function recordVisit(playerId) {
+  if (!pool || !isUuid(playerId)) return;
+  await pool.query(
+    `INSERT INTO visits (player_id, day)
+     VALUES ($1, (now() AT TIME ZONE 'Europe/Paris')::date)
+     ON CONFLICT DO NOTHING`,
+    [playerId],
+  );
 }
 
 export async function upsertProfile({ id, name, email, icon, photo }) {
@@ -269,6 +297,34 @@ export async function insertGame(playerId, entry) {
   );
 }
 
+export async function gameStats(playerId) {
+  const blank = () => ({ played: 0, wins: 0, losses: 0, draws: 0 });
+  const { rows } = await pool.query(
+    `SELECT mode,
+       COUNT(*)::int AS played,
+       COUNT(*) FILTER (WHERE user_seat IN (0, 1) AND winner = user_seat::text)::int AS wins,
+       COUNT(*) FILTER (WHERE winner = 'draw')::int AS draws,
+       COUNT(*) FILTER (WHERE user_seat IN (0, 1) AND winner <> 'draw' AND winner <> user_seat::text)::int AS losses
+     FROM games
+     WHERE player_id = $1
+     GROUP BY mode`,
+    [playerId],
+  );
+  const general = blank();
+  const online = blank();
+  for (const row of rows) {
+    const add = (target) => {
+      target.played += Number(row.played) || 0;
+      target.wins += Number(row.wins) || 0;
+      target.losses += Number(row.losses) || 0;
+      target.draws += Number(row.draws) || 0;
+    };
+    add(general);
+    if (row.mode === "online") add(online);
+  }
+  return { general, online };
+}
+
 export async function listGames(playerId) {
   const { rows } = await pool.query(
     `SELECT id, played_at, mode, sheet, names, scores, winner, user_seat, reason, difficulty, duration_ms, behind, clean
@@ -319,14 +375,13 @@ export async function adminOverview() {
   const { rows: days } = await pool.query(`
     WITH series AS (
       SELECT generate_series(
-        ((now() AT TIME ZONE 'Europe/Paris')::date - 13),
+        ((now() AT TIME ZONE 'Europe/Paris')::date - 30),
         (now() AT TIME ZONE 'Europe/Paris')::date,
         interval '1 day'
       )::date AS day
     )
     SELECT series.day::text AS day,
-      (SELECT COUNT(*)::int FROM profiles p
-        WHERE (p.created_at AT TIME ZONE 'Europe/Paris')::date <= series.day) AS people,
+      (SELECT COUNT(*)::int FROM visits v WHERE v.day = series.day) AS connected,
       (SELECT COUNT(*)::int FROM games g
         WHERE (g.played_at AT TIME ZONE 'Europe/Paris')::date = series.day) AS games,
       (SELECT COUNT(*)::int FROM (
@@ -340,6 +395,18 @@ export async function adminOverview() {
       ) matches) AS online
     FROM series
     ORDER BY series.day
+  `);
+  const { rows: reachRows } = await pool.query(`
+    WITH today AS (
+      SELECT (now() AT TIME ZONE 'Europe/Paris')::date AS day
+    )
+    SELECT
+      (SELECT COUNT(*)::int FROM visits v, today t WHERE v.day = t.day) AS today,
+      (SELECT COUNT(*)::int FROM visits v, today t WHERE v.day = t.day - 1) AS yesterday,
+      (SELECT COUNT(DISTINCT v.player_id)::int FROM visits v, today t WHERE v.day BETWEEN t.day - 6 AND t.day) AS week,
+      (SELECT COUNT(DISTINCT v.player_id)::int FROM visits v, today t
+        WHERE v.day >= date_trunc('month', t.day)::date AND v.day <= t.day) AS month,
+      (SELECT COUNT(DISTINCT v.player_id)::int FROM visits v, today t WHERE v.day BETWEEN t.day - 29 AND t.day) AS days30
   `);
   const { rows: players } = await pool.query(`
     SELECT p.name, p.email,
@@ -365,9 +432,16 @@ export async function adminOverview() {
     onlineRows: Number(count.online_rows) || 0,
     online: Number(onlineRows[0]?.online) || 0,
     messages: Number(count.messages) || 0,
+    reach: {
+      today: Number(reachRows[0]?.today) || 0,
+      yesterday: Number(reachRows[0]?.yesterday) || 0,
+      week: Number(reachRows[0]?.week) || 0,
+      month: Number(reachRows[0]?.month) || 0,
+      days30: Number(reachRows[0]?.days30) || 0,
+    },
     days: days.map((row) => ({
       day: row.day,
-      people: Number(row.people) || 0,
+      connected: Number(row.connected) || 0,
       games: Number(row.games) || 0,
       online: Number(row.online) || 0,
     })),
@@ -402,8 +476,8 @@ export async function progressOf(playerId) {
             ELSE g.scores ->> g.user_seat::text
           END)::int AS houses,
          CASE g.difficulty
-           WHEN 'easy' THEN 2 WHEN 'medium' THEN 3 WHEN 'hard' THEN 5
-           WHEN 'veryhard' THEN 7 WHEN 'expert' THEN 10 ELSE 3
+           WHEN 'easy' THEN 7 WHEN 'medium' THEN 8 WHEN 'hard' THEN 9
+           WHEN 'veryhard' THEN 10 WHEN 'expert' THEN 10 ELSE 8
          END AS per_house,
          CASE WHEN g.winner = g.user_seat::text THEN 15 ELSE 0 END AS win_bonus,
          g.duration_ms,
@@ -425,7 +499,7 @@ export async function progressOf(playerId) {
           END) ~ '^[0-9]+$'
      )
      SELECT COALESCE(p.name, '') AS name,
-       (COALESCE(SUM(20 + houses * per_house + win_bonus), 0)
+       (COALESCE(SUM(15 + houses * per_house + win_bonus), 0)
         + COALESCE((SELECT
             (CASE WHEN bool_or(duration_ms BETWEEN 1000 AND 480000) THEN 40 ELSE 0 END)
             + (CASE WHEN bool_or(clean) THEN 50 ELSE 0 END)
@@ -452,7 +526,7 @@ export async function progressOf(playerId) {
        COALESCE(MAX(houses), 0)::int AS best,
        COUNT(houses)::int AS games,
        COALESCE(SUM(CASE WHEN win_bonus > 0 THEN 1 ELSE 0 END), 0)::int AS wins,
-       COALESCE(SUM(CASE WHEN win_bonus > 0 AND per_house = 10 THEN 1 ELSE 0 END), 0)::int AS expert_wins
+       COALESCE(SUM(CASE WHEN win_bonus > 0 AND difficulty = 'expert' THEN 1 ELSE 0 END), 0)::int AS expert_wins
      FROM (SELECT $1::uuid AS id) me
      LEFT JOIN profiles p ON p.id = me.id
      LEFT JOIN per_game ON true
@@ -460,19 +534,57 @@ export async function progressOf(playerId) {
     [playerId],
   );
   const row = rows[0] || {};
+  const online = await onlineTotals(playerId);
   return {
     name: row.name || "",
+    xp: (Number(row.xp) || 0) + online.xp,
+    houses: (Number(row.houses) || 0) + online.houses,
+    best: Math.max(Number(row.best) || 0, online.best),
+    games: (Number(row.games) || 0) + online.games,
+    wins: (Number(row.wins) || 0) + online.wins,
+    expertWins: Number(row.expert_wins) || 0,
+  };
+}
+
+async function onlineTotals(playerId) {
+  const { rows } = await pool.query(
+    `SELECT
+       COALESCE(SUM(15 + houses * 9 + win_bonus), 0)::int AS xp,
+       COALESCE(SUM(houses), 0)::int AS houses,
+       COALESCE(MAX(houses), 0)::int AS best,
+       COUNT(houses)::int AS games,
+       COALESCE(SUM(CASE WHEN win_bonus > 0 THEN 1 ELSE 0 END), 0)::int AS wins
+     FROM (
+       SELECT
+         (CASE
+            WHEN jsonb_typeof(scores) = 'array' THEN scores ->> user_seat
+            ELSE scores ->> user_seat::text
+          END)::int AS houses,
+         CASE WHEN winner = user_seat::text THEN 15 ELSE 0 END AS win_bonus
+       FROM games
+       WHERE player_id = $1
+         AND mode = 'online'
+         AND user_seat IN (0, 1)
+         AND (CASE
+            WHEN jsonb_typeof(scores) = 'array' THEN scores ->> user_seat
+            ELSE scores ->> user_seat::text
+          END) ~ '^[0-9]+$'
+     ) played`,
+    [playerId],
+  );
+  const row = rows[0] || {};
+  return {
     xp: Number(row.xp) || 0,
     houses: Number(row.houses) || 0,
     best: Number(row.best) || 0,
     games: Number(row.games) || 0,
     wins: Number(row.wins) || 0,
-    expertWins: Number(row.expert_wins) || 0,
   };
 }
 
 function packRank(rows) {
   return rows.map((row) => ({
+    id: typeof row.id === "string" ? row.id : "",
     name: row.name,
     icon: row.icon,
     photo: typeof row.photo === "string" && row.photo.startsWith("https://res.cloudinary.com/ka4h4lpk/") ? row.photo : "",
@@ -498,12 +610,12 @@ export async function ranking(playerId, board = "general") {
             ELSE g.scores ->> g.user_seat::text
           END)::int AS houses,
          CASE g.difficulty
-           WHEN 'easy' THEN 2
-           WHEN 'medium' THEN 3
-           WHEN 'hard' THEN 5
-           WHEN 'veryhard' THEN 7
+           WHEN 'easy' THEN 7
+           WHEN 'medium' THEN 8
+           WHEN 'hard' THEN 9
+           WHEN 'veryhard' THEN 10
            WHEN 'expert' THEN 10
-           ELSE 3
+           ELSE 8
          END AS per_house,
          CASE WHEN g.winner = g.user_seat::text THEN 15 ELSE 0 END AS win_bonus,
          g.duration_ms,
@@ -551,20 +663,47 @@ export async function ranking(playerId, board = "general") {
        FROM (SELECT player_id, COUNT(*)::int AS len FROM islands GROUP BY player_id, grp) runs
        GROUP BY player_id
      ),
-     scored AS (
-       SELECT p.id, p.name, p.icon, COALESCE(p.photo, '') AS photo,
-         (COALESCE(SUM(20 + houses * per_house + win_bonus), 0)
-          + COALESCE(MAX(flag_xp.xp), 0)
-          + COALESCE(MAX(streak_xp.xp), 0))::int AS xp,
+     online_games AS (
+       SELECT g.player_id,
+         (CASE
+            WHEN jsonb_typeof(g.scores) = 'array' THEN g.scores ->> g.user_seat
+            ELSE g.scores ->> g.user_seat::text
+          END)::int AS houses,
+         CASE WHEN g.winner = g.user_seat::text THEN 15 ELSE 0 END AS win_bonus
+       FROM games g
+       WHERE g.mode = 'online'
+         AND g.user_seat IN (0, 1)
+         AND (CASE
+            WHEN jsonb_typeof(g.scores) = 'array' THEN g.scores ->> g.user_seat
+            ELSE g.scores ->> g.user_seat::text
+          END) ~ '^[0-9]+$'
+     ),
+     online_xp AS (
+       SELECT player_id,
+         COALESCE(SUM(15 + houses * 9 + win_bonus), 0)::int AS xp,
          COALESCE(SUM(houses), 0)::int AS houses,
          COALESCE(MAX(houses), 0)::int AS best,
-         COUNT(pg.player_id)::int AS games,
-         COALESCE(SUM(CASE WHEN win_bonus > 0 THEN 1 ELSE 0 END), 0)::int AS wins,
-         COALESCE(SUM(CASE WHEN win_bonus > 0 AND per_house = 10 THEN 1 ELSE 0 END), 0)::int AS expert_wins
+         COUNT(*)::int AS games,
+         COALESCE(SUM(CASE WHEN win_bonus > 0 THEN 1 ELSE 0 END), 0)::int AS wins
+       FROM online_games
+       GROUP BY player_id
+     ),
+     scored AS (
+       SELECT p.id, p.name, p.icon, COALESCE(p.photo, '') AS photo,
+         (COALESCE(SUM(15 + pg.houses * pg.per_house + pg.win_bonus), 0)
+          + COALESCE(MAX(flag_xp.xp), 0)
+          + COALESCE(MAX(streak_xp.xp), 0)
+          + COALESCE(MAX(ox.xp), 0))::int AS xp,
+         (COALESCE(SUM(pg.houses), 0) + COALESCE(MAX(ox.houses), 0))::int AS houses,
+         GREATEST(COALESCE(MAX(pg.houses), 0), COALESCE(MAX(ox.best), 0))::int AS best,
+         (COUNT(pg.player_id) + COALESCE(MAX(ox.games), 0))::int AS games,
+         (COALESCE(SUM(CASE WHEN pg.win_bonus > 0 THEN 1 ELSE 0 END), 0) + COALESCE(MAX(ox.wins), 0))::int AS wins,
+         COALESCE(SUM(CASE WHEN pg.win_bonus > 0 AND pg.difficulty = 'expert' THEN 1 ELSE 0 END), 0)::int AS expert_wins
        FROM profiles p
        LEFT JOIN per_game pg ON pg.player_id = p.id
        LEFT JOIN flag_xp ON flag_xp.player_id = p.id
        LEFT JOIN streak_xp ON streak_xp.player_id = p.id
+       LEFT JOIN online_xp ox ON ox.player_id = p.id
        GROUP BY p.id
      ),
      ranked AS (
@@ -572,7 +711,7 @@ export async function ranking(playerId, board = "general") {
               COUNT(*) OVER () AS people
        FROM scored
      )
-     SELECT name, icon, photo, xp, houses, best, games, wins, expert_wins, rank, people, (id = $1) AS you
+     SELECT id, name, icon, photo, xp, houses, best, games, wins, expert_wins, rank, people, (id = $1) AS you
      FROM ranked
      ORDER BY rank`,
     [playerId],
@@ -599,14 +738,14 @@ async function onlineRanking(playerId) {
      ),
      scored AS (
        SELECT p.id, p.name, p.icon, COALESCE(p.photo, '') AS photo,
-         COALESCE(SUM(20 + houses * 3 + win_bonus), 0)::int AS xp,
+         COALESCE(SUM(15 + houses * 9 + win_bonus), 0)::int AS xp,
          COALESCE(SUM(houses), 0)::int AS houses,
          COALESCE(MAX(houses), 0)::int AS best,
          COUNT(pg.player_id)::int AS games,
          COALESCE(SUM(CASE WHEN win_bonus > 0 THEN 1 ELSE 0 END), 0)::int AS wins,
          0::int AS expert_wins
        FROM profiles p
-       LEFT JOIN per_game pg ON pg.player_id = p.id
+       JOIN per_game pg ON pg.player_id = p.id
        GROUP BY p.id
      ),
      ranked AS (
@@ -614,10 +753,54 @@ async function onlineRanking(playerId) {
               COUNT(*) OVER () AS people
        FROM scored
      )
-     SELECT name, icon, photo, xp, houses, best, games, wins, expert_wins, rank, people, (id = $1) AS you
+     SELECT id, name, icon, photo, xp, houses, best, games, wins, expert_wins, rank, people, (id = $1) AS you
      FROM ranked
      ORDER BY rank`,
     [playerId],
   );
   return packRank(rows);
+}
+
+export async function playerCard(targetId, viewerId) {
+  const profile = await readProfile(targetId);
+  if (!profile?.name) return null;
+  const [general, online, together, stats] = await Promise.all([
+    ranking(targetId, "general"),
+    ranking(targetId, "online"),
+    gamesTogether(viewerId, targetId),
+    gameStats(targetId),
+  ]);
+  const mine = (rows) => rows.find((row) => row.you) || null;
+  const g = mine(general);
+  const o = mine(online);
+  const photo = typeof profile.photo === "string" && profile.photo.startsWith("https://res.cloudinary.com/ka4h4lpk/") ? profile.photo : "";
+  return {
+    name: profile.name,
+    photo,
+    games: g?.games || 0,
+    together,
+    houses: g?.houses || 0,
+    best: g?.best || 0,
+    wins: g?.wins || 0,
+    expertWins: g?.expertWins || 0,
+    general: g ? { xp: g.xp, rank: g.rank, people: g.people } : null,
+    online: o ? { xp: o.xp, rank: o.rank, people: o.people, games: o.games, wins: o.wins, houses: o.houses, best: o.best } : null,
+    stats,
+  };
+}
+
+async function gamesTogether(viewerId, targetId) {
+  if (!isUuid(viewerId) || !isUuid(targetId) || viewerId === targetId) return 0;
+  const { rows } = await pool.query(
+    `SELECT COUNT(*)::int AS games
+     FROM games mine
+     JOIN games theirs
+       ON theirs.played_at = mine.played_at
+      AND theirs.mode = 'online'
+      AND mine.mode = 'online'
+      AND theirs.player_id = $2
+     WHERE mine.player_id = $1`,
+    [viewerId, targetId],
+  );
+  return Number(rows[0]?.games) || 0;
 }
