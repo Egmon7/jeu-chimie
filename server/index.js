@@ -46,7 +46,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const httpServer = createServer(app);
 const io = new Server(httpServer, {
-  maxHttpBufferSize: 700_000,
+  maxHttpBufferSize: 3_000_000,
   allowRequest(req, callback) {
     const origin = req.headers.origin;
     if (!origin) return callback(null, true);
@@ -770,12 +770,27 @@ function seated(socketId) {
   return seat >= 0 && room.players[seat]?.socketId === socketId;
 }
 
+function roomPhase(socketId) {
+  const socket = io.sockets.sockets.get(socketId);
+  if (!socket?.data.roomCode) return "";
+  const room = rooms.get(socket.data.roomCode);
+  if (!room) return "";
+  const seat = seatOf(room, socket.data.playerId);
+  if (seat < 0 || room.players[seat]?.socketId !== socketId) return "";
+  if (room.game?.status === "playing") return "playing";
+  if (room.game?.status === "finished") return "finished";
+  return "waiting";
+}
+
 function accountBusy(item) {
   if (!item) return false;
   for (const other of presence.values()) {
     const same = other.socketId === item.socketId || (item.id && other.id === item.id);
     if (!same) continue;
-    if (other.busy === true || seated(other.socketId)) return true;
+    const phase = roomPhase(other.socketId);
+    if (phase === "playing" || phase === "waiting") return true;
+    if (phase === "finished") continue;
+    if (other.busy === true) return true;
   }
   return false;
 }
@@ -793,13 +808,17 @@ function findPeople(except) {
   }
   return [...byId.values()]
     .map((item) => {
-      const seatedNow = seated(item.socketId);
-      const activity = seatedNow ? "duo" : (item.activity === "robot" || item.activity === "duo" ? item.activity : "");
+      const phase = roomPhase(item.socketId);
+      const activity = phase === "playing" || phase === "waiting"
+        ? "duo"
+        : phase === "finished"
+          ? ""
+          : (item.activity === "robot" || item.activity === "duo" ? item.activity : "");
       return {
         token: item.token,
         name: item.name,
         photo: item.photo,
-        busy: accountBusy(item) || activity !== "",
+        busy: phase === "finished" ? false : accountBusy(item) || activity !== "",
         activity,
       };
     })
@@ -869,25 +888,30 @@ function createBlocked(socket) {
 function liveSnapshot() {
   reapRooms();
   const people = new Set();
+  let robotPlayers = 0;
   for (const item of presence.values()) {
     if (item?.id) people.add(item.id);
+    if (item?.activity === "robot") robotPlayers += 1;
   }
-  let playing = 0;
+  let onlinePlayers = 0;
   let playingRooms = 0;
   let waitingRooms = 0;
   for (const room of rooms.values()) {
     if (room.game?.status === "playing") {
       playingRooms += 1;
-      playing += room.players.filter((player) => player?.connected).length;
+      onlinePlayers += room.players.filter((player) => player).length;
     } else if (!room.game) {
       waitingRooms += 1;
     }
   }
   return {
     connected: people.size,
-    playing,
+    playing: onlinePlayers + robotPlayers,
+    onlinePlayers,
+    robotPlayers,
     playingRooms,
     waitingRooms,
+    matches: playingRooms + robotPlayers,
     rooms: rooms.size,
   };
 }
@@ -1076,7 +1100,7 @@ socket.on("chat", (text) => {
 
 function cleanVoice(value) {
   const audio = String(value || "").replace(/\s/g, "");
-  if (audio.length < 80 || audio.length > 560000) return "";
+  if (audio.length < 80 || audio.length > 2_500_000) return "";
   if (!/^data:(audio|video)\/[a-z0-9.+-]+[^,]*,[A-Za-z0-9+/=]+$/.test(audio)) return "";
   return audio;
 }
@@ -1085,7 +1109,7 @@ socket.on("voice", (payload) => {
   const body = payload && typeof payload === "object" ? payload : { audio: payload };
   const clip = cleanVoice(body.audio);
   const id = String(body.id || "").replace(/[^a-zA-Z0-9-]/g, "").slice(0, 40);
-  const seconds = Math.max(0, Math.min(12, Math.round(Number(body.seconds) || 0)));
+  const seconds = Math.max(0, Math.min(600, Math.round(Number(body.seconds) || 0)));
   if (!clip || !id || limited(`${socket.id}:voice`, 6, 60_000)) return;
   const found = liveRoom(socket);
   if (!found?.room.game || found.room.game.status === "waiting") return;

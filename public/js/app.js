@@ -1536,6 +1536,9 @@ function showOverlay({ kicker, title, text, actions, note = false, celebrate = f
 function canPlay() {
   if (app.tracing) return false;
   if ($("game-overlay") && !$("game-overlay").hidden) return false;
+  if ($("chat-panel") && !$("chat-panel").hidden) return false;
+  if ($("app-dialog") && !$("app-dialog").hidden) return false;
+  if ($("rank-card") && !$("rank-card").hidden) return false;
   if (!app.game || app.game.status !== "playing" || app.paused || app.inputLock) return false;
   if (app.game.settings.timeMode === "global" && remaining("global") <= 0) return false;
   if (app.mode === "online") return app.seat === app.game.current;
@@ -2100,16 +2103,18 @@ async function wavBlob(blob, rate) {
 }
 
 async function clipFromTake(blob) {
+  const asIs = voiceClip(await readDataUrl(blob));
+  if (asIs && blob.size <= 900000) return { audio: asIs, blob };
   const pack = async (rate) => {
     const wav = await wavBlob(blob, rate);
+    if (wav.size > 1_800_000) return null;
     const audio = voiceClip(await readDataUrl(wav));
     return audio ? { audio, blob: wav } : null;
   };
   try {
-    return (await pack(16000)) || (await pack(8000));
+    return (await pack(8000)) || (await pack(16000));
   } catch {
-    const audio = voiceClip(await readDataUrl(blob));
-    return audio ? { audio, blob } : null;
+    return asIs ? { audio: asIs, blob } : null;
   }
 }
 
@@ -2139,7 +2144,7 @@ function rememberVoice(id, blob) {
 function voiceBubble(clip, seconds, voiceId) {
   const box = document.createElement("div");
   box.className = "chat-audio";
-  const known = Math.max(0, Math.min(12, Math.round(Number(seconds) || 0)));
+  const known = Math.max(0, Math.min(600, Math.round(Number(seconds) || 0)));
   const sound = document.createElement("audio");
   sound.preload = "auto";
   sound.setAttribute("playsinline", "");
@@ -2153,13 +2158,13 @@ function voiceBubble(clip, seconds, voiceId) {
   play.innerHTML = VOICE_PLAY;
   const bars = document.createElement("div");
   bars.className = "voice-bars";
-  voiceBars(bars, 16);
+  voiceBars(bars, 12);
   const time = document.createElement("span");
   time.className = "chat-audio-time";
   time.textContent = voiceClock(known);
   const length = () => {
     const real = sound.duration;
-    if (Number.isFinite(real) && real > 0 && real < 60) return real;
+    if (Number.isFinite(real) && real > 0 && real < 3600) return real;
     return known;
   };
   const paint = () => {
@@ -2210,7 +2215,7 @@ function voiceBubble(clip, seconds, voiceId) {
 
 function voiceClip(value) {
   const audio = String(value || "").replace(/\s/g, "");
-  if (audio.length < 80 || audio.length > 560000) return "";
+  if (audio.length < 80 || audio.length > 2_500_000) return "";
   return /^data:(audio|video)\/[a-z0-9.+-]+[^,]*,[A-Za-z0-9+/=]+$/.test(audio) ? audio : "";
 }
 
@@ -2256,7 +2261,7 @@ function showVoiceStage(live) {
   const form = $("chat-form");
   if (!stage || !form) return;
   const bars = $("voice-bars");
-  if (bars && !bars.children.length) voiceBars(bars, 18);
+  if (bars && !bars.children.length) voiceBars(bars, 12);
   stage.hidden = false;
   stage.classList.toggle("is-live", live);
   form.hidden = true;
@@ -2337,15 +2342,15 @@ function finishVoice(rec) {
     hideVoiceStage();
     return;
   }
-  if (blob.size > 48000) {
+  if (blob.size > 1_200_000) {
     hideVoiceStage();
-    toast("Le vocal est trop long.");
+    toast("Le vocal est trop lourd.");
     return;
   }
   clipFromTake(blob).then((taken) => {
     if (!taken?.audio) {
       hideVoiceStage();
-      toast("Le vocal est trop long.");
+      toast("Le vocal n'a pas pu être préparé.");
       return;
     }
     voiceDraft = taken.audio;
@@ -2362,7 +2367,7 @@ function finishVoice(rec) {
     voicePreview.addEventListener("loadedmetadata", () => {
       const time = $("voice-time");
       const real = voicePreview.duration;
-      if (time) time.textContent = voiceClock(Number.isFinite(real) && real > 0 && real < 60 ? real : seconds);
+      if (time) time.textContent = voiceClock(Number.isFinite(real) && real > 0 && real < 3600 ? real : seconds);
     });
     voicePreview.addEventListener("ended", () => {
       const hear = $("voice-hear");
@@ -2442,15 +2447,12 @@ async function toggleVoice() {
   voiceRec = rec;
   rec.ondataavailable = (event) => { if (event.data?.size) voiceChunks.push(event.data); };
   rec.onstop = () => finishVoice(rec);
-  rec.start();
   setVoiceButton(true);
   showVoiceStage(true);
   startVoiceClock();
-  voiceTimer = setTimeout(() => {
-    if (voiceRec !== rec || rec.state === "inactive") return;
-    voiceRec = null;
-    rec.stop();
-  }, 12000);
+  clearTimeout(voiceTimer);
+  voiceTimer = 0;
+  try { rec.start(1000); } catch { rec.start(); }
 }
 
 function toggleChat(open) {
@@ -2532,6 +2534,15 @@ function openSeatCard(seat) {
   else toast("Pas de fiche pour ce joueur.");
 }
 
+function fitChatInput() {
+  const input = $("chat-input");
+  if (!input) return;
+  input.style.height = "auto";
+  input.style.height = `${Math.min(96, Math.max(36, input.scrollHeight))}px`;
+  const log = $("chat-log");
+  if (log) log.scrollTop = log.scrollHeight;
+}
+
 function sendChat(event) {
   event.preventDefault();
   const input = $("chat-input");
@@ -2543,6 +2554,7 @@ function sendChat(event) {
   }
   appendChat(text, true);
   input.value = "";
+  fitChatInput();
   if (app.mode === "online") app.socket.emit("chat", text);
 }
 
@@ -2576,19 +2588,25 @@ function inLiveMatch() {
   return Boolean(app.game && app.game.status === "playing" && !$("screen-game").hidden);
 }
 
-function inOpenLobby() {
-  return !$("screen-lobby").hidden && (app.mode === "online" || Boolean(sessionStorage.getItem("egmon-room")));
+function holdSurface() {
+  if (!$("screen-game").hidden && app.game) return "game";
+  if (!$("screen-lobby").hidden) return "lobby";
+  if (app.game && app.game.status === "playing") return "game";
+  return "";
 }
 
 function confirmLeave(onYes, lobby = false) {
+  const finished = !lobby && app.game?.status === "finished";
   askDialog({
     kicker: "Quitter",
     title: lobby ? "Quitter la salle ?" : "Quitter la partie ?",
     text: lobby
       ? "Tu vas sortir de la salle."
-      : app.mode === "online"
-        ? "L’adversaire sera déclaré vainqueur."
-        : "La partie en cours sera arrêtée.",
+      : finished
+        ? "Tu restes sur la partie tant que tu n’as pas confirmé."
+        : app.mode === "online"
+          ? "L’adversaire sera déclaré vainqueur."
+          : "La partie en cours sera arrêtée.",
     confirm: "Quitter",
     cancel: "Rester",
     onYes,
@@ -2598,10 +2616,6 @@ function confirmLeave(onYes, lobby = false) {
 function leaveOnlineScreen() {
   dropOnlineRoom();
   hideOverlay();
-  if (history.state?.flow === "online") {
-    history.back();
-    return;
-  }
   allowLeave = false;
   show("screen-modes", "replace");
 }
@@ -2948,6 +2962,7 @@ function onOnlineState(msg) {
   if (!msg.game) {
     renderLobby(msg);
     show("screen-lobby", "replace");
+    announcePresence();
     return;
   }
   const event = msg.event || {};
@@ -2977,6 +2992,7 @@ function onOnlineState(msg) {
       app.inputLock = false;
       if (app.game?.status === "finished") finishOnline();
     }, 240 + (event.result?.completed || 0) * 180);
+    announcePresence();
     return;
   }
   if (event.type === "rematch-wait") {
@@ -2987,6 +3003,7 @@ function onOnlineState(msg) {
     toast("Revanche refusée.");
   }
   if (app.game.status === "finished") finishOnline();
+  else announcePresence();
 }
 
 function tableText(settings) {
@@ -3104,7 +3121,8 @@ function renderFind(people) {
 }
 
 function matchActivity() {
-  if (app.mode === "online" && (app.roomCode || readRoomSnap())) return "duo";
+  if (app.game?.status === "finished") return "";
+  if (app.mode === "online" && (app.game?.status === "playing" || app.roomCode || readRoomSnap())) return "duo";
   if (app.mode === "local" && app.game?.status === "playing") return "duo";
   if (app.mode === "solo" && app.game?.status === "playing") return "robot";
   return "";
@@ -3114,18 +3132,24 @@ function matchBusy() {
   return matchActivity() !== "";
 }
 
+let presenceSent = "";
+
 function announcePresence() {
   const profile = loadProfile();
   const name = (profile.name || "").trim();
   if (!name) return;
+  const activity = matchActivity();
+  const key = `${activity}|${name}|${profile.photo || ""}`;
+  if (presenceSent === key) return;
+  presenceSent = key;
   const send = () => {
     if (!app.socket?.connected) return;
     app.socket.emit("presence", {
       playerId: playerId(),
       name,
       photo: profile.photo || "",
-      busy: matchBusy(),
-      activity: matchActivity(),
+      busy: activity !== "",
+      activity,
     });
   };
   if (app.socket?.connected) send();
@@ -3168,6 +3192,7 @@ async function enterQueue() {
 function finishOnline() {
   recordGame();
   showResult();
+  announcePresence();
 }
 
 async function createOnlineRoom(settings) {
@@ -3343,10 +3368,11 @@ function renderAdmin(data) {
   const live = data.live || {};
   $("admin-live").innerHTML = [
     [live.connected, "Connectés"],
-    [live.playing, "Jouent maintenant"],
-    [live.playingRooms, "Tables en cours"],
+    [live.playing, "Personnes qui jouent"],
+    [live.matches ?? ((Number(live.playingRooms) || 0) + (Number(live.robotPlayers) || 0)), "Parties en cours"],
+    [live.playingRooms, "Matchs en ligne"],
+    [live.robotPlayers, "Matchs robot"],
     [live.waitingRooms, "Tables en attente"],
-    [live.rooms, "Salles ouvertes"],
   ].map(([value, label]) => `<p><strong>${Number(value) || 0}</strong><span>${label}</span></p>`).join("");
   const stats = $("admin-stats");
   const cards = [
@@ -4205,6 +4231,12 @@ function bind() {
     card.addEventListener("click", () => openSeatCard(card.id === "p1-card" ? 1 : 0));
   }
   $("chat-form").addEventListener("submit", sendChat);
+  $("chat-input")?.addEventListener("input", fitChatInput);
+  $("chat-input")?.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" || event.shiftKey) return;
+    event.preventDefault();
+    sendChat(event);
+  });
   $("chat-voice").addEventListener("click", () => { toggleVoice(); });
   $("voice-done").addEventListener("click", () => { toggleVoice(); });
   $("voice-cancel").addEventListener("click", cancelVoice);
@@ -4326,19 +4358,37 @@ function bind() {
     event.preventDefault();
     event.returnValue = "";
   });
+  const viewport = window.visualViewport;
+  if (viewport) {
+    const placeKeyboard = () => {
+      const keyboard = Math.max(0, Math.round(window.innerHeight - viewport.height - viewport.offsetTop));
+      document.documentElement.style.setProperty("--keyboard", `${keyboard}px`);
+      document.body.classList.toggle("keyboard", keyboard > 80);
+      if (keyboard > 80) window.scrollTo(0, 0);
+    };
+    viewport.addEventListener("resize", placeKeyboard);
+    viewport.addEventListener("scroll", placeKeyboard);
+    placeKeyboard();
+  }
+  $("chat-input")?.addEventListener("focus", () => {
+    requestAnimationFrame(() => window.scrollTo(0, 0));
+  });
   window.addEventListener("popstate", (event) => {
-    if ((inLiveMatch() || inOpenLobby()) && !allowLeave) {
-      const page = inLiveMatch() ? "game" : "lobby";
+    const surface = holdSurface();
+    if (surface && !allowLeave) {
       history.pushState(
-        { page, ...(app.mode === "online" ? { flow: "online" } : {}) },
+        { page: surface, ...(app.mode === "online" ? { flow: "online" } : {}) },
         "",
-        `${location.pathname}${location.search}#${page}`,
+        `${location.pathname}${location.search}#${surface}`,
       );
-      confirmLeave(() => {
-        allowLeave = true;
-        if (page === "lobby") leaveOnlineScreen();
-        else goHome();
-      }, page === "lobby");
+      show(surface === "lobby" ? "screen-lobby" : "screen-game", "skip");
+      if ($("app-dialog").hidden) {
+        confirmLeave(() => {
+          allowLeave = true;
+          if (surface === "lobby") leaveOnlineScreen();
+          else goHome();
+        }, surface === "lobby");
+      }
       return;
     }
     if (allowLeave) allowLeave = false;
