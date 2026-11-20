@@ -272,11 +272,35 @@ function winnerOut(value) {
   return n === 0 || n === 1 ? n : "draw";
 }
 
+function jsonBody(value) {
+  if (typeof value === "string") {
+    try {
+      JSON.parse(value);
+      return value;
+    } catch {
+      return JSON.stringify(value);
+    }
+  }
+  return JSON.stringify(value ?? null);
+}
+
 export async function insertGame(playerId, entry) {
-  const winner = entry.winner === "draw" ? "draw" : String(entry.winner);
+  const names = (Array.isArray(entry.names) ? entry.names : [])
+    .slice(0, 2)
+    .map((name) => String(name ?? "").slice(0, 40));
+  const scores = (Array.isArray(entry.scores) ? entry.scores : [])
+    .slice(0, 2)
+    .map((score) => {
+      const n = Number(score);
+      return Number.isFinite(n) ? Math.max(0, Math.trunc(n)) : 0;
+    });
+  while (scores.length < 2) scores.push(0);
+  const winner = entry.winner === 0 || entry.winner === 1 || entry.winner === "0" || entry.winner === "1"
+    ? String(Number(entry.winner))
+    : "draw";
   await pool.query(
     `INSERT INTO games (id, player_id, played_at, mode, sheet, names, scores, winner, user_seat, reason, difficulty, duration_ms, behind, clean)
-     VALUES ($1, $2, to_timestamp($3 / 1000.0), $4, $5, $6::jsonb, $7::jsonb, $8, $9, $10, $11, $12, $13, $14)
+     VALUES ($1, $2, to_timestamp($3 / 1000.0), $4, $5, $6::text::jsonb, $7::text::jsonb, $8, $9, $10, $11, $12, $13, $14)
      ON CONFLICT (id) DO NOTHING`,
     [
       entry.id,
@@ -284,8 +308,8 @@ export async function insertGame(playerId, entry) {
       Number(entry.at) || Date.now(),
       String(entry.mode || "solo").slice(0, 16),
       String(entry.size || "").slice(0, 16),
-      JSON.stringify(entry.names || []),
-      JSON.stringify(entry.scores || []),
+      jsonBody(names),
+      jsonBody(scores),
       winner,
       entry.userSeat === 0 || entry.userSeat === 1 ? entry.userSeat : null,
       entry.reason ? String(entry.reason).slice(0, 24) : null,

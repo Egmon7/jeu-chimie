@@ -3208,12 +3208,7 @@ async function createOnlineRoom(settings) {
   app.holdRejoin = true;
   try {
     await connectSocket();
-    app.socket.emit("leave");
-    let res = await emitAck("create", { playerId: playerId(), name, settings: chosen });
-    if (!res?.ok && res?.error === "Quitte d’abord la salle en cours.") {
-      app.socket.emit("leave");
-      res = await emitAck("create", { playerId: playerId(), name, settings: chosen });
-    }
+    const res = await emitAck("create", { playerId: playerId(), name, settings: chosen });
     if (!res?.ok) toast(res?.error || "La salle n’a pas pu s’ouvrir. Réessaie.");
   } catch {
     toast("La salle n’a pas pu s’ouvrir. Réessaie.");

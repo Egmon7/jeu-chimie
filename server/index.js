@@ -645,9 +645,15 @@ function saveOnlineMatch(room) {
   if (!game || game.status !== "finished" || room.saved || room.saving) return;
   room.saving = true;
   const at = Date.now();
-  const duration = room.startedAt ? Math.max(1, at - room.startedAt) : null;
+  const duration = room.startedAt ? Math.max(1, Math.round(at - room.startedAt)) : null;
   const names = [0, 1].map((seat) => cleanName(room.players[seat]?.name, `Joueur ${seat + 1}`));
-  const scores = [Number(game.scores?.[0]) || 0, Number(game.scores?.[1]) || 0];
+  const scores = [0, 1].map((seat) => {
+    const n = Number(game.scores?.[seat]);
+    return Number.isFinite(n) ? Math.max(0, Math.trunc(n)) : 0;
+  });
+  const winner = game.winner === 0 || game.winner === 1 || game.winner === "0" || game.winner === "1"
+    ? Number(game.winner)
+    : "draw";
   Promise.all([0, 1].map((seat) => {
     const player = room.players[seat];
     if (!isUuid(player?.id)) return null;
@@ -655,14 +661,14 @@ function saveOnlineMatch(room) {
       id: randomUUID(),
       at,
       mode: "online",
-      size: `${game.rows}×${game.cols}`,
+      size: `${Number(game.rows) || 0}x${Number(game.cols) || 0}`,
       names,
       scores,
-      winner: game.winner,
+      winner,
       userSeat: seat,
-      reason: game.reason,
+      reason: game.reason ? String(game.reason).slice(0, 24) : null,
       difficulty: null,
-      durationMs: duration,
+      durationMs: Number.isInteger(duration) ? duration : null,
       behind: false,
       clean: false,
     });
@@ -670,6 +676,7 @@ function saveOnlineMatch(room) {
     room.saved = true;
   }).catch((error) => {
     console.error("Partie en ligne non enregistrée:", error.message);
+    room.saved = false;
   }).finally(() => {
     room.saving = false;
   });
@@ -950,7 +957,7 @@ io.on("connection", (socket) => {
   socket.on("create", (payload = {}, ack) => {
     try {
     payload = asObject(payload);
-    if (liveRoom(socket)) return ack?.({ ok: false, error: "Quitte d’abord la salle en cours." });
+    if (liveRoom(socket)) leaveRoom(socket);
     reapRooms();
     if (rooms.size >= ROOM_LIMIT) return ack?.({ ok: false, error: "Le serveur est plein." });
     if (createBlocked(socket)) return ack?.({ ok: false, error: "Trop de salles créées." });
