@@ -39,7 +39,8 @@ fail() {
 
 keep_newest() {
   local folder=$1 count=$2
-  ls -1t "$folder"/*.dump 2>/dev/null | tail -n +"$((count + 1))" | xargs -r rm -f
+  find "$folder" -maxdepth 1 -type f -name '*.dump' -printf '%T@ %p\n' \
+    | sort -rn | tail -n +"$((count + 1))" | cut -d' ' -f2- | xargs -r rm -f
 }
 
 tmp="$DIR/.en-cours.dump"
