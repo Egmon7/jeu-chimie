@@ -25,6 +25,8 @@ import {
   findAccount,
   findByName,
   findLoginByName,
+  passwordHashOf,
+  hasGames,
   initDb,
   insertGame,
   adminOverview,
@@ -128,7 +130,10 @@ function apiPlayer(req, res) {
 }
 
 const scryptAsync = promisify(scrypt);
-const SCRYPT = { N: 16384, r: 8, p: 1, maxmem: 32 * 1024 * 1024 };
+const SCRYPT_N = 65536;
+const LEGACY_N = 16384;
+const PASSWORD_MIN = 8;
+const PASSWORD_RULE = `Le mot de passe doit avoir au moins ${PASSWORD_MIN} caractères.`;
 const EMAIL_OK = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 function cleanEmail(value) {
@@ -143,19 +148,39 @@ function accountOut(row) {
   return { id: row.id, name: row.name, email: row.email, icon: row.icon, photo: row.photo };
 }
 
+function scryptOptions(n) {
+  return { N: n, r: 8, p: 1, maxmem: 160 * n * 8 };
+}
+
 async function hashPassword(password) {
   const salt = randomBytes(16).toString("hex");
-  const hash = await scryptAsync(password, salt, 32, SCRYPT);
-  return `${salt}:${hash.toString("hex")}`;
+  const hash = await scryptAsync(password, salt, 32, scryptOptions(SCRYPT_N));
+  return `scrypt$${SCRYPT_N}$${salt}$${hash.toString("hex")}`;
+}
+
+function parseHash(stored) {
+  const value = String(stored || "");
+  const modern = /^scrypt\$(\d+)\$([0-9a-f]{32})\$([0-9a-f]{64})$/i.exec(value);
+  if (modern) return { n: Number(modern[1]), salt: modern[2], hex: modern[3] };
+  const legacy = /^([0-9a-f]{32}):([0-9a-f]{64})$/i.exec(value);
+  if (legacy) return { n: LEGACY_N, salt: legacy[1], hex: legacy[2] };
+  return null;
+}
+
+async function currentPasswordOk(id, current) {
+  const stored = await passwordHashOf(id);
+  if (!stored) return true;
+  const value = String(current || "");
+  if (!value || value.length > 80) return false;
+  return (await checkPassword(value, stored)).ok;
 }
 
 async function checkPassword(password, stored) {
-  const [salt, hex] = String(stored || "").split(":");
-  if (!salt || !/^[0-9a-f]{64}$/i.test(hex)) return false;
-  const hash = await scryptAsync(password, salt, 32, SCRYPT);
-  const left = Buffer.from(hex, "hex");
-  if (left.length !== hash.length) return false;
-  return timingSafeEqual(left, hash);
+  const parsed = parseHash(stored);
+  if (!parsed || ![LEGACY_N, SCRYPT_N].includes(parsed.n)) return { ok: false, stale: false };
+  const hash = await scryptAsync(password, parsed.salt, 32, scryptOptions(parsed.n));
+  const ok = timingSafeEqual(Buffer.from(parsed.hex, "hex"), hash);
+  return { ok, stale: ok && parsed.n !== SCRYPT_N };
 }
 
 function readCookie(req, name) {
@@ -236,7 +261,11 @@ app.post("/api/auth/register", api(async (req, res) => {
   const name = String(req.body?.name || "").trim().slice(0, 40);
   const password = String(req.body?.password || "");
   const id = isUuid(req.body?.playerId) ? req.body.playerId : "";
-  if (!name || !EMAIL_OK.test(email) || password.length < 6 || password.length > 80 || !id) {
+  if (password.length < PASSWORD_MIN || password.length > 80) {
+    res.status(400).json({ error: PASSWORD_RULE });
+    return;
+  }
+  if (!name || !EMAIL_OK.test(email) || !id) {
     res.status(400).json({ error: "Nom, e-mail ou mot de passe invalide." });
     return;
   }
@@ -267,13 +296,14 @@ app.post("/api/auth/login", api(async (req, res) => {
     return;
   }
   const account = byEmail ? await findAccount(lookupKey) : await findLoginByName(key);
-  const passwordOk = account?.password_hash
+  const verdict = account?.password_hash
     ? await checkPassword(password, account.password_hash)
-    : await hashPassword(password).then(() => false);
-  if (!passwordOk) {
+    : await hashPassword(password).then(() => ({ ok: false, stale: false }));
+  if (!verdict.ok) {
     res.status(401).json({ error: "Mot de passe incorrect." });
     return;
   }
+  if (verdict.stale) await setOwnPassword(account.id, await hashPassword(password));
   setSessionCookie(req, res, await openSession(account.id));
   res.json(accountOut(account));
 }));
@@ -330,8 +360,8 @@ app.post("/api/auth/reset/confirm", api(async (req, res) => {
     res.status(400).json({ error: "Code incorrect ou expiré." });
     return;
   }
-  if (password.length < 6 || password.length > 80) {
-    res.status(400).json({ error: "Le mot de passe doit avoir au moins 6 caractères." });
+  if (password.length < PASSWORD_MIN || password.length > 80) {
+    res.status(400).json({ error: PASSWORD_RULE });
     return;
   }
   if (ipLimited(clientIp(req), "reset-code", 20, 10 * 60_000) || limited(`${email}:reset-code`, 10, 15 * 60_000)) {
@@ -363,12 +393,16 @@ app.post("/api/auth/password", api(async (req, res) => {
   }
   const password = String(req.body?.password || "");
   const confirm = String(req.body?.confirm || "");
-  if (password.length < 6 || password.length > 80 || password !== confirm) {
-    res.status(400).json({ error: "Le mot de passe doit avoir au moins 6 caractères, deux fois le même." });
+  if (password.length < PASSWORD_MIN || password.length > 80 || password !== confirm) {
+    res.status(400).json({ error: `${PASSWORD_RULE} Écris-le deux fois.` });
     return;
   }
   if (limited(`${id}:password`, 8, 10 * 60_000)) {
     res.status(429).json({ error: "Trop d'essais." });
+    return;
+  }
+  if (!(await currentPasswordOk(id, req.body?.current))) {
+    res.status(403).json({ error: "Mot de passe actuel incorrect." });
     return;
   }
   const saved = await setOwnPassword(id, await hashPassword(password));
@@ -400,6 +434,17 @@ app.put("/api/profile/:id", api(async (req, res) => {
   if (email && await emailTaken(email, id)) {
     res.status(409).json({ error: "Cet e-mail a déjà un profil." });
     return;
+  }
+  const before = await readProfile(id);
+  if (before && cleanEmail(before.email) !== email) {
+    if (limited(`${id}:email`, 8, 10 * 60_000)) {
+      res.status(429).json({ error: "Trop d'essais." });
+      return;
+    }
+    if (!(await currentPasswordOk(id, req.body?.current))) {
+      res.status(403).json({ error: "Écris ton mot de passe actuel pour changer d'e-mail." });
+      return;
+    }
   }
   const icon = ["dot", "house", "star", "crown", "pen", "book", "flame", "gem"].includes(req.body?.icon)
     ? req.body.icon
@@ -519,6 +564,7 @@ app.post("/api/games/:id", api(async (req, res) => {
     res.status(429).json({ error: "Trop de parties enregistrées." });
     return;
   }
+  if (entry.at < Date.now() - 48 * 60 * 60 * 1000 && await hasGames(id)) entry.at = Date.now();
   await insertGame(id, entry);
   res.json({ ok: true });
 }));

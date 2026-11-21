@@ -14,7 +14,14 @@ if (fs.existsSync(envFile)) {
 
 const url = process.env.DATABASE_URL || "";
 const ownerUrl = process.env.DATABASE_OWNER_URL || "";
-const pool = url ? new pg.Pool({ connectionString: url, max: 5 }) : null;
+const pool = url
+  ? new pg.Pool({
+    connectionString: url,
+    max: 5,
+    statement_timeout: 10_000,
+    idle_in_transaction_session_timeout: 30_000,
+  })
+  : null;
 if (pool) pool.on("error", (error) => console.error("Base:", error.message));
 
 function quoteIdent(value) {
@@ -291,6 +298,11 @@ export async function findLoginByName(name) {
   return rows.length === 1 ? rows[0] : null;
 }
 
+export async function passwordHashOf(id) {
+  const { rows } = await pool.query("SELECT password_hash FROM profiles WHERE id = $1", [id]);
+  return rows[0]?.password_hash || "";
+}
+
 export async function setOwnPassword(id, passwordHash) {
   const { rows } = await pool.query(
     `UPDATE profiles
@@ -478,6 +490,11 @@ export async function listGames(playerId) {
   }));
 }
 
+export async function hasGames(playerId) {
+  const { rows } = await pool.query("SELECT EXISTS (SELECT 1 FROM games WHERE player_id = $1) AS found", [playerId]);
+  return rows[0]?.found === true;
+}
+
 export async function clearGames(playerId) {
   await pool.query("DELETE FROM games WHERE player_id = $1", [playerId]);
   forgetRanking();
@@ -510,21 +527,39 @@ export async function adminOverview() {
         (now() AT TIME ZONE 'Europe/Paris')::date,
         interval '1 day'
       )::date AS day
+    ),
+    recent AS (
+      SELECT (played_at AT TIME ZONE 'Europe/Paris')::date AS day, mode, played_at, names
+      FROM games
+      WHERE played_at >= ((SELECT min(day) FROM series)::timestamp AT TIME ZONE 'Europe/Paris')
+    ),
+    per_day AS (
+      SELECT day, COUNT(*)::int AS games FROM recent GROUP BY day
+    ),
+    matches AS (
+      SELECT day, COUNT(*)::int AS online FROM (
+        SELECT DISTINCT day, date_trunc('minute', played_at),
+          CASE WHEN jsonb_typeof(names) = 'array'
+            THEN (SELECT string_agg(lower(val), '|' ORDER BY lower(val)) FROM jsonb_array_elements_text(names) AS val)
+            ELSE '' END
+        FROM recent
+        WHERE mode = 'online'
+      ) m
+      GROUP BY day
+    ),
+    seen AS (
+      SELECT day, COUNT(*)::int AS connected FROM visits
+      WHERE day >= (SELECT min(day) FROM series)
+      GROUP BY day
     )
     SELECT series.day::text AS day,
-      (SELECT COUNT(*)::int FROM visits v WHERE v.day = series.day) AS connected,
-      (SELECT COUNT(*)::int FROM games g
-        WHERE (g.played_at AT TIME ZONE 'Europe/Paris')::date = series.day) AS games,
-      (SELECT COUNT(*)::int FROM (
-        SELECT DISTINCT date_trunc('minute', g.played_at),
-          CASE WHEN jsonb_typeof(g.names) = 'array'
-            THEN (SELECT string_agg(lower(val), '|' ORDER BY lower(val)) FROM jsonb_array_elements_text(g.names) AS val)
-            ELSE '' END
-        FROM games g
-        WHERE g.mode = 'online'
-          AND (g.played_at AT TIME ZONE 'Europe/Paris')::date = series.day
-      ) matches) AS online
+      COALESCE(seen.connected, 0) AS connected,
+      COALESCE(per_day.games, 0) AS games,
+      COALESCE(matches.online, 0) AS online
     FROM series
+    LEFT JOIN seen USING (day)
+    LEFT JOIN per_day USING (day)
+    LEFT JOIN matches USING (day)
     ORDER BY series.day
   `);
   const { rows: reachRows } = await pool.query(`

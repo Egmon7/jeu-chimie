@@ -19,4 +19,4 @@ USER node
 
 EXPOSE 4173
 
-CMD ["npm", "start"]
+CMD ["node", "server/index.js"]

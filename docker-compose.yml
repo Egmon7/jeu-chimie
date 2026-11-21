@@ -1,14 +1,19 @@
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   postgres:
-    image: postgres:16-alpine
+    image: postgres:16.16-alpine
     container_name: jeu-chimie-db
     restart: unless-stopped
+    command: ["postgres", "-c", "log_connections=on", "-c", "log_min_duration_statement=500"]
     environment:
       POSTGRES_USER: jeu
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-jeu_local_only}
       POSTGRES_DB: jeu_chimie
-    ports:
-      - "127.0.0.1:5432:5432"
     volumes:
       - jeu_chimie_pg:/var/lib/postgresql/data
     healthcheck:
@@ -16,11 +21,16 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 1g
+    logging: *logging
 
   jeu-chimie:
     build: .
     container_name: jeu-chimie
     restart: unless-stopped
+    init: true
     depends_on:
       postgres:
         condition: service_healthy
@@ -35,6 +45,15 @@ services:
       BREVO_API_KEY: ${BREVO_API_KEY:-}
       MAIL_FROM: ${MAIL_FROM:-}
       MAIL_FROM_NAME: ${MAIL_FROM_NAME:-Jeu - chimie}
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 768m
+    logging: *logging
 
 volumes:
   jeu_chimie_pg:

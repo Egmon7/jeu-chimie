@@ -3977,8 +3977,8 @@ async function sendAuth() {
       showAuthError("Le code a 6 chiffres.");
       return;
     }
-    if (password.length < 6) {
-      showAuthError("Le mot de passe doit avoir au moins 6 caractères.");
+    if (password.length < 8) {
+      showAuthError("Le mot de passe doit avoir au moins 8 caractères.");
       return;
     }
     if (password !== $("auth-confirm").value) {
@@ -4030,8 +4030,12 @@ async function sendAuth() {
     return;
   }
   const password = $("auth-password").value;
-  if (password.length < 6) {
-    showAuthError("Le mot de passe doit avoir au moins 6 caractères.");
+  if (auth.exists && !password) {
+    showAuthError("Écris ton mot de passe.");
+    return;
+  }
+  if (!auth.exists && password.length < 8) {
+    showAuthError("Le mot de passe doit avoir au moins 8 caractères.");
     return;
   }
   if (!auth.exists && password !== $("auth-confirm").value) {
@@ -4240,11 +4244,24 @@ function bind() {
       return;
     }
     const photo = $("profile-photo").dataset.full || "";
+    const current = $("profile-current").value;
+    const password = $("profile-password").value;
+    const confirm = $("profile-confirm").value;
+    if ((password || confirm) && (password.length < 8 || password !== confirm)) {
+      toast("Le mot de passe doit avoir au moins 8 caractères, deux fois le même.");
+      return;
+    }
+    const emailChanged = email.toLowerCase() !== (loadProfile().email || "").trim().toLowerCase();
+    if ((password || emailChanged) && !current) {
+      toast("Écris ton mot de passe actuel pour changer l’e-mail ou le mot de passe.");
+      $("profile-current").focus();
+      return;
+    }
     try {
       const response = await fetch(`/api/profile/${playerId()}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, email, photo }),
+        body: JSON.stringify({ name, email, photo, current }),
       });
       const data = await response.json().catch(() => ({}));
       if (response.status === 401) {
@@ -4263,21 +4280,21 @@ function bind() {
       const session = loadSession();
       if (session?.connected) saveSession({ ...session, email: data.email || email });
       paintUserChip();
-      const password = $("profile-password").value;
-      const confirm = $("profile-confirm").value;
-      if (password || confirm) {
-        if (password.length < 6 || password !== confirm) {
-          toast("Le mot de passe doit avoir au moins 6 caractères, deux fois le même.");
-          return;
-        }
-        const changed = await sendJson("/api/auth/password", "POST", { password, confirm });
-        if (!changed?.ok) {
-          toast("Le mot de passe n'a pas pu être changé.");
+      if (password) {
+        const changed = await fetch("/api/auth/password", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ password, confirm, current }),
+        });
+        if (!changed.ok) {
+          const answer = await changed.json().catch(() => ({}));
+          toast(answer.error || "Le mot de passe n'a pas pu être changé.");
           return;
         }
         $("profile-password").value = "";
         $("profile-confirm").value = "";
       }
+      $("profile-current").value = "";
       toast("Profil enregistré.");
     } catch {
       toast("Profil non enregistré.");
