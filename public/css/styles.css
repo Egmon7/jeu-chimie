@@ -781,6 +781,49 @@ body.keyboard .chat-log { min-height: 40px; max-height: 84px; }
   text-decoration: underline;
   cursor: pointer;
 }
+.overlay-community {
+  margin: 18px 0 0;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+.overlay-community-lead {
+  margin: 0 0 10px;
+  color: var(--muted);
+  font-size: 0.92rem;
+  line-height: 1.35;
+}
+.overlay-social {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+  gap: 10px 14px;
+}
+.overlay-social a {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  color: var(--ink);
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: transparent;
+  flex: 0 0 auto;
+}
+.overlay-social a:hover {
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
+}
+.overlay-social svg {
+  width: 20px;
+  height: 20px;
+  display: block;
+}
+@media (max-width: 420px) {
+  .overlay-community { margin-top: 14px; padding-top: 12px; }
+  .overlay-social { gap: 8px 10px; }
+  .overlay-social a { width: 36px; height: 36px; border-radius: 10px; }
+  .overlay-social svg { width: 18px; height: 18px; }
+}
 .icon-pick {
   border: 0;
   margin: 18px 0 0;
@@ -1003,6 +1046,8 @@ body.keyboard .chat-log { min-height: 40px; max-height: 84px; }
 #auth-back { display: block; margin: 0 0 12px; text-align: left; }
 #auth-forgot { display: block; width: 100%; margin: 2px 0 10px; text-align: center; }
 .auth-help { display: block; width: 100%; margin-top: 18px; text-align: center; }
+#profile-logout { display: block; margin: 18px auto 0; color: inherit; opacity: 0.75; }
+#profile-logout[hidden] { display: none; }
 .overlay {
   position: absolute;
   inset: 0;

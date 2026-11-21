@@ -488,6 +488,23 @@
           <p id="overlay-text"></p>
           <div class="form-actions" id="overlay-actions"></div>
           <p id="overlay-note" hidden></p>
+          <div id="overlay-community" class="overlay-community" hidden>
+            <p class="overlay-community-lead">Rejoindre notre communauté</p>
+            <nav class="overlay-social" aria-label="Réseaux">
+              <a href="https://www.facebook.com/share/197S7paQEW/?mibextid=wwXIfr" target="_blank" rel="noopener noreferrer" aria-label="Facebook">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M15.12 5.32H17V2.14A26 26 0 0 0 14.26 2C11.54 2 9.68 3.66 9.68 6.7v2.3H7v3.56h2.68V22h3.56v-9.44h2.8l.44-3.56h-3.24V7.05c0-1.03.28-1.73 1.88-1.73z"/></svg>
+              </a>
+              <a href="https://www.instagram.com/jeuchimie.egmon/" target="_blank" rel="noopener noreferrer" aria-label="Instagram">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" fill-rule="evenodd" d="M7 3h10a4 4 0 0 1 4 4v10a4 4 0 0 1-4 4H7a4 4 0 0 1-4-4V7a4 4 0 0 1 4-4zm5 4.4a4.6 4.6 0 1 0 .01 9.2 4.6 4.6 0 0 0-.01-9.2z"/><circle cx="12" cy="12" r="2.15" fill="currentColor"/><circle cx="17.25" cy="6.75" r="1.05" fill="currentColor"/></svg>
+              </a>
+              <a href="https://www.tiktok.com/@jeu.chimie.egmon" target="_blank" rel="noopener noreferrer" aria-label="TikTok">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M19.59 6.69a4.83 4.83 0 0 1-3.77-4.25V2h-3.45v13.67a2.89 2.89 0 0 1-2.88 2.5 2.89 2.89 0 0 1-2.89-2.89 2.89 2.89 0 0 1 2.89-2.89c.28 0 .54.04.79.1V9.01a6.27 6.27 0 0 0-.79-.05 6.34 6.34 0 0 0-6.34 6.34 6.34 6.34 0 0 0 6.34 6.34 6.34 6.34 0 0 0 6.33-6.34V8.69a8.18 8.18 0 0 0 4.77 1.52V6.76a4.85 4.85 0 0 1-1-.07z"/></svg>
+              </a>
+              <a href="https://chat.whatsapp.com/JoIu4RFcxdkFKoFIxvBkIP" target="_blank" rel="noopener noreferrer" aria-label="Communauté WhatsApp">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12.04 2C6.58 2 2.15 6.4 2.15 11.83c0 1.74.46 3.44 1.34 4.94L2 22l5.39-1.4a10 10 0 0 0 4.65 1.18h.01c5.46 0 9.89-4.4 9.89-9.83C21.94 6.4 17.5 2 12.04 2zm5.76 13.88c-.24.68-1.4 1.3-1.94 1.38-.5.08-1.12.11-1.81-.11-.42-.14-.95-.31-1.64-.6-2.88-1.24-4.76-4.14-4.9-4.33-.14-.19-1.16-1.54-1.16-2.94s.73-2.08 1-2.37c.24-.27.64-.4.86-.4h.62c.2 0 .46-.07.72.55.27.64.92 2.22.99 2.38.08.16.13.35.03.56-.1.22-.15.35-.3.54-.14.19-.3.42-.43.56-.14.16-.29.33-.12.63.16.3.73 1.2 1.56 1.94 1.08.96 1.98 1.26 2.28 1.4.3.14.47.12.65-.07.18-.2.76-.88.96-1.18.2-.3.4-.25.67-.15.27.1 1.72.81 2.02.96.29.14.49.22.56.34.07.12.07.7-.17 1.38z"/></svg>
+              </a>
+            </nav>
+          </div>
         </div>
       </div>
     </section>
@@ -511,6 +528,7 @@
           <button type="button" class="btn" data-home>Retour</button>
           <button type="submit" class="btn primary">Enregistrer</button>
         </div>
+        <button type="button" class="auth-link" id="profile-logout">Se déconnecter</button>
       </form>
     </section>
 
@@ -657,6 +675,9 @@
       </label>
       <label id="auth-email-label">E-mail
         <input id="auth-email" type="email" maxlength="80" autocomplete="username" placeholder="ton@email">
+      </label>
+      <label id="auth-code-label" hidden>Code reçu par e-mail
+        <input id="auth-code" type="text" inputmode="numeric" maxlength="7" autocomplete="one-time-code" placeholder="123 456">
       </label>
       <label id="auth-password-label" hidden>Mot de passe
         <span class="secret">

@@ -1,6 +1,6 @@
 import express from "express";
 import { createServer } from "http";
-import { randomBytes, randomUUID, scrypt, timingSafeEqual } from "crypto";
+import { randomBytes, randomInt, randomUUID, scrypt, timingSafeEqual } from "crypto";
 import { promisify } from "util";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -18,10 +18,13 @@ import {
 } from "../public/js/engine.js";
 import {
   clearGames,
+  closeOtherSessions,
+  closeSession,
   dbReady,
   emailTaken,
   findAccount,
   findByName,
+  findLoginByName,
   initDb,
   insertGame,
   adminOverview,
@@ -35,12 +38,15 @@ import {
   progressOf,
   openSession,
   readProfile,
-  replacePassword,
   saveAccount,
+  saveResetCode,
   sessionPlayer,
   setOwnPassword,
   upsertProfile,
+  useResetCode,
+  SESSION_DAYS,
 } from "./db.js";
+import { mailReady, sendResetCode } from "./mail.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -130,15 +136,11 @@ function cleanEmail(value) {
 }
 
 function accountView(row) {
-  const exists = Boolean(row.password_hash);
-  return {
-    found: true,
-    many: false,
-    exists,
-    email: row.email || "",
-    name: row.name || "",
-    id: exists ? "" : row.id,
-  };
+  return { found: true, many: false, exists: Boolean(row.password_hash) };
+}
+
+function accountOut(row) {
+  return { id: row.id, name: row.name, email: row.email, icon: row.icon, photo: row.photo };
 }
 
 async function hashPassword(password) {
@@ -172,7 +174,8 @@ function readCookie(req, name) {
 
 function setSessionCookie(req, res, token) {
   const secure = req.secure || req.headers["x-forwarded-proto"] === "https";
-  res.setHeader("Set-Cookie", `egmon_session=${encodeURIComponent(token)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=31536000${secure ? "; Secure" : ""}`);
+  const age = token ? SESSION_DAYS * 24 * 60 * 60 : 0;
+  res.setHeader("Set-Cookie", `egmon_session=${encodeURIComponent(token)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${age}${secure ? "; Secure" : ""}`);
 }
 
 function isAdminAccount(profile) {
@@ -243,7 +246,7 @@ app.post("/api/auth/register", api(async (req, res) => {
     return;
   }
   setSessionCookie(req, res, await openSession(saved.profile.id));
-  res.json({ id: saved.profile.id, name: saved.profile.name, email: saved.profile.email, icon: saved.profile.icon, photo: saved.profile.photo });
+  res.json(accountOut(saved.profile));
 }));
 
 app.post("/api/auth/login", api(async (req, res) => {
@@ -251,17 +254,19 @@ app.post("/api/auth/login", api(async (req, res) => {
     res.status(503).json({ error: "Base indisponible." });
     return;
   }
-  const email = cleanEmail(req.body?.email);
+  const key = String(req.body?.key || req.body?.email || "").trim().slice(0, 80);
   const password = String(req.body?.password || "");
-  if (!EMAIL_OK.test(email) || password.length < 1 || password.length > 80) {
-    res.status(400).json({ error: "E-mail ou mot de passe invalide." });
+  if (!key || password.length < 1 || password.length > 80) {
+    res.status(400).json({ error: "Nom, e-mail ou mot de passe invalide." });
     return;
   }
-  if (ipLimited(clientIp(req), "login", 20, 10 * 60_000) || limited(`${email}:login`, 8, 15 * 60_000)) {
+  const byEmail = EMAIL_OK.test(key);
+  const lookupKey = byEmail ? cleanEmail(key) : key.toLowerCase();
+  if (ipLimited(clientIp(req), "login", 20, 10 * 60_000) || limited(`${lookupKey}:login`, 8, 15 * 60_000)) {
     res.status(429).json({ error: "Trop d'essais." });
     return;
   }
-  const account = await findAccount(email);
+  const account = byEmail ? await findAccount(lookupKey) : await findLoginByName(key);
   const passwordOk = account?.password_hash
     ? await checkPassword(password, account.password_hash)
     : await hashPassword(password).then(() => false);
@@ -270,31 +275,76 @@ app.post("/api/auth/login", api(async (req, res) => {
     return;
   }
   setSessionCookie(req, res, await openSession(account.id));
-  res.json({ id: account.id, name: account.name, email: account.email, icon: account.icon, photo: account.photo });
+  res.json(accountOut(account));
 }));
 
-app.post("/api/auth/reset", api(async (req, res) => {
+app.post("/api/auth/logout", api(async (req, res) => {
+  if (dbReady()) await closeSession(readCookie(req, "egmon_session"));
+  setSessionCookie(req, res, "");
+  res.json({ ok: true });
+}));
+
+app.post("/api/auth/reset", (req, res) => {
+  res.status(410).json({ error: "Demande un code par e-mail pour changer de mot de passe." });
+});
+
+app.post("/api/auth/reset/request", api(async (req, res) => {
+  if (!dbReady()) {
+    res.status(503).json({ error: "Base indisponible." });
+    return;
+  }
+  if (!mailReady()) {
+    res.status(503).json({ error: "L'envoi des e-mails est indisponible pour le moment." });
+    return;
+  }
+  const email = cleanEmail(req.body?.email);
+  if (!EMAIL_OK.test(email)) {
+    res.status(400).json({ error: "Cet e-mail n'est pas valide." });
+    return;
+  }
+  if (ipLimited(clientIp(req), "reset-ask", 8, 10 * 60_000) || limited(`${email}:reset-ask`, 3, 15 * 60_000)) {
+    res.status(429).json({ error: "Trop de demandes. Réessaie dans quelques minutes." });
+    return;
+  }
+  res.json({ ok: true });
+  const account = await findAccount(email);
+  if (!account?.password_hash) return;
+  const code = String(randomInt(0, 1_000_000)).padStart(6, "0");
+  await saveResetCode(account.id, code);
+  sendResetCode(account.email, code).catch((error) => {
+    console.error("Code de reset non envoyé:", error.message);
+  });
+}));
+
+app.post("/api/auth/reset/confirm", api(async (req, res) => {
   if (!dbReady()) {
     res.status(503).json({ error: "Base indisponible." });
     return;
   }
   const email = cleanEmail(req.body?.email);
+  const code = String(req.body?.code || "").replace(/\s/g, "");
   const password = String(req.body?.password || "");
-  if (!EMAIL_OK.test(email) || password.length < 6 || password.length > 80) {
-    res.status(400).json({ error: "E-mail ou mot de passe invalide." });
+  if (!EMAIL_OK.test(email) || !/^\d{6}$/.test(code)) {
+    res.status(400).json({ error: "Code incorrect ou expiré." });
     return;
   }
-  if (ipLimited(clientIp(req), "reset", 8, 10 * 60_000) || limited(`${email}:reset`, 5, 15 * 60_000)) {
-    res.status(429).json({ error: "Trop d'essais." });
+  if (password.length < 6 || password.length > 80) {
+    res.status(400).json({ error: "Le mot de passe doit avoir au moins 6 caractères." });
     return;
   }
-  const saved = await replacePassword(email, await hashPassword(password));
-  if (saved.error) {
-    res.status(404).json({ error: saved.error });
+  if (ipLimited(clientIp(req), "reset-code", 20, 10 * 60_000) || limited(`${email}:reset-code`, 10, 15 * 60_000)) {
+    res.status(429).json({ error: "Trop d'essais. Réessaie dans quelques minutes." });
     return;
   }
-  setSessionCookie(req, res, await openSession(saved.profile.id));
-  res.json({ id: saved.profile.id, name: saved.profile.name, email: saved.profile.email, icon: saved.profile.icon, photo: saved.profile.photo });
+  const account = await findAccount(email);
+  if (!account?.password_hash || !(await useResetCode(account.id, code))) {
+    res.status(400).json({ error: "Code incorrect ou expiré." });
+    return;
+  }
+  await setOwnPassword(account.id, await hashPassword(password));
+  await closeOtherSessions(account.id);
+  setSessionCookie(req, res, await openSession(account.id));
+  res.json(accountOut(account));
 }));
 
 app.post("/api/auth/password", api(async (req, res) => {
@@ -302,7 +352,8 @@ app.post("/api/auth/password", api(async (req, res) => {
     res.status(503).json({ error: "Base indisponible." });
     return;
   }
-  const id = await sessionPlayer(readCookie(req, "egmon_session"));
+  const token = readCookie(req, "egmon_session");
+  const id = await sessionPlayer(token);
   if (!id) {
     res.status(401).json({ error: "Connexion requise." });
     return;
@@ -322,6 +373,7 @@ app.post("/api/auth/password", api(async (req, res) => {
     res.status(404).json({ error: "Profil introuvable." });
     return;
   }
+  await closeOtherSessions(id, token);
   res.json({ ok: true });
 }));
 

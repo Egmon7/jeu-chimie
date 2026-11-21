@@ -145,6 +145,8 @@ function show(id, historyMode = "push") {
   if (id === "screen-profile") {
     fillProfileForm(loadProfile());
     pullProfile();
+    const out = $("profile-logout");
+    if (out) out.hidden = !isConnected();
   }
   if (app.queued && id !== "screen-find") {
     app.queued = false;
@@ -838,7 +840,7 @@ async function showPlayerCard(id) {
     toast("La fiche n’a pas pu se charger.");
     return;
   }
-  const self = id === playerId();
+  const self = card.self === true || id === playerId();
   const onlineOnly = rankBoard === "online";
   const block = onlineOnly ? card.stats?.online : card.stats?.general;
   const played = Number(block?.played ?? (onlineOnly ? card.online?.games : card.games)) || 0;
@@ -1478,6 +1480,8 @@ function hideOverlay() {
   overlay.hidden = true;
   overlay.classList.remove("celebrate");
   delete overlay.dataset.dismiss;
+  const social = $("overlay-community");
+  if (social) social.hidden = true;
 }
 
 function openFeedback() {
@@ -1502,7 +1506,7 @@ function openFeedback() {
   });
 }
 
-function showOverlay({ kicker, title, text, actions, note = false, celebrate = false }) {
+function showOverlay({ kicker, title, text, actions, note = false, community = false, celebrate = false }) {
   delete $("game-overlay").dataset.dismiss;
   $("overlay-kicker").textContent = kicker || "";
   $("overlay-title").textContent = title;
@@ -1528,6 +1532,8 @@ function showOverlay({ kicker, title, text, actions, note = false, celebrate = f
     button.addEventListener("click", openFeedback);
     extra.append(button);
   }
+  const social = $("overlay-community");
+  if (social) social.hidden = !community;
   const overlay = $("game-overlay");
   overlay.classList.toggle("celebrate", celebrate);
   overlay.hidden = false;
@@ -1895,6 +1901,7 @@ function showResult() {
     text: line,
     celebrate,
     note: true,
+    community: true,
     actions,
   });
 }
@@ -3572,7 +3579,7 @@ function openHub(name) {
   }
 }
 
-const auth = { step: "identity", exists: false, name: "", email: "", accountId: "", knownMail: false };
+const auth = { step: "identity", exists: false, name: "", email: "", loginKey: "", knownMail: false };
 let pendingRoom = "";
 
 function firstNameGroup(name) {
@@ -3683,12 +3690,15 @@ function hideSecrets() {
   });
 }
 
+const AUTH_STEPS = new Set(["password", "reset", "reset-request", "recover"]);
+
 function showAuthFace(face) {
-  auth.step = face === "password" ? "password" : face === "reset" ? "reset" : face === "recover" ? "recover" : "identity";
+  auth.step = AUTH_STEPS.has(face) ? face : "identity";
   const secretFace = face === "password" || face === "reset";
   $("auth-key-label").hidden = face !== "recover";
-  $("auth-name-label").hidden = face === "password" || face === "email" || face === "add-email" || face === "recover" || face === "reset";
+  $("auth-name-label").hidden = ["password", "email", "add-email", "recover", "reset", "reset-request"].includes(face);
   $("auth-email-label").hidden = face === "password" || face === "recover" || face === "reset";
+  $("auth-code-label").hidden = face !== "reset";
   $("auth-password-label").hidden = !secretFace;
   $("auth-confirm-label").hidden = face === "reset" ? false : face !== "password" || auth.exists;
   $("auth-forgot").hidden = face !== "password" || !auth.exists;
@@ -3718,12 +3728,17 @@ function showAuthFace(face) {
     $("auth-title").textContent = "Votre e-mail";
     $("auth-text").textContent = "Entrez votre e-mail pour vous connecter.";
     $("auth-go").textContent = "Continuer";
+  } else if (face === "reset-request") {
+    auth.mode = "login";
+    $("auth-kicker").textContent = "Mot de passe oublié";
+    $("auth-title").textContent = "Votre e-mail";
+    $("auth-text").textContent = "Écris l’e-mail du compte. Nous y enverrons un code à 6 chiffres.";
+    $("auth-go").textContent = "Recevoir un code";
   } else if (face === "reset") {
     auth.mode = "login";
-    const known = auth.email ? `Vous aviez indiqué ${auth.email}. ` : "";
-    $("auth-kicker").textContent = "Connexion";
-    $("auth-title").textContent = "Mot de passe";
-    $("auth-text").textContent = `${known}Choisis un nouveau mot de passe, puis confirme-le.`;
+    $("auth-kicker").textContent = "Mot de passe oublié";
+    $("auth-title").textContent = "Nouveau mot de passe";
+    $("auth-text").textContent = `Si un compte existe pour ${auth.email}, un code vient d’y être envoyé. Il est valable 15 minutes. Regarde aussi dans les spams.`;
     $("auth-go").textContent = "Enregistrer";
     $("auth-password").autocomplete = "new-password";
     hideSecrets();
@@ -3748,11 +3763,12 @@ async function openAuth() {
   auth.mode = "create";
   auth.name = name;
   auth.email = "";
-  auth.accountId = "";
+  auth.loginKey = "";
   auth.knownMail = false;
   $("auth-name").value = "";
   $("auth-email").value = "";
   $("auth-key").value = "";
+  $("auth-code").value = "";
   $("auth-password").value = "";
   $("auth-confirm").value = "";
 
@@ -3761,8 +3777,8 @@ async function openAuth() {
     if (looked.ok && looked.data.exists) {
       auth.exists = true;
       auth.mode = "login";
-      auth.name = looked.data.name || name;
-      auth.email = looked.data.email || email;
+      auth.email = email;
+      auth.loginKey = email;
       auth.knownMail = true;
       showAuthFace("password");
       $("auth-dialog").hidden = false;
@@ -3795,7 +3811,7 @@ async function openAuth() {
 
 function alreadyAccount() {
   auth.mode = "login";
-  auth.accountId = "";
+  auth.loginKey = "";
   auth.knownMail = false;
   $("auth-key").value = "";
   showAuthFace("recover");
@@ -3803,11 +3819,24 @@ function alreadyAccount() {
 }
 
 function forgotPassword() {
-  if (!auth.exists || !auth.email) return;
+  if (!auth.exists) return;
+  $("auth-email").value = auth.email || "";
+  $("auth-code").value = "";
   $("auth-password").value = "";
   $("auth-confirm").value = "";
-  showAuthFace("reset");
-  window.setTimeout(() => $("auth-password").focus(), 30);
+  showAuthFace("reset-request");
+  window.setTimeout(() => $("auth-email").focus(), 30);
+}
+
+async function logout() {
+  try {
+    await fetch("/api/auth/logout", { method: "POST" });
+  } catch {}
+  saveSession(null);
+  noteAdmin(null);
+  paintUserChip();
+  toast("Tu es déconnecté.");
+  show("screen-home");
 }
 
 function leaveAuth() {
@@ -3848,16 +3877,17 @@ async function submitAuth(event) {
   }
 }
 
-function applyFoundAccount(found) {
-  auth.name = found.name || auth.name;
-  auth.email = found.email || "";
-  auth.accountId = found.id || "";
+function applyFoundAccount(found, key) {
+  const isEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(key);
+  auth.name = isEmail ? auth.name : key;
+  auth.email = isEmail ? key : "";
+  auth.loginKey = key;
   auth.exists = Boolean(found.exists);
   auth.mode = auth.exists ? "login" : "create";
-  auth.knownMail = Boolean(auth.email);
+  auth.knownMail = isEmail;
   $("auth-password").value = "";
   $("auth-confirm").value = "";
-  if (!auth.email) {
+  if (!auth.exists && !auth.email) {
     showAuthFace("add-email");
     window.setTimeout(() => $("auth-email").focus(), 30);
     return;
@@ -3886,11 +3916,50 @@ async function sendAuth() {
       showAuthError("Aucun profil avec ce nom ou cet e-mail.");
       return;
     }
-    applyFoundAccount(looked.data);
+    applyFoundAccount(looked.data, key);
+    return;
+  }
+  if (auth.step === "reset-request") {
+    const email = $("auth-email").value.trim();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      showAuthError("Cet e-mail n’est pas valide.");
+      return;
+    }
+    const asked = await authFetch("/api/auth/reset/request", { email });
+    if (!asked.ok) {
+      showAuthError(asked.error || "Réessaie dans un instant.");
+      return;
+    }
+    auth.email = email;
+    showAuthFace("reset");
+    window.setTimeout(() => $("auth-code").focus(), 30);
+    return;
+  }
+  if (auth.step === "reset") {
+    const code = $("auth-code").value.replace(/\s/g, "");
+    const password = $("auth-password").value;
+    if (!/^\d{6}$/.test(code)) {
+      showAuthError("Le code a 6 chiffres.");
+      return;
+    }
+    if (password.length < 6) {
+      showAuthError("Le mot de passe doit avoir au moins 6 caractères.");
+      return;
+    }
+    if (password !== $("auth-confirm").value) {
+      showAuthError("Les deux mots de passe ne sont pas les mêmes.");
+      return;
+    }
+    const done = await authFetch("/api/auth/reset/confirm", { email: auth.email, code, password });
+    if (!done.ok) {
+      showAuthError(done.error || "Réessaie dans un instant.");
+      return;
+    }
+    finishAuth(done.data);
     return;
   }
   if (auth.step === "identity") {
-    const name = loadProfile().name || $("auth-name").value.trim();
+    const name = loadProfile().name || auth.name || $("auth-name").value.trim();
     const email = $("auth-email").value.trim();
     if (!name) {
       showAuthError("Écris ton nom et prénom.");
@@ -3915,10 +3984,10 @@ async function sendAuth() {
       auth.exists = true;
       auth.mode = "login";
       auth.knownMail = true;
-      auth.accountId = "";
     }
-    auth.name = looked.data.name || name;
-    auth.email = looked.data.email || email;
+    auth.name = name;
+    auth.email = email;
+    auth.loginKey = email;
     $("auth-password").value = "";
     $("auth-confirm").value = "";
     showAuthFace("password");
@@ -3926,21 +3995,18 @@ async function sendAuth() {
     return;
   }
   const password = $("auth-password").value;
-  const creating = auth.step === "reset" || !auth.exists;
   if (password.length < 6) {
     showAuthError("Le mot de passe doit avoir au moins 6 caractères.");
     return;
   }
-  if (creating && password !== $("auth-confirm").value) {
+  if (!auth.exists && password !== $("auth-confirm").value) {
     showAuthError("Les deux mots de passe ne sont pas les mêmes.");
     return;
   }
-  const result = auth.step === "reset"
-    ? await authFetch("/api/auth/reset", { email: auth.email, password })
-    : auth.exists
-    ? await authFetch("/api/auth/login", { email: auth.email, password })
+  const result = auth.exists
+    ? await authFetch("/api/auth/login", { key: auth.loginKey || auth.email, password })
     : await authFetch("/api/auth/register", {
-      playerId: auth.accountId || playerId(),
+      playerId: playerId(),
       name: auth.name,
       email: auth.email,
       password,
@@ -4422,6 +4488,7 @@ function bind() {
   $("auth-known").addEventListener("click", alreadyAccount);
   $("auth-back").addEventListener("click", leaveAuth);
   $("auth-forgot").addEventListener("click", forgotPassword);
+  $("profile-logout")?.addEventListener("click", logout);
   $("auth-help").addEventListener("click", authHelp);
   document.querySelectorAll(".secret-see").forEach((button) => {
     button.addEventListener("click", () => {

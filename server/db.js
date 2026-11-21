@@ -21,6 +21,10 @@ export function dbReady() {
   return ready;
 }
 
+export const SESSION_DAYS = 90;
+const RESET_MINUTES = 15;
+export const RESET_TRIES = 5;
+
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export function isUuid(value) {
@@ -99,6 +103,24 @@ export async function initDb() {
     )
   `);
   await pool.query("CREATE INDEX IF NOT EXISTS sessions_player ON sessions (player_id)");
+  await pool.query("ALTER TABLE sessions ADD COLUMN IF NOT EXISTS expires_at timestamptz");
+  await pool.query(`UPDATE sessions SET expires_at = created_at + interval '${SESSION_DAYS} days' WHERE expires_at IS NULL`);
+  await pool.query(`ALTER TABLE sessions ALTER COLUMN expires_at SET DEFAULT now() + interval '${SESSION_DAYS} days'`);
+  await pool.query("ALTER TABLE sessions ALTER COLUMN expires_at SET NOT NULL");
+  await pool.query("ALTER TABLE profiles ADD COLUMN IF NOT EXISTS public_id uuid NOT NULL DEFAULT gen_random_uuid()");
+  await pool.query("CREATE UNIQUE INDEX IF NOT EXISTS profiles_public_id ON profiles (public_id)");
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS reset_codes (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      player_id uuid NOT NULL,
+      code_hash text NOT NULL,
+      attempts int NOT NULL DEFAULT 0,
+      expires_at timestamptz NOT NULL,
+      used_at timestamptz,
+      created_at timestamptz NOT NULL DEFAULT now()
+    )
+  `);
+  await pool.query("CREATE INDEX IF NOT EXISTS reset_codes_player ON reset_codes (player_id, created_at DESC)");
   await pool.query(`
     CREATE TABLE IF NOT EXISTS visits (
       player_id uuid NOT NULL,
@@ -219,17 +241,15 @@ export async function saveAccount({ id, name, email, passwordHash }) {
   }
 }
 
-export async function replacePassword(email, passwordHash) {
-  const account = await findAccount(email);
-  if (!account?.password_hash) return { error: "Aucun mot de passe à remplacer." };
+export async function findLoginByName(name) {
   const { rows } = await pool.query(
-    `UPDATE profiles
-     SET password_hash = $2, updated_at = now()
-     WHERE id = $1 AND password_hash <> ''
-     RETURNING id, name, email, icon, photo`,
-    [account.id, passwordHash],
+    `SELECT id, name, email, icon, photo, password_hash
+     FROM profiles
+     WHERE lower(name) = lower($1) AND password_hash <> ''
+     LIMIT 2`,
+    [name],
   );
-  return rows[0] ? { profile: rows[0] } : { error: "Aucun mot de passe à remplacer." };
+  return rows.length === 1 ? rows[0] : null;
 }
 
 export async function setOwnPassword(id, passwordHash) {
@@ -249,6 +269,7 @@ function tokenHash(token) {
 
 export async function openSession(playerId) {
   const token = randomBytes(32).toString("base64url");
+  await pool.query("DELETE FROM sessions WHERE expires_at < now()");
   await pool.query(
     "INSERT INTO sessions (token_hash, player_id) VALUES ($1, $2)",
     [tokenHash(token), playerId],
@@ -260,10 +281,55 @@ export async function sessionPlayer(token) {
   const value = String(token || "");
   if (value.length < 20 || value.length > 200) return "";
   const { rows } = await pool.query(
-    "SELECT player_id FROM sessions WHERE token_hash = $1",
+    "SELECT player_id FROM sessions WHERE token_hash = $1 AND expires_at > now()",
     [tokenHash(value)],
   );
   return rows[0]?.player_id || "";
+}
+
+export async function closeSession(token) {
+  const value = String(token || "");
+  if (value.length < 20 || value.length > 200) return;
+  await pool.query("DELETE FROM sessions WHERE token_hash = $1", [tokenHash(value)]);
+}
+
+export async function closeOtherSessions(playerId, keepToken = "") {
+  await pool.query(
+    "DELETE FROM sessions WHERE player_id = $1 AND token_hash <> $2",
+    [playerId, keepToken ? tokenHash(keepToken) : ""],
+  );
+}
+
+function codeHash(playerId, code) {
+  return createHash("sha256").update(`${playerId}:${code}`).digest("hex");
+}
+
+export async function saveResetCode(playerId, code) {
+  await pool.query("DELETE FROM reset_codes WHERE player_id = $1 OR expires_at < now() - interval '1 day'", [playerId]);
+  await pool.query(
+    `INSERT INTO reset_codes (player_id, code_hash, expires_at)
+     VALUES ($1, $2, now() + interval '${RESET_MINUTES} minutes')`,
+    [playerId, codeHash(playerId, code)],
+  );
+}
+
+export async function useResetCode(playerId, code) {
+  const { rows } = await pool.query(
+    `UPDATE reset_codes
+     SET used_at = now()
+     WHERE player_id = $1 AND code_hash = $2 AND used_at IS NULL
+       AND expires_at > now() AND attempts < $3
+     RETURNING id`,
+    [playerId, codeHash(playerId, code), RESET_TRIES],
+  );
+  if (rows[0]) return true;
+  await pool.query(
+    `UPDATE reset_codes
+     SET attempts = attempts + 1
+     WHERE player_id = $1 AND used_at IS NULL AND expires_at > now()`,
+    [playerId],
+  );
+  return false;
 }
 
 function winnerOut(value) {
@@ -713,7 +779,7 @@ export async function ranking(playerId, board = "general") {
        GROUP BY player_id
      ),
      scored AS (
-       SELECT p.id, p.name, p.icon, COALESCE(p.photo, '') AS photo,
+       SELECT p.id, p.public_id, p.name, p.icon, COALESCE(p.photo, '') AS photo,
          (COALESCE(SUM(15 + pg.houses * pg.per_house + pg.win_bonus), 0)
           + COALESCE(MAX(flag_xp.xp), 0)
           + COALESCE(MAX(streak_xp.xp), 0)
@@ -735,7 +801,7 @@ export async function ranking(playerId, board = "general") {
               COUNT(*) OVER () AS people
        FROM scored
      )
-     SELECT id, name, icon, photo, xp, houses, best, games, wins, expert_wins, rank, people, (id = $1) AS you
+     SELECT public_id::text AS id, name, icon, photo, xp, houses, best, games, wins, expert_wins, rank, people, (id = $1) AS you
      FROM ranked
      ORDER BY rank`,
     [playerId],
@@ -761,7 +827,7 @@ async function onlineRanking(playerId) {
           END) ~ '^[0-9]+$'
      ),
      scored AS (
-       SELECT p.id, p.name, p.icon, COALESCE(p.photo, '') AS photo,
+       SELECT p.id, p.public_id, p.name, p.icon, COALESCE(p.photo, '') AS photo,
          COALESCE(SUM(15 + houses * 9 + win_bonus), 0)::int AS xp,
          COALESCE(SUM(houses), 0)::int AS houses,
          COALESCE(MAX(houses), 0)::int AS best,
@@ -777,7 +843,7 @@ async function onlineRanking(playerId) {
               COUNT(*) OVER () AS people
        FROM scored
      )
-     SELECT id, name, icon, photo, xp, houses, best, games, wins, expert_wins, rank, people, (id = $1) AS you
+     SELECT public_id::text AS id, name, icon, photo, xp, houses, best, games, wins, expert_wins, rank, people, (id = $1) AS you
      FROM ranked
      ORDER BY rank`,
     [playerId],
@@ -785,7 +851,13 @@ async function onlineRanking(playerId) {
   return packRank(rows);
 }
 
-export async function playerCard(targetId, viewerId) {
+export async function playerCard(lookupId, viewerId) {
+  const { rows: found } = await pool.query(
+    "SELECT id FROM profiles WHERE public_id = $1 OR id = $1 LIMIT 1",
+    [lookupId],
+  );
+  const targetId = found[0]?.id;
+  if (!targetId) return null;
   const profile = await readProfile(targetId);
   if (!profile?.name) return null;
   const [general, online, together, stats] = await Promise.all([
@@ -800,6 +872,7 @@ export async function playerCard(targetId, viewerId) {
   const photo = typeof profile.photo === "string" && profile.photo.startsWith("https://res.cloudinary.com/ka4h4lpk/") ? profile.photo : "";
   return {
     name: profile.name,
+    self: Boolean(viewerId) && viewerId === targetId,
     photo,
     games: g?.games || 0,
     together,
