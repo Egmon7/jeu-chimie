@@ -165,6 +165,44 @@ async function migrate(owner) {
   `);
   await owner.query("CREATE INDEX IF NOT EXISTS visits_day ON visits (day)");
   await owner.query(`
+    CREATE TABLE IF NOT EXISTS notifications (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      player_id uuid NOT NULL REFERENCES profiles (id) ON DELETE CASCADE,
+      kind text NOT NULL,
+      ref text NOT NULL DEFAULT '' CHECK (char_length(ref) <= 80),
+      title text NOT NULL CHECK (char_length(title) BETWEEN 1 AND 120),
+      body text NOT NULL DEFAULT '' CHECK (char_length(body) <= 400),
+      link text NOT NULL DEFAULT '' CHECK (char_length(link) <= 40),
+      created_at timestamptz NOT NULL DEFAULT now(),
+      read_at timestamptz
+    )
+  `);
+  await owner.query("ALTER TABLE notifications DROP CONSTRAINT IF EXISTS notifications_kind_check");
+  await owner.query(`
+    ALTER TABLE notifications ADD CONSTRAINT notifications_kind_check
+    CHECK (kind IN ('welcome', 'challenge', 'invite', 'streak', 'message', 'tournament', 'match'))
+  `);
+  await owner.query("CREATE INDEX IF NOT EXISTS notifications_player ON notifications (player_id, created_at DESC)");
+  await owner.query("CREATE UNIQUE INDEX IF NOT EXISTS notifications_once ON notifications (player_id, kind, ref) WHERE ref <> ''");
+  await owner.query(`
+    CREATE TABLE IF NOT EXISTS push_subscriptions (
+      endpoint text PRIMARY KEY CHECK (char_length(endpoint) <= 1000 AND endpoint LIKE 'https://%'),
+      player_id uuid NOT NULL REFERENCES profiles (id) ON DELETE CASCADE,
+      p256dh text NOT NULL,
+      auth text NOT NULL,
+      created_at timestamptz NOT NULL DEFAULT now()
+    )
+  `);
+  await owner.query("CREATE INDEX IF NOT EXISTS push_subscriptions_player ON push_subscriptions (player_id)");
+  await owner.query(`
+    CREATE TABLE IF NOT EXISTS push_marks (
+      player_id uuid NOT NULL REFERENCES profiles (id) ON DELETE CASCADE,
+      kind text NOT NULL CHECK (char_length(kind) <= 20),
+      sent_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (player_id, kind)
+    )
+  `);
+  await owner.query(`
     INSERT INTO visits (player_id, day)
     SELECT DISTINCT player_id, (played_at AT TIME ZONE 'Europe/Paris')::date FROM games
     ON CONFLICT DO NOTHING
@@ -488,6 +526,140 @@ export async function listGames(playerId) {
     behind: row.behind === true,
     clean: row.clean === true,
   }));
+}
+
+const NOTE_KEEP = 100;
+
+function noteOut(row) {
+  return {
+    id: row.id,
+    kind: row.kind,
+    title: row.title,
+    body: row.body,
+    link: row.link,
+    at: new Date(row.created_at).getTime(),
+    read: row.read_at != null,
+  };
+}
+
+export async function addNotification({ playerId, kind, ref = "", title, body = "", link = "" }) {
+  const { rows } = await pool.query(
+    `INSERT INTO notifications (player_id, kind, ref, title, body, link)
+     VALUES ($1, $2, $3, $4, $5, $6)
+     ON CONFLICT (player_id, kind, ref) WHERE ref <> '' DO NOTHING
+     RETURNING id, kind, title, body, link, created_at, read_at`,
+    [playerId, kind, ref, title.slice(0, 120), body.slice(0, 400), link.slice(0, 40)],
+  );
+  if (!rows[0]) return null;
+  await pool.query(
+    `DELETE FROM notifications WHERE player_id = $1 AND id NOT IN (
+       SELECT id FROM notifications WHERE player_id = $1 ORDER BY created_at DESC LIMIT $2
+     )`,
+    [playerId, NOTE_KEEP],
+  );
+  return noteOut(rows[0]);
+}
+
+export async function listNotifications(playerId) {
+  const [{ rows }, { rows: count }] = await Promise.all([
+    pool.query(
+      `SELECT id, kind, title, body, link, created_at, read_at FROM notifications
+       WHERE player_id = $1 ORDER BY created_at DESC LIMIT 50`,
+      [playerId],
+    ),
+    pool.query("SELECT COUNT(*)::int AS unread FROM notifications WHERE player_id = $1 AND read_at IS NULL", [playerId]),
+  ]);
+  return { items: rows.map(noteOut), unread: count[0]?.unread || 0 };
+}
+
+export async function readNotifications(playerId) {
+  await pool.query("UPDATE notifications SET read_at = now() WHERE player_id = $1 AND read_at IS NULL", [playerId]);
+}
+
+export async function onlineWinStreak(playerId) {
+  const { rows } = await pool.query(
+    `SELECT id, winner = user_seat::text AS won FROM games
+     WHERE player_id = $1 AND mode = 'online' AND user_seat IN (0, 1)
+     ORDER BY played_at DESC LIMIT 4`,
+    [playerId],
+  );
+  let streak = 0;
+  for (const row of rows) {
+    if (!row.won) break;
+    streak += 1;
+  }
+  return { streak, last: rows[0]?.id || "" };
+}
+
+const PUSH_PER_PLAYER = 5;
+
+export async function savePushSubscription(playerId, sub) {
+  await pool.query(
+    `INSERT INTO push_subscriptions (endpoint, player_id, p256dh, auth)
+     VALUES ($1, $2, $3, $4)
+     ON CONFLICT (endpoint) DO UPDATE SET player_id = $2, p256dh = $3, auth = $4, created_at = now()`,
+    [sub.endpoint, playerId, sub.p256dh, sub.auth],
+  );
+  await pool.query(
+    `DELETE FROM push_subscriptions WHERE player_id = $1 AND endpoint NOT IN (
+       SELECT endpoint FROM push_subscriptions WHERE player_id = $1 ORDER BY created_at DESC LIMIT $2
+     )`,
+    [playerId, PUSH_PER_PLAYER],
+  );
+}
+
+export async function removePushSubscription(playerId, endpoint) {
+  await pool.query("DELETE FROM push_subscriptions WHERE player_id = $1 AND endpoint = $2", [playerId, endpoint]);
+}
+
+export async function dropPushEndpoint(endpoint) {
+  await pool.query("DELETE FROM push_subscriptions WHERE endpoint = $1", [endpoint]);
+}
+
+export async function pushTargets(playerId) {
+  const { rows } = await pool.query("SELECT endpoint, p256dh, auth FROM push_subscriptions WHERE player_id = $1", [playerId]);
+  return rows;
+}
+
+export async function claimPushMark(playerId, kind, minHours) {
+  const { rows } = await pool.query(
+    `INSERT INTO push_marks (player_id, kind) VALUES ($1, $2)
+     ON CONFLICT (player_id, kind) DO UPDATE SET sent_at = now()
+     WHERE push_marks.sent_at < now() - make_interval(hours => $3::int)
+     RETURNING sent_at`,
+    [playerId, kind, minHours],
+  );
+  return Boolean(rows[0]);
+}
+
+export async function idlePushPlayers(limit = 200) {
+  const { rows } = await pool.query(
+    `WITH subscribed AS (SELECT DISTINCT player_id FROM push_subscriptions),
+     last_game AS (
+       SELECT s.player_id, (SELECT max(played_at) FROM games g WHERE g.player_id = s.player_id) AS last
+       FROM subscribed s
+     )
+     SELECT l.player_id FROM last_game l
+     LEFT JOIN push_marks m ON m.player_id = l.player_id AND m.kind = 'idle'
+     WHERE l.last IS NOT NULL AND l.last < now() - interval '48 hours'
+       AND (m.sent_at IS NULL OR m.sent_at < l.last)
+     LIMIT $1`,
+    [limit],
+  );
+  return rows.map((row) => row.player_id);
+}
+
+export async function markIdlePushed(playerId) {
+  await pool.query(
+    `INSERT INTO push_marks (player_id, kind) VALUES ($1, 'idle')
+     ON CONFLICT (player_id, kind) DO UPDATE SET sent_at = now()`,
+    [playerId],
+  );
+}
+
+export async function subscribedPlayers(limit = 500) {
+  const { rows } = await pool.query("SELECT DISTINCT player_id FROM push_subscriptions LIMIT $1", [limit]);
+  return rows.map((row) => row.player_id);
 }
 
 export async function hasGames(playerId) {

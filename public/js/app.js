@@ -120,6 +120,12 @@ function show(id, historyMode = "push") {
   });
   const page = pageOf(id);
   document.body.dataset.page = SHELL_PAGES.has(page) ? page : "play";
+  document.body.dataset.screen = id;
+  if (id === "screen-game") {
+    closeBell();
+    closePushDialog();
+  }
+  if (id === "screen-home" || id === "screen-modes") window.setTimeout(maybeAskPush, 1200);
   applyTheme(id === "screen-game" ? app.prefs.theme : "classic");
   if (id === "screen-game") {
     const wrap = document.querySelector(".board-wrap");
@@ -1759,6 +1765,7 @@ function recordGame() {
   pushHistory(entry);
   app.freshChallenges = CHALLENGES.filter((item) => earnedChallengeIds().has(item.id) && !before.has(item.id));
   syncGame(entry);
+  reportChallenges(app.freshChallenges);
   if (game.winner === "draw") app.sounds.tap();
   else if (userSeat == null || game.winner === userSeat) app.sounds.win();
   else app.sounds.lose();
@@ -2755,10 +2762,12 @@ function ensureSocket() {
   if (!window.io) return null;
   if (app.socket) return app.socket;
   app.socket = window.io({ autoConnect: false });
+  app.socket.on("notify", receiveNote);
   app.socket.on("connect", () => {
     clearTimeout(app.reconnectNote);
     app.selfBackAt = null;
     announcePresence();
+    loadBell();
     if (app.ignoreOnline) return;
     if (app.holdRejoin) {
       app.rejoinAfterHold = true;
@@ -3615,10 +3624,263 @@ function firstNameGroup(name) {
 function paintUserChip() {
   const chip = $("user-chip");
   const label = firstNameGroup(loadProfile().name);
+  paintBell();
   if (!chip) return;
   chip.hidden = !label;
   const slot = $("user-chip-name");
   if (slot) slot.textContent = label;
+}
+
+const bell = { items: [], unread: 0 };
+const NOTE_ICON = { welcome: "👋", challenge: "🏅", invite: "✉️", streak: "🔥", message: "💬", tournament: "🏆", match: "🎯" };
+
+function paintBell() {
+  const button = $("bell");
+  if (!button) return;
+  const connected = isConnected();
+  if (!connected) {
+    bell.items = [];
+    bell.unread = 0;
+  }
+  button.hidden = !connected;
+  const count = $("bell-count");
+  count.hidden = bell.unread === 0;
+  count.textContent = bell.unread > 9 ? "9+" : String(bell.unread);
+  button.classList.toggle("has-unread", bell.unread > 0);
+  button.setAttribute("aria-label", bell.unread ? `Notifications, ${bell.unread} non lues` : "Notifications");
+}
+
+async function loadBell() {
+  if (!isConnected()) {
+    paintBell();
+    return;
+  }
+  try {
+    const response = await fetch("/api/notifications");
+    if (!response.ok) return;
+    const data = await response.json();
+    bell.items = Array.isArray(data.items) ? data.items : [];
+    bell.unread = Number(data.unread) || 0;
+    paintBell();
+    if (!$("bell-dialog").hidden) renderBellList();
+  } catch {}
+}
+
+function noteWhen(at) {
+  const minutes = Math.round((Date.now() - Number(at)) / 60_000);
+  if (minutes < 1) return "à l’instant";
+  if (minutes < 60) return `il y a ${minutes} min`;
+  if (minutes < 24 * 60) return `il y a ${Math.round(minutes / 60)} h`;
+  return new Date(Number(at)).toLocaleDateString("fr-FR", { day: "numeric", month: "short" });
+}
+
+function renderBellList() {
+  const list = $("bell-list");
+  if (!bell.items.length) {
+    list.innerHTML = `<p class="empty">Rien pour l’instant. Tes défis réussis et tes matchs en ligne arriveront ici.</p>`;
+    return;
+  }
+  list.innerHTML = bell.items.map((note) => `<button type="button" class="bell-item${note.read ? "" : " is-new"}" data-link="${esc(note.link)}"><span class="bell-icon" aria-hidden="true">${NOTE_ICON[note.kind] || "•"}</span><span class="bell-copy"><strong>${esc(note.title)}</strong>${note.body ? `<span>${esc(note.body)}</span>` : ""}<em>${esc(noteWhen(note.at))}</em></span></button>`).join("");
+}
+
+async function markBellRead() {
+  const had = bell.unread > 0 || bell.items.some((note) => !note.read);
+  bell.items.forEach((note) => { note.read = true; });
+  bell.unread = 0;
+  paintBell();
+  if (!had) return;
+  try {
+    await fetch("/api/notifications/read", { method: "POST" });
+  } catch {}
+}
+
+function openBell() {
+  if (!isConnected()) return;
+  renderBellList();
+  $("bell-dialog").hidden = false;
+  markBellRead();
+  paintPushToggle();
+}
+
+function closeBell() {
+  const dialog = $("bell-dialog");
+  if (dialog) dialog.hidden = true;
+}
+
+function followNote(link) {
+  closeBell();
+  if (link === "challenges") {
+    show("screen-modes");
+    openHub("challenges");
+  } else if (link === "find") {
+    show("screen-find");
+  } else if (link === "rank-online") {
+    show("screen-rank");
+    selectRank("online");
+  } else if (link === "history") {
+    show("screen-history");
+  } else if (link === "modes") {
+    show("screen-modes");
+  }
+}
+
+function receiveNote(note) {
+  if (!note?.id || bell.items.some((item) => item.id === note.id)) return;
+  bell.items = [note, ...bell.items].slice(0, 50);
+  if ($("bell-dialog").hidden) {
+    bell.unread += 1;
+    paintBell();
+  } else {
+    renderBellList();
+    markBellRead();
+  }
+}
+
+const PUSH_LATER_KEY = "egmon-push-later";
+const PUSH_LATER_MS = 7 * 24 * 60 * 60 * 1000;
+let pushAskedThisVisit = false;
+let installPrompt = null;
+
+function isIos() {
+  return /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+}
+
+function isStandalone() {
+  return window.matchMedia?.("(display-mode: standalone)").matches || navigator.standalone === true;
+}
+
+function pushSupported() {
+  return "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+}
+
+async function currentPushSubscription() {
+  if (!pushSupported()) return null;
+  const registration = await navigator.serviceWorker.getRegistration("/");
+  return registration ? registration.pushManager.getSubscription() : null;
+}
+
+async function pushState() {
+  if (isIos() && !isStandalone()) return "ios-install";
+  if (!pushSupported()) return "unsupported";
+  if (Notification.permission === "denied") return "blocked";
+  const subscription = await currentPushSubscription().catch(() => null);
+  return subscription && Notification.permission === "granted" ? "on" : "off";
+}
+
+function base64UrlBytes(value) {
+  const padded = `${value}${"=".repeat((4 - (value.length % 4)) % 4)}`.replace(/-/g, "+").replace(/_/g, "/");
+  return Uint8Array.from(atob(padded), (char) => char.charCodeAt(0));
+}
+
+async function sendSubscription(subscription) {
+  const response = await fetch("/api/push/subscribe", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(subscription.toJSON()),
+  });
+  return response.ok;
+}
+
+async function enablePush() {
+  if (!pushSupported() || !isConnected()) return false;
+  const permission = await Notification.requestPermission();
+  if (permission !== "granted") {
+    toast("Les alertes ne sont pas activées. Tu pourras changer d’avis dans la cloche.");
+    return false;
+  }
+  try {
+    const registration = await navigator.serviceWorker.register("/sw.js", { scope: "/" });
+    await navigator.serviceWorker.ready;
+    const { key } = await (await fetch("/api/push/key")).json();
+    if (!key) throw new Error("clé");
+    const subscription = (await registration.pushManager.getSubscription())
+      || (await registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: base64UrlBytes(key) }));
+    if (!(await sendSubscription(subscription))) throw new Error("serveur");
+    toast("Alertes activées.");
+    return true;
+  } catch {
+    toast("Les alertes n’ont pas pu s’activer. Réessaie plus tard.");
+    return false;
+  }
+}
+
+async function disablePush() {
+  const subscription = await currentPushSubscription().catch(() => null);
+  if (!subscription) return;
+  try {
+    await fetch("/api/push/unsubscribe", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ endpoint: subscription.endpoint }),
+    });
+  } catch {}
+  await subscription.unsubscribe().catch(() => {});
+}
+
+async function refreshPushSubscription() {
+  if (!isConnected() || !pushSupported() || Notification.permission !== "granted") return;
+  try {
+    await navigator.serviceWorker.register("/sw.js", { scope: "/" });
+    const subscription = await currentPushSubscription();
+    if (subscription) await sendSubscription(subscription);
+  } catch {}
+}
+
+function pushLaterRecently() {
+  try {
+    return Date.now() - Number(localStorage.getItem(PUSH_LATER_KEY) || 0) < PUSH_LATER_MS;
+  } catch {
+    return false;
+  }
+}
+
+function showPushDialog(face) {
+  const ios = face === "ios";
+  $("push-title").textContent = ios ? "Reçois les alertes sur ton iPhone" : "Activer les alertes ?";
+  $("push-ask").hidden = ios;
+  $("push-ios").hidden = !ios;
+  $("push-yes").hidden = ios;
+  $("push-ok").hidden = !ios;
+  $("push-install").hidden = ios || !installPrompt;
+  $("push-dialog").hidden = false;
+}
+
+function closePushDialog() {
+  $("push-dialog").hidden = true;
+}
+
+async function maybeAskPush() {
+  if (pushAskedThisVisit || !isConnected() || pushLaterRecently()) return;
+  const screen = document.querySelector(".screen:not([hidden])")?.id;
+  if (screen !== "screen-home" && screen !== "screen-modes") return;
+  if (!$("auth-dialog").hidden || !$("bell-dialog").hidden) return;
+  const state = await pushState();
+  if (state !== "ios-install" && state !== "off") return;
+  pushAskedThisVisit = true;
+  showPushDialog(state === "ios-install" ? "ios" : "ask");
+}
+
+async function paintPushToggle() {
+  const label = $("bell-push-state");
+  const button = $("bell-push-toggle");
+  if (!label || !button) return;
+  const state = await pushState();
+  const text = {
+    on: ["Alertes téléphone : oui", "Désactiver"],
+    off: ["Alertes téléphone : non", "Activer"],
+    blocked: ["Alertes téléphone bloquées dans les réglages du téléphone", ""],
+    "ios-install": ["Alertes téléphone : ajoute d’abord le site à l’écran d’accueil", "Comment faire"],
+    unsupported: ["Alertes téléphone indisponibles sur ce navigateur", ""],
+  }[state];
+  label.textContent = text[0];
+  button.textContent = text[1];
+  button.hidden = !text[1];
+  button.dataset.state = state;
+}
+
+function reportChallenges(list) {
+  if (!isConnected() || !Array.isArray(list)) return;
+  for (const item of list) sendJson("/api/notifications/challenge", "POST", { id: item.id }).catch(() => {});
 }
 
 function isConnected() {
@@ -3862,6 +4124,7 @@ function refreshSocketIdentity() {
 }
 
 async function logout() {
+  await disablePush().catch(() => {});
   try {
     await fetch("/api/auth/logout", { method: "POST" });
   } catch {}
@@ -3895,6 +4158,9 @@ function finishAuth(profile) {
   paintUserChip();
   refreshSocketIdentity();
   announcePresence();
+  loadBell();
+  refreshPushSubscription();
+  window.setTimeout(maybeAskPush, 1200);
   pullProfile();
   pullHistory();
   if (!$("screen-profile").hidden) fillProfileForm(loadProfile());
@@ -4070,6 +4336,9 @@ async function restoreAccount() {
         paintUserChip();
       } else if (response.ok) {
         noteAdmin(await response.json());
+        loadBell();
+        refreshPushSubscription();
+        window.setTimeout(maybeAskPush, 1500);
       }
   } catch {
     /* la partie locale reste disponible */
@@ -4541,6 +4810,63 @@ function bind() {
   $("auth-back").addEventListener("click", leaveAuth);
   $("auth-forgot").addEventListener("click", forgotPassword);
   $("profile-logout")?.addEventListener("click", logout);
+  $("bell").addEventListener("click", openBell);
+  window.addEventListener("beforeinstallprompt", (event) => {
+    event.preventDefault();
+    installPrompt = event;
+  });
+  const later = () => {
+    try { localStorage.setItem(PUSH_LATER_KEY, String(Date.now())); } catch {}
+    closePushDialog();
+  };
+  $("push-later").addEventListener("click", later);
+  $("push-ok").addEventListener("click", later);
+  $("push-yes").addEventListener("click", async () => {
+    closePushDialog();
+    await enablePush();
+  });
+  $("push-install").addEventListener("click", async () => {
+    if (!installPrompt) return;
+    installPrompt.prompt();
+    await installPrompt.userChoice.catch(() => null);
+    installPrompt = null;
+    $("push-install").hidden = true;
+  });
+  $("bell-push-toggle").addEventListener("click", async (event) => {
+    const state = event.currentTarget.dataset.state;
+    if (state === "ios-install") {
+      closeBell();
+      showPushDialog("ios");
+      return;
+    }
+    if (state === "on") await disablePush();
+    else if (state === "off") await enablePush();
+    paintPushToggle();
+  });
+  $("user-chip").addEventListener("click", () => {
+    if (document.body.dataset.screen === "screen-game") return;
+    closeBell();
+    openProfile();
+  });
+  $("bell-close").addEventListener("click", closeBell);
+  $("bell-read").addEventListener("click", () => {
+    markBellRead();
+    renderBellList();
+  });
+  $("bell-feedback").addEventListener("click", () => {
+    closeBell();
+    openFeedback();
+  });
+  $("bell-list").addEventListener("click", (event) => {
+    const item = event.target.closest(".bell-item");
+    if (item) followNote(item.dataset.link);
+  });
+  $("bell-dialog").addEventListener("click", (event) => {
+    if (event.target === event.currentTarget) closeBell();
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !$("bell-dialog").hidden) closeBell();
+  });
   $("auth-help").addEventListener("click", authHelp);
   document.querySelectorAll(".secret-see").forEach((button) => {
     button.addEventListener("click", () => {

@@ -27,6 +27,18 @@ import {
   findLoginByName,
   passwordHashOf,
   hasGames,
+  addNotification,
+  listNotifications,
+  readNotifications,
+  onlineWinStreak,
+  savePushSubscription,
+  removePushSubscription,
+  dropPushEndpoint,
+  pushTargets,
+  claimPushMark,
+  idlePushPlayers,
+  markIdlePushed,
+  subscribedPlayers,
   initDb,
   insertGame,
   adminOverview,
@@ -49,6 +61,7 @@ import {
   SESSION_DAYS,
 } from "./db.js";
 import { mailReady, sendResetCode } from "./mail.js";
+import { cleanSubscription, pushKey, pushReady, sendPush } from "./push.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -275,6 +288,13 @@ app.post("/api/auth/register", api(async (req, res) => {
     return;
   }
   setSessionCookie(req, res, await openSession(saved.profile.id));
+  notifyLater(saved.profile.id, {
+    kind: "welcome",
+    ref: "welcome",
+    title: "Bienvenue sur Jeu - chimie",
+    body: "Tes défis réussis et tes matchs en ligne arriveront ici.",
+    link: "modes",
+  });
   res.json(accountOut(saved.profile));
 }));
 
@@ -588,6 +608,82 @@ app.post("/api/messages", api(async (req, res) => {
   res.json({ ok: true });
 }));
 
+async function sessionAccount(req, res) {
+  if (!dbReady()) {
+    res.status(503).json({ error: "Base indisponible." });
+    return "";
+  }
+  const id = await sessionPlayer(readCookie(req, "egmon_session"));
+  if (!id) {
+    res.status(401).json({ error: "Connexion requise." });
+    return "";
+  }
+  if (limited(`${id}:notes`, 60, 60_000)) {
+    res.status(429).json({ error: "Trop d'essais." });
+    return "";
+  }
+  return id;
+}
+
+app.get("/api/notifications", api(async (req, res) => {
+  const id = await sessionAccount(req, res);
+  if (id) res.json(await listNotifications(id));
+}));
+
+app.post("/api/notifications/read", api(async (req, res) => {
+  const id = await sessionAccount(req, res);
+  if (!id) return;
+  await readNotifications(id);
+  res.json({ ok: true });
+}));
+
+app.get("/api/push/key", (req, res) => {
+  res.json({ key: pushReady() ? pushKey() : "" });
+});
+
+app.post("/api/push/subscribe", api(async (req, res) => {
+  const id = await sessionAccount(req, res);
+  if (!id) return;
+  if (!pushReady()) {
+    res.status(503).json({ error: "Alertes indisponibles." });
+    return;
+  }
+  const sub = cleanSubscription(req.body);
+  if (!sub) {
+    res.status(400).json({ error: "Abonnement invalide." });
+    return;
+  }
+  await savePushSubscription(id, sub);
+  res.json({ ok: true });
+}));
+
+app.post("/api/push/unsubscribe", api(async (req, res) => {
+  const id = await sessionAccount(req, res);
+  if (!id) return;
+  const endpoint = String(req.body?.endpoint || "").slice(0, 1000);
+  if (endpoint) await removePushSubscription(id, endpoint);
+  res.json({ ok: true });
+}));
+
+app.post("/api/notifications/challenge", api(async (req, res) => {
+  const id = await sessionAccount(req, res);
+  if (!id) return;
+  const challenge = String(req.body?.id || "");
+  const name = Object.hasOwn(CHALLENGE_NAMES, challenge) ? CHALLENGE_NAMES[challenge] : "";
+  if (!name) {
+    res.status(400).json({ error: "Défi inconnu." });
+    return;
+  }
+  await notify(id, {
+    kind: "challenge",
+    ref: challenge,
+    title: `Défi réussi : ${name}`,
+    body: "Les XP du défi sont ajoutés à ta progression.",
+    link: "challenges",
+  });
+  res.json({ ok: true });
+}));
+
 app.delete("/api/games/:id", api(async (req, res) => {
   const id = apiPlayer(req, res);
   if (!id || !(await requireSession(req, res, id))) return;
@@ -756,6 +852,89 @@ io.use(async (socket, next) => {
   next();
 });
 
+const CHALLENGE_NAMES = {
+  speed: "Moins de 8 minutes",
+  precision: "Précision",
+  dominate: "Domination",
+  comeback: "Remontée",
+  streak: "Série de 3 jours",
+  expert: "Expert",
+  blank: "Feuille blanche",
+  week: "Série de 7 jours",
+};
+
+async function notify(playerId, note) {
+  if (!isUuid(playerId) || !dbReady()) return null;
+  const saved = await addNotification({ playerId, ...note });
+  if (!saved) return null;
+  for (const sock of io.sockets.sockets.values()) {
+    if (sock.data.account === playerId) sock.emit("notify", saved);
+  }
+  return saved;
+}
+
+async function pushTo(playerId, message) {
+  if (!pushReady() || !isUuid(playerId)) return 0;
+  let sent = 0;
+  for (const sub of await pushTargets(playerId)) {
+    const result = await sendPush(sub, message);
+    if (result.ok) sent += 1;
+    else if (result.gone) await dropPushEndpoint(sub.endpoint);
+  }
+  return sent;
+}
+
+function accountOnline(playerId) {
+  for (const sock of io.sockets.sockets.values()) {
+    if (sock.data.account === playerId) return true;
+  }
+  return false;
+}
+
+function freePeopleCount() {
+  return findPeople(null).filter((person) => !person.busy).length;
+}
+
+async function pushIdlePlayers() {
+  for (const playerId of await idlePushPlayers()) {
+    if (accountOnline(playerId)) continue;
+    await markIdlePushed(playerId);
+    await pushTo(playerId, {
+      title: "Tu t'ennuies ?",
+      body: "Une feuille t'attend. Clique pour jouer.",
+      url: "/",
+      tag: "idle",
+    });
+  }
+}
+
+async function pushFreePlayers() {
+  const free = freePeopleCount();
+  if (free <= 5) return;
+  for (const playerId of await subscribedPlayers()) {
+    if (accountOnline(playerId)) continue;
+    if (!(await claimPushMark(playerId, "free", 24))) continue;
+    await pushTo(playerId, {
+      title: `${free} joueurs sont libres`,
+      body: "C'est le bon moment pour une partie en ligne.",
+      url: "/",
+      tag: "free",
+    });
+  }
+}
+
+function pushRounds() {
+  if (!dbReady() || !pushReady()) return;
+  pushIdlePlayers().catch((error) => console.error("Alertes inactivité:", error.message));
+  pushFreePlayers().catch((error) => console.error("Alertes joueurs libres:", error.message));
+}
+
+setInterval(pushRounds, 10 * 60 * 1000).unref();
+
+function notifyLater(playerId, note) {
+  notify(playerId, note).catch((error) => console.error("Notification:", error.message));
+}
+
 function dropSockets(match) {
   for (const sock of io.sockets.sockets.values()) {
     if (sock.data.account && match(sock)) sock.disconnect(true);
@@ -788,6 +967,41 @@ function snapshot(room, event = null) {
     direct: room.direct === true,
     event,
   };
+}
+
+function matchNote(seat, names, scores, winner, reason) {
+  const foe = names[1 - seat];
+  const score = `${scores[seat]} – ${scores[1 - seat]}`;
+  const outcome = winner === "draw" ? "égalité" : winner === seat ? "gagné" : "perdu";
+  const won = winner === seat;
+  const why = {
+    abandon: won ? `${foe} a abandonné.` : "Tu as abandonné.",
+    time: "Fin au temps.",
+    score: "Objectif de maisons atteint.",
+    board: "Feuille pleine.",
+  }[reason] || "";
+  return {
+    kind: "match",
+    title: `Match contre ${foe} : ${outcome} ${score}`,
+    body: why,
+    link: "history",
+  };
+}
+
+function celebrateStreak(playerId) {
+  onlineWinStreak(playerId).then(async ({ streak, last }) => {
+    if (streak !== 3) return;
+    const saved = await notify(playerId, {
+      kind: "streak",
+      ref: `streak3:${last}`,
+      title: "3 victoires en ligne d'affilée",
+      body: "Bravo ! Regarde ta place dans le classement en ligne.",
+      link: "rank-online",
+    });
+    if (saved && !accountOnline(playerId)) {
+      await pushTo(playerId, { title: "3 victoires d'affilée !", body: "Bravo ! Viens voir ta place au classement.", url: "/", tag: "streak" });
+    }
+  }).catch((error) => console.error("Série:", error.message));
 }
 
 function saveOnlineMatch(room) {
@@ -824,6 +1038,12 @@ function saveOnlineMatch(room) {
     });
   })).then(() => {
     room.saved = true;
+    for (const seat of [0, 1]) {
+      const player = room.players[seat];
+      if (!isUuid(player?.id)) continue;
+      notifyLater(player.id, matchNote(seat, names, scores, winner, game.reason));
+      if (winner === seat) celebrateStreak(player.id);
+    }
   }).catch((error) => {
     console.error("Partie en ligne non enregistrée:", error.message);
     room.saved = false;

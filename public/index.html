@@ -11,6 +11,12 @@
     body:not(.ready) { visibility: hidden; }
   </style>
   <link rel="icon" href="img/logo-jeu.jpg" type="image/jpeg">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <meta name="theme-color" content="#0e1616">
+  <link rel="apple-touch-icon" href="/img/icon-180.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Jeu - chimie">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,560;9..144,680&family=Outfit:wght@380;500;640&display=swap" rel="stylesheet">
@@ -22,13 +28,20 @@
       <img class="mark" src="img/logo-jeu1.png" alt="">
       <span>Jeu - chimie</span>
     </button>
-    <p id="user-chip" class="user-chip" hidden>
+    <button type="button" id="user-chip" class="user-chip" aria-label="Mon profil" hidden>
       <svg viewBox="0 0 24 24" aria-hidden="true">
         <circle cx="12" cy="8" r="3.2" fill="none" stroke="currentColor" stroke-width="1.7"/>
         <path d="M5.5 19.2c1.3-3 3.5-4.4 6.5-4.4s5.2 1.4 6.5 4.4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
       </svg>
       <span id="user-chip-name"></span>
-    </p>
+    </button>
+    <button type="button" id="bell" class="bell" aria-label="Notifications" hidden>
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M6.5 16.5V11a5.5 5.5 0 0 1 11 0v5.5l1.5 2h-14l1.5-2z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>
+        <path d="M10 20.5a2.2 2.2 0 0 0 4 0" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+      </svg>
+      <span id="bell-count" class="bell-count" hidden></span>
+    </button>
   </header>
 
   <main>
@@ -662,6 +675,45 @@
       <div class="form-actions" id="app-dialog-actions"></div>
     </div>
   </div>
+  <div id="bell-dialog" class="overlay page-dialog" hidden>
+    <div class="dialog bell-dialog" role="dialog" aria-modal="true" aria-labelledby="bell-title">
+      <div class="bell-head">
+        <h2 id="bell-title">Notifications</h2>
+        <button type="button" class="auth-link" id="bell-read">Tout marquer lu</button>
+      </div>
+      <div id="bell-list" class="bell-list"></div>
+      <p class="bell-push"><span id="bell-push-state">Alertes téléphone</span><button type="button" class="auth-link" id="bell-push-toggle" hidden></button></p>
+      <div class="form-actions bell-actions">
+        <button type="button" class="btn" id="bell-feedback">Envoyer un message ou un retour</button>
+        <button type="button" class="btn primary" id="bell-close">Fermer</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="push-dialog" class="overlay page-dialog" hidden>
+    <div class="dialog push-dialog" role="dialog" aria-modal="true" aria-labelledby="push-title">
+      <img class="push-icon" src="/img/icon-192.png" alt="" width="64" height="64">
+      <h2 id="push-title">Activer les alertes ?</h2>
+      <div id="push-ask">
+        <p class="push-text">Seulement pour les moments importants : une série de victoires, des joueurs libres pour une partie, un tournoi plus tard. Jamais pendant une partie.</p>
+      </div>
+      <div id="push-ios" hidden>
+        <p class="push-text">Sur iPhone, les alertes marchent quand Jeu - chimie est sur ton écran d’accueil :</p>
+        <ol class="push-steps">
+          <li>Touche le bouton <strong>Partager</strong> <span class="push-share" aria-hidden="true">⬆</span> en bas de Safari.</li>
+          <li>Choisis <strong>« Sur l’écran d’accueil »</strong>, puis <strong>Ajouter</strong>.</li>
+          <li>Ouvre Jeu - chimie <strong>depuis la nouvelle icône</strong> : on te proposera d’activer les alertes.</li>
+        </ol>
+      </div>
+      <div class="form-actions push-actions">
+        <button type="button" class="btn" id="push-later">Plus tard</button>
+        <button type="button" class="btn" id="push-install" hidden>Installer l’application</button>
+        <button type="button" class="btn primary" id="push-yes">Oui, activer</button>
+        <button type="button" class="btn primary" id="push-ok" hidden>J’ai compris</button>
+      </div>
+    </div>
+  </div>
+
   <div id="auth-dialog" class="overlay page-dialog" hidden>
     <form id="auth-form" class="dialog">
       <button type="button" class="auth-link" id="auth-back">Retour</button>
