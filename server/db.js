@@ -202,6 +202,7 @@ export async function upsertProfile({ id, name, email, icon, photo }) {
      RETURNING name, email, icon, photo`,
     [id, name, email, icon || null, photo],
   );
+  forgetRanking();
   return rows[0];
 }
 
@@ -271,6 +272,7 @@ export async function saveAccount({ id, name, email, passwordHash }) {
         [id, name, email, passwordHash],
       );
     if (!rows[0]) return { error: "Profil introuvable." };
+    forgetRanking();
     return { profile: rows[0] };
   } catch (error) {
     if (error.code === "23505") return { error: "Cet e-mail a déjà un profil." };
@@ -422,6 +424,7 @@ export async function insertGame(playerId, entry) {
       entry.clean === true,
     ],
   );
+  forgetRanking();
 }
 
 export async function gameStats(playerId) {
@@ -477,6 +480,7 @@ export async function listGames(playerId) {
 
 export async function clearGames(playerId) {
   await pool.query("DELETE FROM games WHERE player_id = $1", [playerId]);
+  forgetRanking();
 }
 
 export async function adminOverview() {
@@ -711,6 +715,7 @@ async function onlineTotals(playerId) {
 
 function packRank(rows) {
   return rows.map((row) => ({
+    owner: row.owner,
     id: typeof row.id === "string" ? row.id : "",
     name: row.name,
     icon: row.icon,
@@ -723,12 +728,33 @@ function packRank(rows) {
     expertWins: row.expert_wins,
     rank: Number(row.rank),
     people: Number(row.people),
-    you: row.you === true,
   }));
 }
 
+const RANK_TTL_MS = 60_000;
+const rankCache = new Map();
+
+export function forgetRanking() {
+  rankCache.clear();
+}
+
+function rankRows(board) {
+  const hit = rankCache.get(board);
+  if (hit && Date.now() - hit.at < RANK_TTL_MS) return hit.rows;
+  const rows = (board === "online" ? onlineRankRows() : generalRankRows()).catch((error) => {
+    rankCache.delete(board);
+    throw error;
+  });
+  rankCache.set(board, { at: Date.now(), rows });
+  return rows;
+}
+
 export async function ranking(playerId, board = "general") {
-  if (board === "online") return onlineRanking(playerId);
+  const rows = await rankRows(board === "online" ? "online" : "general");
+  return rows.map(({ owner, ...row }) => ({ ...row, you: Boolean(playerId) && owner === playerId }));
+}
+
+async function generalRankRows() {
   const { rows } = await pool.query(
     `WITH per_game AS (
        SELECT g.player_id,
@@ -838,15 +864,14 @@ export async function ranking(playerId, board = "general") {
               COUNT(*) OVER () AS people
        FROM scored
      )
-     SELECT public_id::text AS id, name, icon, photo, xp, houses, best, games, wins, expert_wins, rank, people, (id = $1) AS you
+     SELECT id::text AS owner, public_id::text AS id, name, icon, photo, xp, houses, best, games, wins, expert_wins, rank, people
      FROM ranked
      ORDER BY rank`,
-    [playerId],
   );
   return packRank(rows);
 }
 
-async function onlineRanking(playerId) {
+async function onlineRankRows() {
   const { rows } = await pool.query(
     `WITH per_game AS (
        SELECT g.player_id,
@@ -880,10 +905,9 @@ async function onlineRanking(playerId) {
               COUNT(*) OVER () AS people
        FROM scored
      )
-     SELECT public_id::text AS id, name, icon, photo, xp, houses, best, games, wins, expert_wins, rank, people, (id = $1) AS you
+     SELECT id::text AS owner, public_id::text AS id, name, icon, photo, xp, houses, best, games, wins, expert_wins, rank, people
      FROM ranked
      ORDER BY rank`,
-    [playerId],
   );
   return packRank(rows);
 }

@@ -1237,11 +1237,14 @@ socket.on("chat", (text) => {
   sock?.emit("chat", { code: found.room.code, text: body, seat: found.seat });
 });
 
+const VOICE_TYPES = /^data:(?:audio|video)\/(webm|ogg|mp4|mpeg|aac|wav|x-wav|x-m4a)((?:;[a-z0-9=.+-]+)*);base64,([A-Za-z0-9+/]+={0,2})$/;
+
 function cleanVoice(value) {
   const audio = String(value || "").replace(/\s/g, "");
   if (audio.length < 80 || audio.length > 2_500_000) return "";
-  if (!/^data:(audio|video)\/[a-z0-9.+-]+[^,]*,[A-Za-z0-9+/=]+$/.test(audio)) return "";
-  return audio;
+  const match = VOICE_TYPES.exec(audio);
+  if (!match) return "";
+  return `data:audio/${match[1]}${match[2]};base64,${match[3]}`;
 }
 
 socket.on("voice", (payload) => {
