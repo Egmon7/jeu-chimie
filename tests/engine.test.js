@@ -230,8 +230,15 @@ for (const [r, c] of [[2, 2], [2, 3], [2, 4], [3, 2], [4, 2], [4, 3], [4, 4], [4
 bulge.current = 0;
 applyMove(bulge, { r: 3, c: 4 });
 const bulgeLoop = enclosures(bulge)[0]?.loop || [];
-assert(bulge.scores[0] === 1 && bulgeLoop.length === 4, "un renflement vide à côté ne se trace pas");
+assert(bulge.scores[0] === 1 && bulgeLoop.length === 8, "un renflement vide à côté ne se trace pas");
 assert(!bulgeLoop.some((dot) => dot.r >= 5 || dot.c >= 5), "les lignes du renflement restent absentes");
+assert(
+  bulgeLoop.every((dot, i) => {
+    const next = bulgeLoop[(i + 1) % bulgeLoop.length];
+    return Math.abs(dot.r - next.r) + Math.abs(dot.c - next.c) === 1;
+  }),
+  "le cadre du carré suit les côtés, sans diagonale",
+);
 
 const spur = createGame({ rows: 4, cols: 4, extraTurn: false, timeMode: "none" });
 spur.dots[2][2] = 1;
@@ -273,5 +280,31 @@ quiet.current = 0;
 const placed = applyMove(quiet, { r: 2, c: 1 }, { autoClose: false });
 assert(placed.ok && placed.completed === 0 && quiet.scores[0] === 0, "dessiner seul ne ferme pas la maison tout seul");
 assert(placed.pending === true && quiet.current === 0, "le tour reste pour rattacher les enfants");
+
+const framed = createGame({ rows: 10, cols: 10, extraTurn: false, timeMode: "none" });
+framed.dots[5][5] = 1;
+for (let r = 3; r <= 7; r += 1) {
+  for (let c = 3; c <= 7; c += 1) {
+    if (r === 5 && c === 5) continue;
+    if (r === 3 || r === 7 || c === 3 || c === 7) framed.dots[r][c] = 0;
+  }
+}
+framed.dots[2][5] = 0;
+framed.dots[5][2] = 0;
+framed.dots[8][5] = 0;
+framed.dots[5][8] = 0;
+framed.dots[3][3] = null;
+framed.current = 0;
+const framedClose = applyMove(framed, { r: 3, c: 3 });
+const framedLoop = enclosures(framed)[0]?.loop || [];
+assert(framedClose.completed === 1 && framed.scores[0] === 1, "une maison avec des pointes autour marque toujours");
+assert(framedLoop.length === 16, "le cadre suit tout le pourtour, sans couper les coins");
+assert(
+  framedLoop.every((dot, i) => {
+    const next = framedLoop[(i + 1) % framedLoop.length];
+    return Math.abs(dot.r - next.r) + Math.abs(dot.c - next.c) === 1;
+  }),
+  "le cadre reste orthogonal quand les coins sont posés",
+);
 
 console.log("engine ok");

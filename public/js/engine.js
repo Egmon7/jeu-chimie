@@ -458,13 +458,33 @@ function walkFace(start, second, adj) {
   return [];
 }
 
+/** Diagonale OK pour un losange ; interdite si un coin ortho existe (sinon le cadre coupe le coin). */
+function faceEdge(a, b, set) {
+  const dr = Math.abs(a.r - b.r);
+  const dc = Math.abs(a.c - b.c);
+  if (dr > 1 || dc > 1 || (dr === 0 && dc === 0)) return false;
+  if (dr + dc === 1) return true;
+  return !set.has(`${a.r},${b.c}`) && !set.has(`${b.r},${a.c}`);
+}
+
+function diagonalSteps(loop) {
+  let n = 0;
+  for (let i = 0; i < loop.length; i += 1) {
+    const a = loop[i];
+    const b = loop[(i + 1) % loop.length];
+    if (Math.abs(a.r - b.r) === 1 && Math.abs(a.c - b.c) === 1) n += 1;
+  }
+  return n;
+}
+
 function faceLoops(dots) {
   if (dots.length < 4) return [];
+  const set = new Set(dots.map((dot) => `${dot.r},${dot.c}`));
   const adj = new Map();
   for (const dot of dots) adj.set(`${dot.r},${dot.c}`, []);
   for (let i = 0; i < dots.length; i += 1) {
     for (let j = i + 1; j < dots.length; j += 1) {
-      if (loopStep(dots[i], dots[j]) !== 1) continue;
+      if (!faceEdge(dots[i], dots[j], set)) continue;
       adj.get(`${dots[i].r},${dots[i].c}`).push(dots[j]);
       adj.get(`${dots[j].r},${dots[j].c}`).push(dots[i]);
     }
@@ -532,7 +552,10 @@ function newHouses(game, player) {
     const prev = traced.get(key);
     const tighter = !prev
       || cells.length < prev.cells.length
-      || (cells.length === prev.cells.length && loop.length > prev.loop.length);
+      || (cells.length === prev.cells.length && (
+        diagonalSteps(loop) < diagonalSteps(prev.loop)
+        || (diagonalSteps(loop) === diagonalSteps(prev.loop) && loop.length > prev.loop.length)
+      ));
     if (tighter) traced.set(key, { loop, children, key, cells });
   }
   const tracedHouses = [...traced.values()].sort((a, b) => a.loop.length - b.loop.length);
