@@ -30,7 +30,8 @@ services:
       NODE_ENV: production
       PORT: 4173
       HOST: 0.0.0.0
-      DATABASE_URL: postgres://jeu:${POSTGRES_PASSWORD:-jeu_local_only}@postgres:5432/jeu_chimie
+      DATABASE_URL: postgres://jeu_app:${APP_DB_PASSWORD:?APP_DB_PASSWORD manque dans .env}@postgres:5432/jeu_chimie
+      DATABASE_OWNER_URL: postgres://jeu:${POSTGRES_PASSWORD:-jeu_local_only}@postgres:5432/jeu_chimie
       BREVO_API_KEY: ${BREVO_API_KEY:-}
       MAIL_FROM: ${MAIL_FROM:-}
       MAIL_FROM_NAME: ${MAIL_FROM_NAME:-Jeu - chimie}

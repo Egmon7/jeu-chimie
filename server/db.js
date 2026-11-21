@@ -13,8 +13,20 @@ if (fs.existsSync(envFile)) {
 }
 
 const url = process.env.DATABASE_URL || "";
+const ownerUrl = process.env.DATABASE_OWNER_URL || "";
 const pool = url ? new pg.Pool({ connectionString: url, max: 5 }) : null;
 if (pool) pool.on("error", (error) => console.error("Base:", error.message));
+
+function quoteIdent(value) {
+  return `"${String(value).replace(/"/g, '""')}"`;
+}
+
+const CONSTRAINTS = [
+  ["games", "games_mode_check", "CHECK (mode IN ('solo', 'local', 'online'))"],
+  ["games", "games_player_fk", "FOREIGN KEY (player_id) REFERENCES profiles (id) ON DELETE RESTRICT"],
+  ["sessions", "sessions_player_fk", "FOREIGN KEY (player_id) REFERENCES profiles (id) ON DELETE CASCADE"],
+  ["reset_codes", "reset_codes_player_fk", "FOREIGN KEY (player_id) REFERENCES profiles (id) ON DELETE CASCADE"],
+];
 let ready = false;
 
 export function dbReady() {
@@ -33,7 +45,23 @@ export function isUuid(value) {
 
 export async function initDb() {
   if (!pool) return;
-  await pool.query(`
+  const separate = Boolean(ownerUrl) && ownerUrl !== url;
+  const owner = separate ? new pg.Pool({ connectionString: ownerUrl, max: 1 }) : pool;
+  try {
+    await migrate(owner);
+    if (separate) {
+      const appUser = quoteIdent(decodeURIComponent(new URL(url).username));
+      await owner.query(`GRANT USAGE ON SCHEMA public TO ${appUser}`);
+      await owner.query(`GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO ${appUser}`);
+    }
+  } finally {
+    if (separate) await owner.end();
+  }
+  ready = true;
+}
+
+async function migrate(owner) {
+  await owner.query(`
     CREATE TABLE IF NOT EXISTS profiles (
       id uuid PRIMARY KEY,
       name text NOT NULL CHECK (char_length(name) BETWEEN 1 AND 40),
@@ -61,33 +89,33 @@ export async function initDb() {
       created_at timestamptz NOT NULL DEFAULT now()
     );
   `);
-  await pool.query("ALTER TABLE profiles DROP CONSTRAINT IF EXISTS profiles_email_check");
-  await pool.query(`
+  await owner.query("ALTER TABLE profiles DROP CONSTRAINT IF EXISTS profiles_email_check");
+  await owner.query(`
     ALTER TABLE profiles ADD CONSTRAINT profiles_email_check
     CHECK (email = '' OR char_length(email) BETWEEN 3 AND 80)
   `);
-  await pool.query("ALTER TABLE profiles ADD COLUMN IF NOT EXISTS icon text NOT NULL DEFAULT 'dot'");
-  await pool.query("ALTER TABLE profiles DROP CONSTRAINT IF EXISTS profiles_icon_check");
-  await pool.query(`
+  await owner.query("ALTER TABLE profiles ADD COLUMN IF NOT EXISTS icon text NOT NULL DEFAULT 'dot'");
+  await owner.query("ALTER TABLE profiles DROP CONSTRAINT IF EXISTS profiles_icon_check");
+  await owner.query(`
     ALTER TABLE profiles ADD CONSTRAINT profiles_icon_check
     CHECK (icon IN ('dot', 'house', 'star', 'crown', 'pen', 'book', 'flame', 'gem'))
   `);
-  await pool.query("ALTER TABLE profiles ADD COLUMN IF NOT EXISTS photo text NOT NULL DEFAULT ''");
-  await pool.query("ALTER TABLE profiles DROP CONSTRAINT IF EXISTS profiles_photo_check");
-  await pool.query(`
+  await owner.query("ALTER TABLE profiles ADD COLUMN IF NOT EXISTS photo text NOT NULL DEFAULT ''");
+  await owner.query("ALTER TABLE profiles DROP CONSTRAINT IF EXISTS profiles_photo_check");
+  await owner.query(`
     ALTER TABLE profiles ADD CONSTRAINT profiles_photo_check
     CHECK (photo = '' OR photo ~ '^https://res\\.cloudinary\\.com/ka4h4lpk/image/upload/[A-Za-z0-9_./%-]{1,360}$')
   `);
-  await pool.query("ALTER TABLE games ADD COLUMN IF NOT EXISTS duration_ms integer");
-  await pool.query("ALTER TABLE games ADD COLUMN IF NOT EXISTS behind boolean NOT NULL DEFAULT false");
-  await pool.query("ALTER TABLE games ADD COLUMN IF NOT EXISTS clean boolean NOT NULL DEFAULT false");
-  await pool.query("ALTER TABLE profiles ADD COLUMN IF NOT EXISTS password_hash text NOT NULL DEFAULT ''");
-  await pool.query("ALTER TABLE profiles ADD COLUMN IF NOT EXISTS created_at timestamptz");
-  await pool.query("UPDATE profiles SET created_at = updated_at WHERE created_at IS NULL");
-  await pool.query("ALTER TABLE profiles ALTER COLUMN created_at SET DEFAULT now()");
-  await pool.query("ALTER TABLE profiles ALTER COLUMN created_at SET NOT NULL");
+  await owner.query("ALTER TABLE games ADD COLUMN IF NOT EXISTS duration_ms integer");
+  await owner.query("ALTER TABLE games ADD COLUMN IF NOT EXISTS behind boolean NOT NULL DEFAULT false");
+  await owner.query("ALTER TABLE games ADD COLUMN IF NOT EXISTS clean boolean NOT NULL DEFAULT false");
+  await owner.query("ALTER TABLE profiles ADD COLUMN IF NOT EXISTS password_hash text NOT NULL DEFAULT ''");
+  await owner.query("ALTER TABLE profiles ADD COLUMN IF NOT EXISTS created_at timestamptz");
+  await owner.query("UPDATE profiles SET created_at = updated_at WHERE created_at IS NULL");
+  await owner.query("ALTER TABLE profiles ALTER COLUMN created_at SET DEFAULT now()");
+  await owner.query("ALTER TABLE profiles ALTER COLUMN created_at SET NOT NULL");
   try {
-    await pool.query(`
+    await owner.query(`
       CREATE UNIQUE INDEX IF NOT EXISTS profiles_email_unique
       ON profiles (lower(email))
       WHERE email <> ''
@@ -95,21 +123,21 @@ export async function initDb() {
   } catch (error) {
     console.error("Index e-mail:", error.message);
   }
-  await pool.query(`
+  await owner.query(`
     CREATE TABLE IF NOT EXISTS sessions (
       token_hash text PRIMARY KEY,
       player_id uuid NOT NULL,
       created_at timestamptz NOT NULL DEFAULT now()
     )
   `);
-  await pool.query("CREATE INDEX IF NOT EXISTS sessions_player ON sessions (player_id)");
-  await pool.query("ALTER TABLE sessions ADD COLUMN IF NOT EXISTS expires_at timestamptz");
-  await pool.query(`UPDATE sessions SET expires_at = created_at + interval '${SESSION_DAYS} days' WHERE expires_at IS NULL`);
-  await pool.query(`ALTER TABLE sessions ALTER COLUMN expires_at SET DEFAULT now() + interval '${SESSION_DAYS} days'`);
-  await pool.query("ALTER TABLE sessions ALTER COLUMN expires_at SET NOT NULL");
-  await pool.query("ALTER TABLE profiles ADD COLUMN IF NOT EXISTS public_id uuid NOT NULL DEFAULT gen_random_uuid()");
-  await pool.query("CREATE UNIQUE INDEX IF NOT EXISTS profiles_public_id ON profiles (public_id)");
-  await pool.query(`
+  await owner.query("CREATE INDEX IF NOT EXISTS sessions_player ON sessions (player_id)");
+  await owner.query("ALTER TABLE sessions ADD COLUMN IF NOT EXISTS expires_at timestamptz");
+  await owner.query(`UPDATE sessions SET expires_at = created_at + interval '${SESSION_DAYS} days' WHERE expires_at IS NULL`);
+  await owner.query(`ALTER TABLE sessions ALTER COLUMN expires_at SET DEFAULT now() + interval '${SESSION_DAYS} days'`);
+  await owner.query("ALTER TABLE sessions ALTER COLUMN expires_at SET NOT NULL");
+  await owner.query("ALTER TABLE profiles ADD COLUMN IF NOT EXISTS public_id uuid NOT NULL DEFAULT gen_random_uuid()");
+  await owner.query("CREATE UNIQUE INDEX IF NOT EXISTS profiles_public_id ON profiles (public_id)");
+  await owner.query(`
     CREATE TABLE IF NOT EXISTS reset_codes (
       id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
       player_id uuid NOT NULL,
@@ -120,26 +148,35 @@ export async function initDb() {
       created_at timestamptz NOT NULL DEFAULT now()
     )
   `);
-  await pool.query("CREATE INDEX IF NOT EXISTS reset_codes_player ON reset_codes (player_id, created_at DESC)");
-  await pool.query(`
+  await owner.query("CREATE INDEX IF NOT EXISTS reset_codes_player ON reset_codes (player_id, created_at DESC)");
+  await owner.query(`
     CREATE TABLE IF NOT EXISTS visits (
       player_id uuid NOT NULL,
       day date NOT NULL,
       PRIMARY KEY (player_id, day)
     )
   `);
-  await pool.query("CREATE INDEX IF NOT EXISTS visits_day ON visits (day)");
-  await pool.query(`
+  await owner.query("CREATE INDEX IF NOT EXISTS visits_day ON visits (day)");
+  await owner.query(`
     INSERT INTO visits (player_id, day)
     SELECT DISTINCT player_id, (played_at AT TIME ZONE 'Europe/Paris')::date FROM games
     ON CONFLICT DO NOTHING
   `);
-  await pool.query(`
+  await owner.query(`
     INSERT INTO visits (player_id, day)
     SELECT DISTINCT player_id, (created_at AT TIME ZONE 'Europe/Paris')::date FROM sessions
     ON CONFLICT DO NOTHING
   `);
-  ready = true;
+  for (const [table, name, rule] of CONSTRAINTS) {
+    const { rows } = await owner.query("SELECT convalidated FROM pg_constraint WHERE conname = $1", [name]);
+    if (!rows[0]) await owner.query(`ALTER TABLE ${table} ADD CONSTRAINT ${name} ${rule} NOT VALID`);
+    if (rows[0]?.convalidated) continue;
+    try {
+      await owner.query(`ALTER TABLE ${table} VALIDATE CONSTRAINT ${name}`);
+    } catch (error) {
+      console.error(`Contrainte ${name}:`, error.message);
+    }
+  }
 }
 
 export async function recordVisit(playerId) {

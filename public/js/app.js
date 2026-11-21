@@ -3828,6 +3828,13 @@ function forgotPassword() {
   window.setTimeout(() => $("auth-email").focus(), 30);
 }
 
+function refreshSocketIdentity() {
+  presenceSent = "";
+  if (!app.socket) return;
+  if (app.socket.connected) app.socket.disconnect();
+  app.socket.connect();
+}
+
 async function logout() {
   try {
     await fetch("/api/auth/logout", { method: "POST" });
@@ -3835,6 +3842,7 @@ async function logout() {
   saveSession(null);
   noteAdmin(null);
   paintUserChip();
+  refreshSocketIdentity();
   toast("Tu es déconnecté.");
   show("screen-home");
 }
@@ -3859,6 +3867,7 @@ function finishAuth(profile) {
   saveSession({ connected: true, id: profile.id, email: profile.email });
   $("auth-dialog").hidden = true;
   paintUserChip();
+  refreshSocketIdentity();
   announcePresence();
   pullProfile();
   pullHistory();

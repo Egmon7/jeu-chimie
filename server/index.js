@@ -279,7 +279,9 @@ app.post("/api/auth/login", api(async (req, res) => {
 }));
 
 app.post("/api/auth/logout", api(async (req, res) => {
-  if (dbReady()) await closeSession(readCookie(req, "egmon_session"));
+  const token = readCookie(req, "egmon_session");
+  if (dbReady()) await closeSession(token);
+  if (token) dropSockets((sock) => sock.data.sessionToken === token);
   setSessionCookie(req, res, "");
   res.json({ ok: true });
 }));
@@ -343,6 +345,7 @@ app.post("/api/auth/reset/confirm", api(async (req, res) => {
   }
   await setOwnPassword(account.id, await hashPassword(password));
   await closeOtherSessions(account.id);
+  dropSockets((sock) => sock.data.account === account.id);
   setSessionCookie(req, res, await openSession(account.id));
   res.json(accountOut(account));
 }));
@@ -374,6 +377,7 @@ app.post("/api/auth/password", api(async (req, res) => {
     return;
   }
   await closeOtherSessions(id, token);
+  dropSockets((sock) => sock.data.account === id && sock.data.sessionToken !== token);
   res.json({ ok: true });
 }));
 
@@ -556,6 +560,11 @@ function safePlayerId(value, fallback) {
   return fallback;
 }
 
+function playerKey(socket, value) {
+  if (socket.data.account) return socket.data.account;
+  return `guest:${safePlayerId(value, socket.id)}`;
+}
+
 function asMove(move) {
   if (!move || typeof move !== "object") return null;
   const { r, c } = move;
@@ -621,29 +630,51 @@ function queueToken(value) {
   return /^[A-Z2-9]{6}$/.test(token) ? token : "";
 }
 
+const GAME_REASONS = ["board", "score", "time", "abandon", "robot"];
+
+function sheetOf(value) {
+  const match = String(value || "").match(/^(\d{1,2})[x×](\d{1,2})$/);
+  if (!match) return null;
+  const rows = Number(match[1]);
+  const cols = Number(match[2]);
+  if (rows < 2 || rows > 32 || cols < 2 || cols > 32) return null;
+  return { rows, cols, size: `${rows}×${cols}` };
+}
+
 function validGame(entry) {
   if (!entry || typeof entry !== "object" || !isUuid(entry.id)) return null;
   if (!["solo", "local", "online"].includes(entry.mode)) return null;
-  if (!Array.isArray(entry.names) || !Array.isArray(entry.scores) || !entry.scores.length) return null;
+  if (!Array.isArray(entry.names) || !Array.isArray(entry.scores) || entry.scores.length < 2) return null;
+  const sheet = sheetOf(entry.size);
+  if (!sheet) return null;
+  const reason = entry.reason == null || entry.reason === "" ? null : entry.reason;
+  if (reason !== null && !GAME_REASONS.includes(reason)) return null;
+  const ceiling = Math.min(42, Math.floor(((sheet.rows + 1) * (sheet.cols + 1)) / 2));
   const scores = entry.scores.slice(0, 2).map((score) => {
     const n = Number(score);
-    return Number.isInteger(n) && n >= 0 && n <= 42 ? n : -1;
+    return Number.isInteger(n) && n >= 0 && n <= ceiling ? n : -1;
   });
   if (scores.some((score) => score < 0)) return null;
+  if (scores[0] + scores[1] > Math.floor(((sheet.rows + 1) * (sheet.cols + 1)) / 2)) return null;
+  const winner = entry.winner === 0 || entry.winner === 1 || entry.winner === "draw" ? entry.winner : "draw";
+  if (reason === "board" || reason === "score") {
+    const expected = scores[0] > scores[1] ? 0 : scores[1] > scores[0] ? 1 : "draw";
+    if (winner !== expected) return null;
+  }
   const at = Number(entry.at);
   return {
     id: entry.id,
     at: Number.isFinite(at) ? Math.min(Date.now() + 60_000, Math.max(0, at)) : Date.now(),
     mode: entry.mode,
-    size: entry.size,
+    size: sheet.size,
     names: entry.names.slice(0, 2).map((name) => cleanName(name, "Joueur")),
     scores,
     durationMs: Number.isInteger(Number(entry.durationMs)) && Number(entry.durationMs) > 0 && Number(entry.durationMs) < 6 * 60 * 60 * 1000 ? Number(entry.durationMs) : null,
     behind: entry.behind === true,
     clean: entry.clean === true,
-    winner: entry.winner === 0 || entry.winner === 1 || entry.winner === "draw" ? entry.winner : "draw",
+    winner,
     userSeat: entry.userSeat === 0 || entry.userSeat === 1 ? entry.userSeat : null,
-    reason: entry.reason,
+    reason,
     difficulty: ["easy", "medium", "hard", "veryhard", "expert"].includes(entry.difficulty) ? entry.difficulty : null,
   };
 }
@@ -663,6 +694,27 @@ io.use((socket, next) => {
   });
   next();
 });
+
+io.use(async (socket, next) => {
+  socket.data.account = "";
+  socket.data.sessionToken = "";
+  if (dbReady()) {
+    try {
+      const token = readCookie(socket.request, "egmon_session");
+      socket.data.account = await sessionPlayer(token);
+      if (socket.data.account) socket.data.sessionToken = token;
+    } catch {
+      socket.data.account = "";
+    }
+  }
+  next();
+});
+
+function dropSockets(match) {
+  for (const sock of io.sockets.sockets.values()) {
+    if (sock.data.account && match(sock)) sock.disconnect(true);
+  }
+}
 
 function seatOf(room, playerId) {
   return room.players.findIndex((player) => player && player.id === playerId);
@@ -797,7 +849,7 @@ function rememberPresence(socket, payload) {
   const activity = payload.activity === "robot" || payload.activity === "duo" ? payload.activity : "";
   const next = {
     token: presenceToken(current),
-    id: safePlayerId(payload.playerId, current?.id || socket.id),
+    id: playerKey(socket, payload.playerId),
     name,
     photo,
     busy,
@@ -805,7 +857,7 @@ function rememberPresence(socket, payload) {
     socketId: socket.id,
   };
   presence.set(socket.id, next);
-  noteVisit(next.id);
+  noteVisit(socket.data.account || safePlayerId(payload.playerId, ""));
   return next;
 }
 
@@ -1021,7 +1073,7 @@ io.on("connection", (socket) => {
       game: null,
       players: [
         {
-          id: safePlayerId(payload.playerId, socket.id),
+          id: playerKey(socket, payload.playerId),
           name: settings.p1Name,
           color: settings.p1Color,
           socketId: socket.id,
@@ -1057,7 +1109,8 @@ io.on("connection", (socket) => {
     const code = roomCode(payload.code);
     const room = code ? rooms.get(code) : null;
     if (!room) return ack?.({ ok: false, error: "Salle introuvable." });
-    const existing = seatOf(room, safePlayerId(payload.playerId, ""));
+    const key = playerKey(socket, payload.playerId);
+    const existing = seatOf(room, key);
     if (existing >= 0) {
       const holder = room.players[existing];
       if (holder.connected && holder.socketId !== socket.id) {
@@ -1065,7 +1118,7 @@ io.on("connection", (socket) => {
       }
       const live = liveRoom(socket);
       if (live && live.room.code !== room.code) return ack?.({ ok: false, error: "Quitte d’abord la salle en cours." });
-      attach(socket, room, existing, payload.playerId);
+      attach(socket, room, existing, key);
       ack?.({ ok: true, code });
       emitState(room, { type: "rejoin" });
       return;
@@ -1081,7 +1134,7 @@ io.on("connection", (socket) => {
       }
     }
     room.settings = { ...room.settings, p2Name: name, p2Color: color };
-    room.players[1] = { id: safePlayerId(payload.playerId, socket.id), name, color, socketId: socket.id, connected: true };
+    room.players[1] = { id: key, name, color, socketId: socket.id, connected: true };
     room.ready[1] = false;
     room.accepted = false;
     queue.delete(socket.id);
@@ -1099,7 +1152,8 @@ io.on("connection", (socket) => {
     if (limited(`${socket.id}:join`, 12, 60_000)) return ack?.({ ok: false });
     const code = roomCode(payload.code);
     const room = code ? rooms.get(code) : null;
-    const seat = room ? seatOf(room, safePlayerId(payload.playerId, "")) : -1;
+    const key = playerKey(socket, payload.playerId);
+    const seat = room ? seatOf(room, key) : -1;
     if (!room || seat < 0) return ack?.({ ok: false });
     const holder = room.players[seat];
     if (holder.socketId && holder.socketId !== socket.id) {
@@ -1112,7 +1166,7 @@ io.on("connection", (socket) => {
     const live = liveRoom(socket);
     if (live && live.room.code !== room.code) return ack?.({ ok: false });
     queue.delete(socket.id);
-    attach(socket, room, seat, payload.playerId);
+    attach(socket, room, seat, key);
     ack?.({ ok: true, code: room.code });
     emitState(room, { type: "rejoin" });
     broadcastFind();
@@ -1425,9 +1479,8 @@ socket.on("move", (move, ack) => {
   });
 });
 
-function attach(socket, room, seat, playerId) {
+function attach(socket, room, seat, id) {
   clearForfeit(room, seat);
-  const id = safePlayerId(playerId, room.players[seat].id);
   room.players[seat].socketId = socket.id;
   room.players[seat].connected = true;
   room.players[seat].id = id;

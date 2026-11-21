@@ -52,6 +52,12 @@ const joined = await new Promise((resolve) => {
 });
 assert(joined.ok, joined.error || "rejoindre");
 
+await new Promise((resolve) => setTimeout(resolve, 150));
+assert(!hostStates.some((state) => state.game), "la partie attend les deux joueurs");
+host.emit("present");
+guest.emit("present");
+await new Promise((resolve) => setTimeout(resolve, 150));
+host.emit("launch");
 await new Promise((resolve) => setTimeout(resolve, 200));
 const started = hostStates.find((state) => state.game);
 assert(started?.game?.rows === 2, "la partie commence en 2×2");
