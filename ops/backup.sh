@@ -63,3 +63,28 @@ keep_newest "$DIR/mensuel" "$KEEP_MONTHLY"
 keep_newest "$DIR/echecs" 5
 
 log "OK : $daily ($size octets)"
+
+offsite() {
+  local bucket
+  bucket=$(env_value B2_BUCKET)
+  RCLONE_CONFIG_B2_ACCOUNT=$(env_value B2_KEY_ID)
+  RCLONE_CONFIG_B2_KEY=$(env_value B2_APP_KEY)
+  if [ -z "$bucket" ] || [ -z "$RCLONE_CONFIG_B2_ACCOUNT" ] || [ -z "$RCLONE_CONFIG_B2_KEY" ]; then
+    log "Copie distante : pas configurée"
+    return 0
+  fi
+  export RCLONE_CONFIG_B2_TYPE=b2 RCLONE_CONFIG_B2_ACCOUNT RCLONE_CONFIG_B2_KEY
+  if docker run --rm --network bridge \
+    -e RCLONE_CONFIG_B2_TYPE -e RCLONE_CONFIG_B2_ACCOUNT -e RCLONE_CONFIG_B2_KEY \
+    -v "$DIR:/data:ro" rclone/rclone:1.68.2 copy /data "b2:$bucket" \
+    --include "/quotidien/*.dump" --include "/hebdo/*.dump" --include "/mensuel/*.dump" \
+    --checksum --log-level ERROR; then
+    log "Copie distante : OK (b2:$bucket)"
+  else
+    log "ÉCHEC copie distante"
+    alert "la copie vers Backblaze a échoué (la sauvegarde locale est bonne)"
+    return 2
+  fi
+}
+
+offsite
