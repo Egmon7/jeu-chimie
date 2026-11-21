@@ -88,6 +88,8 @@ export function normalizeSettings(input = {}) {
     closeMode: input.closeMode === "hand" ? "hand" : "auto",
     p1Name: cleanName(input.p1Name, d.p1Name),
     p2Name: cleanName(input.p2Name, d.p2Name),
+    turnSeconds: timeMode === "turn" ? 0 : clampInt(input.turnSeconds, 0, 120, 0),
+    suddenDeath: timeMode === "global" && input.suddenDeath === true,
   };
 }
 
@@ -116,17 +118,19 @@ export function createGame(settings, starter = 0) {
       timeLimit: s.timeLimit,
       scoreLimit: s.scoreLimit,
       closeMode: s.closeMode,
+      turnSeconds: s.turnSeconds,
+      suddenDeath: s.suddenDeath,
     },
     globalRemaining: null,
     turnRemaining: null,
     turnLimit: null,
+    suddenDeath: false,
     salt: Math.floor(Math.random() * 997),
   };
   if (s.timeMode === "global") game.globalRemaining = s.timeLimit * 1000;
-  if (s.timeMode === "turn") {
-    game.turnLimit = s.timeLimit * 1000;
-    game.turnRemaining = game.turnLimit;
-  }
+  if (s.timeMode === "turn") game.turnLimit = s.timeLimit * 1000;
+  else if (s.turnSeconds > 0) game.turnLimit = s.turnSeconds * 1000;
+  if (game.turnLimit != null) game.turnRemaining = game.turnLimit;
   return game;
 }
 
@@ -684,7 +688,14 @@ function finishByScore(game) {
 }
 
 function resetTurnClock(game) {
-  if (game.settings.timeMode === "turn") game.turnRemaining = game.turnLimit;
+  if (game.turnLimit != null) game.turnRemaining = game.turnLimit;
+}
+
+export function skipTurn(game) {
+  if (!game || game.status !== "playing") return false;
+  game.current = 1 - game.current;
+  resetTurnClock(game);
+  return true;
 }
 
 /**
@@ -717,7 +728,9 @@ export function applyMove(game, move, options = {}) {
   const pending = manual && canCatch(game, player);
 
   const limit = game.settings.scoreLimit;
-  if (limit > 0 && game.scores[player] >= limit) {
+  if (game.suddenDeath && game.scores[0] !== game.scores[1]) {
+    finish(game, game.scores[0] > game.scores[1] ? 0 : 1, "golden");
+  } else if (limit > 0 && game.scores[player] >= limit) {
     finish(game, player, "score");
   } else if (!pending && (legalMoves(game).length === 0 || game.movesPlayed >= game.totalDots)) {
     finishByScore(game);
@@ -791,11 +804,14 @@ export function tick(game, dt) {
     if (before > 0 && game.globalRemaining === 0) {
       if (game.scores[0] > game.scores[1]) finish(game, 0, "time");
       else if (game.scores[1] > game.scores[0]) finish(game, 1, "time");
-      else finish(game, "draw", "time");
+      else if (game.settings.suddenDeath) {
+        game.suddenDeath = true;
+        return { timedOut: true, kind: "golden" };
+      } else finish(game, "draw", "time");
       return { timedOut: true, kind: "global" };
     }
   }
-  if (game.settings.timeMode === "turn" && game.turnRemaining != null) {
+  if (game.turnLimit != null && game.turnRemaining != null) {
     const before = game.turnRemaining;
     game.turnRemaining = Math.max(0, before - dt);
     if (before > 0 && game.turnRemaining === 0) return { timedOut: true, kind: "turn" };

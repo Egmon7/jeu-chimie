@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from "crypto";
+import { createHash, randomBytes, randomInt } from "crypto";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -194,6 +194,50 @@ async function migrate(owner) {
     )
   `);
   await owner.query("CREATE INDEX IF NOT EXISTS push_subscriptions_player ON push_subscriptions (player_id)");
+  await owner.query(`
+    CREATE TABLE IF NOT EXISTS tournaments (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      code text NOT NULL UNIQUE CHECK (code ~ '^TRN-[A-HJ-NP-Z2-9]{6}$'),
+      name text NOT NULL CHECK (char_length(name) BETWEEN 1 AND 40),
+      size int NOT NULL DEFAULT 4 CHECK (size IN (4, 8)),
+      creator_id uuid NOT NULL REFERENCES profiles (id) ON DELETE CASCADE,
+      official boolean NOT NULL DEFAULT false,
+      status text NOT NULL DEFAULT 'waiting' CHECK (status IN ('waiting', 'running', 'finished', 'cancelled')),
+      winner_id uuid REFERENCES profiles (id) ON DELETE SET NULL,
+      runner_up_id uuid REFERENCES profiles (id) ON DELETE SET NULL,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      started_at timestamptz,
+      finished_at timestamptz
+    )
+  `);
+  await owner.query(`
+    CREATE TABLE IF NOT EXISTS tournament_players (
+      tournament_id uuid NOT NULL REFERENCES tournaments (id) ON DELETE CASCADE,
+      player_id uuid NOT NULL REFERENCES profiles (id) ON DELETE CASCADE,
+      seat int,
+      joined_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (tournament_id, player_id)
+    )
+  `);
+  await owner.query("CREATE INDEX IF NOT EXISTS tournament_players_player ON tournament_players (player_id)");
+  await owner.query(`
+    CREATE TABLE IF NOT EXISTS tournament_matches (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      tournament_id uuid NOT NULL REFERENCES tournaments (id) ON DELETE CASCADE,
+      round text NOT NULL CHECK (round IN ('quarter', 'semi', 'final')),
+      slot int NOT NULL,
+      p1 uuid REFERENCES profiles (id) ON DELETE SET NULL,
+      p2 uuid REFERENCES profiles (id) ON DELETE SET NULL,
+      status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'playing', 'done')),
+      winner uuid REFERENCES profiles (id) ON DELETE SET NULL,
+      scores jsonb,
+      reason text,
+      started_at timestamptz,
+      finished_at timestamptz,
+      UNIQUE (tournament_id, round, slot)
+    )
+  `);
+  await owner.query("ALTER TABLE tournament_matches ADD COLUMN IF NOT EXISTS room_code text");
   await owner.query(`
     CREATE TABLE IF NOT EXISTS push_marks (
       player_id uuid NOT NULL REFERENCES profiles (id) ON DELETE CASCADE,
@@ -660,6 +704,295 @@ export async function markIdlePushed(playerId) {
 export async function subscribedPlayers(limit = 500) {
   const { rows } = await pool.query("SELECT DISTINCT player_id FROM push_subscriptions LIMIT $1", [limit]);
   return rows.map((row) => row.player_id);
+}
+
+async function inTransaction(work) {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const result = await work(client);
+    await client.query("COMMIT");
+    return result;
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function activeTourneyCode(client, playerId) {
+  const { rows } = await client.query(
+    `SELECT t.code FROM tournaments t
+     JOIN tournament_players p ON p.tournament_id = t.id
+     WHERE p.player_id = $1 AND t.status IN ('waiting', 'running')
+     LIMIT 1`,
+    [playerId],
+  );
+  return rows[0]?.code || "";
+}
+
+export async function activeTourneyOf(playerId) {
+  return activeTourneyCode(pool, playerId);
+}
+
+export async function cancelStaleTourneys() {
+  const { rows } = await pool.query(
+    `UPDATE tournaments SET status = 'cancelled', finished_at = now()
+     WHERE status = 'waiting' AND created_at < now() - interval '24 hours'
+     RETURNING code`,
+  );
+  return rows.map((row) => row.code);
+}
+
+export async function tourneyHistoryOf(playerId) {
+  const { rows } = await pool.query(
+    `SELECT t.code, t.name, t.status, t.size,
+       COALESCE(t.finished_at, t.started_at, t.created_at) AS at,
+       (SELECT COUNT(*)::int FROM tournament_players x WHERE x.tournament_id = t.id) AS players,
+       w.name AS winner_name, (t.winner_id = $1) AS you_won
+     FROM tournaments t
+     JOIN tournament_players p ON p.tournament_id = t.id AND p.player_id = $1
+     LEFT JOIN profiles w ON w.id = t.winner_id
+     WHERE t.status <> 'cancelled'
+     ORDER BY CASE WHEN t.status IN ('waiting', 'running') THEN 0 ELSE 1 END,
+       COALESCE(t.finished_at, t.started_at, t.created_at) DESC
+     LIMIT 30`,
+    [playerId],
+  );
+  return rows.map((row) => ({
+    code: row.code,
+    name: row.name,
+    status: row.status,
+    size: row.size,
+    players: row.players,
+    at: new Date(row.at).getTime(),
+    winner: row.winner_name || "",
+    youWon: row.you_won === true,
+  }));
+}
+
+export async function recentTourneyOf(playerId) {
+  const { rows } = await pool.query(
+    `SELECT t.code FROM tournaments t
+     JOIN tournament_players p ON p.tournament_id = t.id
+     WHERE p.player_id = $1 AND t.status = 'finished' AND t.finished_at > now() - interval '24 hours'
+     ORDER BY t.finished_at DESC
+     LIMIT 1`,
+    [playerId],
+  );
+  return rows[0]?.code || "";
+}
+
+export async function createTourney({ creatorId, name, code }) {
+  try {
+    return await inTransaction(async (client) => {
+      const active = await activeTourneyCode(client, creatorId);
+      if (active) return { error: "active", code: active };
+      const { rows } = await client.query(
+        "INSERT INTO tournaments (code, name, creator_id) VALUES ($1, $2, $3) RETURNING id",
+        [code, name, creatorId],
+      );
+      await client.query("INSERT INTO tournament_players (tournament_id, player_id) VALUES ($1, $2)", [rows[0].id, creatorId]);
+      return { code };
+    });
+  } catch (error) {
+    if (error.code === "23505") return { error: "code" };
+    throw error;
+  }
+}
+
+export async function joinTourney(code, playerId) {
+  return inTransaction(async (client) => {
+    const { rows } = await client.query("SELECT id, size, status FROM tournaments WHERE code = $1 FOR UPDATE", [code]);
+    const tourney = rows[0];
+    if (!tourney) return { error: "unknown" };
+    const { rows: mine } = await client.query(
+      "SELECT 1 FROM tournament_players WHERE tournament_id = $1 AND player_id = $2",
+      [tourney.id, playerId],
+    );
+    if (mine[0]) return { ok: true, already: true };
+    if (tourney.status !== "waiting") return { error: "started" };
+    const active = await activeTourneyCode(client, playerId);
+    if (active) return { error: "active", code: active };
+    const { rows: count } = await client.query("SELECT COUNT(*)::int AS n FROM tournament_players WHERE tournament_id = $1", [tourney.id]);
+    if (count[0].n >= tourney.size) return { error: "full" };
+    await client.query("INSERT INTO tournament_players (tournament_id, player_id) VALUES ($1, $2)", [tourney.id, playerId]);
+    return { ok: true };
+  });
+}
+
+export async function leaveTourney(code, playerId) {
+  return inTransaction(async (client) => {
+    const { rows } = await client.query("SELECT id, creator_id, status FROM tournaments WHERE code = $1 FOR UPDATE", [code]);
+    const tourney = rows[0];
+    if (!tourney) return { error: "unknown" };
+    if (tourney.status !== "waiting") return { error: "started" };
+    if (tourney.creator_id === playerId) {
+      await client.query("UPDATE tournaments SET status = 'cancelled', finished_at = now() WHERE id = $1", [tourney.id]);
+      return { ok: true, cancelled: true };
+    }
+    await client.query("DELETE FROM tournament_players WHERE tournament_id = $1 AND player_id = $2", [tourney.id, playerId]);
+    return { ok: true };
+  });
+}
+
+export async function launchTourney(code, playerId) {
+  return inTransaction(async (client) => {
+    const { rows } = await client.query("SELECT id, size, creator_id, status FROM tournaments WHERE code = $1 FOR UPDATE", [code]);
+    const tourney = rows[0];
+    if (!tourney) return { error: "unknown" };
+    if (tourney.creator_id !== playerId) return { error: "creator" };
+    if (tourney.status !== "waiting") return { error: "started" };
+    const { rows: players } = await client.query("SELECT player_id FROM tournament_players WHERE tournament_id = $1", [tourney.id]);
+    if (players.length !== tourney.size) return { error: "missing" };
+    const order = players.map((row) => row.player_id);
+    for (let i = order.length - 1; i > 0; i -= 1) {
+      const j = randomInt(0, i + 1);
+      [order[i], order[j]] = [order[j], order[i]];
+    }
+    for (const [seat, id] of order.entries()) {
+      await client.query("UPDATE tournament_players SET seat = $3 WHERE tournament_id = $1 AND player_id = $2", [tourney.id, id, seat]);
+    }
+    for (let slot = 0; slot < order.length / 2; slot += 1) {
+      await client.query(
+        "INSERT INTO tournament_matches (tournament_id, round, slot, p1, p2) VALUES ($1, 'semi', $2, $3, $4)",
+        [tourney.id, slot + 1, order[slot * 2], order[slot * 2 + 1]],
+      );
+    }
+    await client.query("INSERT INTO tournament_matches (tournament_id, round, slot) VALUES ($1, 'final', 1)", [tourney.id]);
+    await client.query("UPDATE tournaments SET status = 'running', started_at = now() WHERE id = $1", [tourney.id]);
+    return { ok: true };
+  });
+}
+
+export async function tourneyMatchesToStart(code) {
+  const { rows } = await pool.query(
+    `SELECT m.id, m.round, m.slot, m.p1, m.p2, a.name AS p1_name, b.name AS p2_name
+     FROM tournament_matches m
+     JOIN tournaments t ON t.id = m.tournament_id
+     JOIN profiles a ON a.id = m.p1
+     JOIN profiles b ON b.id = m.p2
+     WHERE t.code = $1 AND t.status = 'running' AND m.status = 'pending'
+     ORDER BY m.slot`,
+    [code],
+  );
+  return rows;
+}
+
+export async function markMatchPlaying(matchId, roomCode) {
+  const { rows } = await pool.query(
+    `UPDATE tournament_matches SET status = 'playing', room_code = $2, started_at = now()
+     WHERE id = $1 AND status = 'pending' RETURNING id`,
+    [matchId, roomCode],
+  );
+  return Boolean(rows[0]);
+}
+
+export async function finishMatch({ matchId, winner, scores, reason }) {
+  return inTransaction(async (client) => {
+    const { rows } = await client.query(
+      `UPDATE tournament_matches SET status = 'done', winner = $2, scores = $3::text::jsonb, reason = $4, finished_at = now()
+       WHERE id = $1 AND status = 'playing'
+       RETURNING tournament_id, round, p1, p2`,
+      [matchId, winner, JSON.stringify(scores), reason],
+    );
+    const match = rows[0];
+    if (!match) return null;
+    const { rows: tourneys } = await client.query("SELECT code FROM tournaments WHERE id = $1 FOR UPDATE", [match.tournament_id]);
+    const code = tourneys[0]?.code || "";
+    if (match.round === "semi") {
+      const { rows: semis } = await client.query(
+        "SELECT slot, status, winner FROM tournament_matches WHERE tournament_id = $1 AND round = 'semi' ORDER BY slot",
+        [match.tournament_id],
+      );
+      if (semis.every((row) => row.status === "done")) {
+        await client.query(
+          "UPDATE tournament_matches SET p1 = $2, p2 = $3 WHERE tournament_id = $1 AND round = 'final'",
+          [match.tournament_id, semis[0].winner, semis[1].winner],
+        );
+        return { code, next: "final" };
+      }
+      return { code, next: "wait" };
+    }
+    const runnerUp = winner === match.p1 ? match.p2 : match.p1;
+    await client.query(
+      `UPDATE tournaments SET status = 'finished', winner_id = $2, runner_up_id = $3, finished_at = now()
+       WHERE id = $1`,
+      [match.tournament_id, winner, runnerUp],
+    );
+    return { code, next: "done", winner, runnerUp };
+  });
+}
+
+export async function resetPlayingMatches() {
+  await pool.query("UPDATE tournament_matches SET status = 'pending', room_code = NULL, started_at = NULL WHERE status = 'playing'");
+  const { rows } = await pool.query("SELECT code FROM tournaments WHERE status = 'running'");
+  return rows.map((row) => row.code);
+}
+
+export async function tourneyPlayerIds(code) {
+  const { rows } = await pool.query(
+    `SELECT p.player_id FROM tournament_players p JOIN tournaments t ON t.id = p.tournament_id WHERE t.code = $1`,
+    [code],
+  );
+  return rows.map((row) => row.player_id);
+}
+
+export async function tourneyState(code, viewerId) {
+  const { rows } = await pool.query(
+    "SELECT id, code, name, size, creator_id, official, status, winner_id, runner_up_id, created_at FROM tournaments WHERE code = $1",
+    [code],
+  );
+  const tourney = rows[0];
+  if (!tourney) return null;
+  const { rows: players } = await pool.query(
+    `SELECT p.player_id, p.seat, pr.name, pr.photo, pr.public_id::text AS public_id
+     FROM tournament_players p JOIN profiles pr ON pr.id = p.player_id
+     WHERE p.tournament_id = $1 ORDER BY p.joined_at`,
+    [tourney.id],
+  );
+  const { rows: matches } = await pool.query(
+    `SELECT round, slot, p1, p2, status, winner, scores, reason, room_code FROM tournament_matches
+     WHERE tournament_id = $1 ORDER BY CASE round WHEN 'quarter' THEN 0 WHEN 'semi' THEN 1 ELSE 2 END, slot`,
+    [tourney.id],
+  );
+  const byId = new Map(players.map((row) => [row.player_id, row]));
+  const view = (id) => {
+    const row = byId.get(id);
+    if (!row) return null;
+    return { key: row.public_id, name: row.name, photo: row.photo, you: id === viewerId };
+  };
+  return {
+    code: tourney.code,
+    name: tourney.name,
+    size: tourney.size,
+    official: tourney.official,
+    status: tourney.status,
+    youIn: byId.has(viewerId),
+    youCreator: tourney.creator_id === viewerId,
+    players: players.map((row) => ({
+      key: row.public_id,
+      name: row.name,
+      photo: row.photo,
+      seat: row.seat,
+      creator: row.player_id === tourney.creator_id,
+      you: row.player_id === viewerId,
+    })),
+    matches: matches.map((row) => ({
+      round: row.round,
+      slot: row.slot,
+      status: row.status,
+      p1: view(row.p1),
+      p2: view(row.p2),
+      winner: row.winner ? view(row.winner)?.key || "" : "",
+      scores: row.scores,
+      reason: row.reason,
+      mine: row.p1 === viewerId || row.p2 === viewerId,
+      room: row.status === "playing" && (row.p1 === viewerId || row.p2 === viewerId) ? row.room_code || "" : "",
+    })),
+    winner: tourney.winner_id ? view(tourney.winner_id) : null,
+  };
 }
 
 export async function hasGames(playerId) {

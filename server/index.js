@@ -14,6 +14,7 @@ import {
   makeRoomCode,
   normalizeSettings,
   tick,
+  skipTurn,
   REACTIONS,
 } from "../public/js/engine.js";
 import {
@@ -39,6 +40,20 @@ import {
   idlePushPlayers,
   markIdlePushed,
   subscribedPlayers,
+  activeTourneyOf,
+  recentTourneyOf,
+  tourneyHistoryOf,
+  cancelStaleTourneys,
+  createTourney,
+  joinTourney,
+  leaveTourney,
+  launchTourney,
+  tourneyPlayerIds,
+  tourneyState,
+  tourneyMatchesToStart,
+  markMatchPlaying,
+  finishMatch,
+  resetPlayingMatches,
   initDb,
   insertGame,
   adminOverview,
@@ -278,13 +293,21 @@ app.post("/api/auth/register", api(async (req, res) => {
     res.status(400).json({ error: PASSWORD_RULE });
     return;
   }
-  if (!name || !EMAIL_OK.test(email) || !id) {
-    res.status(400).json({ error: "Nom, e-mail ou mot de passe invalide." });
+  if (!name) {
+    res.status(400).json({ error: "Écris ton nom.", field: "name" });
+    return;
+  }
+  if (!EMAIL_OK.test(email)) {
+    res.status(400).json({ error: "Cet e-mail n’est pas valide.", field: "email" });
+    return;
+  }
+  if (!id) {
+    res.status(400).json({ error: "Recharge la page, puis réessaie." });
     return;
   }
   const saved = await saveAccount({ id, name, email, passwordHash: await hashPassword(password) });
   if (saved.error) {
-    res.status(409).json({ error: saved.error });
+    res.status(409).json({ error: saved.error, field: saved.error.includes("e-mail") ? "claim" : "" });
     return;
   }
   setSessionCookie(req, res, await openSession(saved.profile.id));
@@ -305,8 +328,12 @@ app.post("/api/auth/login", api(async (req, res) => {
   }
   const key = String(req.body?.key || req.body?.email || "").trim().slice(0, 80);
   const password = String(req.body?.password || "");
-  if (!key || password.length < 1 || password.length > 80) {
-    res.status(400).json({ error: "Nom, e-mail ou mot de passe invalide." });
+  if (!key) {
+    res.status(400).json({ error: "Écris ton nom ou ton e-mail.", field: "key" });
+    return;
+  }
+  if (password.length < 1 || password.length > 80) {
+    res.status(400).json({ error: "Écris ton mot de passe." });
     return;
   }
   const byEmail = EMAIL_OK.test(key);
@@ -360,7 +387,7 @@ app.post("/api/auth/reset/request", api(async (req, res) => {
   }
   res.json({ ok: true });
   const account = await findAccount(email);
-  if (!account?.password_hash) return;
+  if (!account?.id) return;
   const code = String(randomInt(0, 1_000_000)).padStart(6, "0");
   await saveResetCode(account.id, code);
   sendResetCode(account.email, code).catch((error) => {
@@ -389,7 +416,7 @@ app.post("/api/auth/reset/confirm", api(async (req, res) => {
     return;
   }
   const account = await findAccount(email);
-  if (!account?.password_hash || !(await useResetCode(account.id, code))) {
+  if (!account?.id || !(await useResetCode(account.id, code))) {
     res.status(400).json({ error: "Code incorrect ou expiré." });
     return;
   }
@@ -665,6 +692,145 @@ app.post("/api/push/unsubscribe", api(async (req, res) => {
   res.json({ ok: true });
 }));
 
+const TOURNEY_CODE = /^TRN-[A-HJ-NP-Z2-9]{6}$/;
+const TOURNEY_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+const TOURNEY_ERRORS = {
+  unknown: [404, "Aucun tournoi avec ce code."],
+  started: [409, "Ce tournoi a déjà commencé."],
+  full: [409, "Ce tournoi est complet."],
+  active: [409, "Tu es déjà dans un autre tournoi."],
+  creator: [403, "Seul le créateur peut lancer le tournoi."],
+  missing: [409, "Il faut que les 4 places soient prises."],
+};
+
+function tourneyCode(value) {
+  const code = String(value || "").trim().toUpperCase();
+  return TOURNEY_CODE.test(code) ? code : "";
+}
+
+function newTourneyCode() {
+  let code = "TRN-";
+  for (let i = 0; i < 6; i += 1) code += TOURNEY_CHARS[randomInt(0, TOURNEY_CHARS.length)];
+  return code;
+}
+
+function tourneyError(res, result) {
+  const [status, message] = TOURNEY_ERRORS[result.error] || [400, "Action impossible."];
+  res.status(status).json({ error: message, code: result.code || "" });
+}
+
+async function broadcastTourney(code) {
+  for (const playerId of await tourneyPlayerIds(code)) {
+    const sockets = [...io.sockets.sockets.values()].filter((sock) => sock.data.account === playerId);
+    if (!sockets.length) continue;
+    const state = await tourneyState(code, playerId);
+    for (const sock of sockets) sock.emit("tourney", state);
+  }
+}
+
+function broadcastTourneyLater(code) {
+  broadcastTourney(code).catch((error) => console.error("Tournoi:", error.message));
+}
+
+app.get("/api/tourneys/mine", api(async (req, res) => {
+  const id = await sessionAccount(req, res);
+  if (!id) return;
+  const code = await activeTourneyOf(id);
+  const recent = code ? "" : await recentTourneyOf(id);
+  res.json({
+    code,
+    state: code ? await tourneyState(code, id) : null,
+    recent: recent ? await tourneyState(recent, id) : null,
+  });
+}));
+
+app.get("/api/tourneys/history", api(async (req, res) => {
+  const id = await sessionAccount(req, res);
+  if (id) res.json({ items: await tourneyHistoryOf(id) });
+}));
+
+app.get("/api/tourneys/:code", api(async (req, res) => {
+  const id = await sessionAccount(req, res);
+  if (!id) return;
+  const code = tourneyCode(req.params.code);
+  const state = code ? await tourneyState(code, id) : null;
+  if (!state || (!state.youIn && !state.official)) {
+    res.status(404).json({ error: "Aucun tournoi avec ce code." });
+    return;
+  }
+  res.json(state);
+}));
+
+app.post("/api/tourneys", api(async (req, res) => {
+  const id = await sessionAccount(req, res);
+  if (!id) return;
+  if (limited(`${id}:tourney-create`, 5, 60 * 60 * 1000)) {
+    res.status(429).json({ error: "Trop de tournois créés. Réessaie plus tard." });
+    return;
+  }
+  const name = String(req.body?.name || "").replace(/[\u0000-\u001f]/g, "").trim().slice(0, 40);
+  if (!name) {
+    res.status(400).json({ error: "Donne un nom au tournoi." });
+    return;
+  }
+  let result = { error: "code" };
+  for (let tries = 0; tries < 5 && result.error === "code"; tries += 1) {
+    result = await createTourney({ creatorId: id, name, code: newTourneyCode() });
+  }
+  if (result.error) {
+    tourneyError(res, result);
+    return;
+  }
+  res.json(await tourneyState(result.code, id));
+}));
+
+app.post("/api/tourneys/join", api(async (req, res) => {
+  const id = await sessionAccount(req, res);
+  if (!id) return;
+  if (limited(`${id}:tourney-join`, 20, 10 * 60_000)) {
+    res.status(429).json({ error: "Trop d'essais. Patiente un peu." });
+    return;
+  }
+  const code = tourneyCode(req.body?.code);
+  if (!code) {
+    res.status(400).json({ error: "Le code a la forme TRN- suivie de 6 lettres ou chiffres." });
+    return;
+  }
+  const result = await joinTourney(code, id);
+  if (result.error) {
+    tourneyError(res, result);
+    return;
+  }
+  if (!result.already) broadcastTourneyLater(code);
+  res.json(await tourneyState(code, id));
+}));
+
+app.post("/api/tourneys/leave", api(async (req, res) => {
+  const id = await sessionAccount(req, res);
+  if (!id) return;
+  const code = tourneyCode(req.body?.code);
+  const result = code ? await leaveTourney(code, id) : { error: "unknown" };
+  if (result.error) {
+    tourneyError(res, result);
+    return;
+  }
+  broadcastTourneyLater(code);
+  res.json({ ok: true, cancelled: result.cancelled === true });
+}));
+
+app.post("/api/tourneys/launch", api(async (req, res) => {
+  const id = await sessionAccount(req, res);
+  if (!id) return;
+  const code = tourneyCode(req.body?.code);
+  const result = code ? await launchTourney(code, id) : { error: "unknown" };
+  if (result.error) {
+    tourneyError(res, result);
+    return;
+  }
+  await startTourneyMatches(code);
+  res.json(await tourneyState(code, id));
+}));
+
 app.post("/api/notifications/challenge", api(async (req, res) => {
   const id = await sessionAccount(req, res);
   if (!id) return;
@@ -931,6 +1097,13 @@ function pushRounds() {
 
 setInterval(pushRounds, 10 * 60 * 1000).unref();
 
+setInterval(() => {
+  if (!dbReady()) return;
+  cancelStaleTourneys()
+    .then((codes) => codes.forEach((code) => broadcastTourneyLater(code)))
+    .catch((error) => console.error("Tournois en attente:", error.message));
+}, 30 * 60 * 1000).unref();
+
 function notifyLater(playerId, note) {
   notify(playerId, note).catch((error) => console.error("Notification:", error.message));
 }
@@ -965,6 +1138,9 @@ function snapshot(room, event = null) {
     ready: room.ready?.slice() || [false, false],
     accepted: room.accepted === true,
     direct: room.direct === true,
+    tournament: room.tournament
+      ? { code: room.tournament.code, round: room.tournament.round, showUpBy: room.tournament.showUpBy }
+      : null,
     event,
   };
 }
@@ -986,6 +1162,98 @@ function matchNote(seat, names, scores, winner, reason) {
     body: why,
     link: "history",
   };
+}
+
+const TOURNEY_SHOW_UP_MS = Number(process.env.TOURNEY_SHOW_UP_MS) || 2 * 60 * 1000;
+const TOURNEY_RULES = {
+  semi: { timeMode: "global", timeLimit: 900, turnSeconds: 20, suddenDeath: true, scoreLimit: 0 },
+  final: { timeMode: "none", scoreLimit: 10, turnSeconds: 20 },
+};
+
+async function startTourneyMatches(code) {
+  for (const match of await tourneyMatchesToStart(code)) {
+    const roomCode = makeRoomCode(rooms);
+    if (!(await markMatchPlaying(match.id, roomCode))) continue;
+    const settings = normalizeSettings({
+      ...TOURNEY_RULES[match.round],
+      p1Name: match.p1_name,
+      p2Name: match.p2_name,
+      p1Color: "blue",
+      p2Color: "red",
+    });
+    rooms.set(roomCode, {
+      code: roomCode,
+      settings,
+      game: null,
+      players: [
+        { id: match.p1, name: settings.p1Name, color: settings.p1Color, socketId: "", connected: false },
+        { id: match.p2, name: settings.p2Name, color: settings.p2Color, socketId: "", connected: false },
+      ],
+      rematch: [false, false],
+      ready: [false, false],
+      accepted: false,
+      forfeit: [null, null],
+      forfeitAt: [null, null],
+      touched: Date.now(),
+      opened: Date.now(),
+      tournament: { code, matchId: match.id, round: match.round, showUpBy: Date.now() + TOURNEY_SHOW_UP_MS, done: false },
+    });
+  }
+  broadcastTourneyLater(code);
+}
+
+function startTourneyGame(room) {
+  if (!room.tournament || room.game || !room.players.every((player) => player?.connected)) return;
+  room.game = createGame(room.settings, 0);
+  room.startedAt = Date.now();
+  room.saved = false;
+  room.saving = false;
+}
+
+function resolveTourneyRoom(room, reason) {
+  if (!room.tournament || room.tournament.done) return;
+  const game = room.game || createGame(room.settings, 0);
+  room.game = game;
+  if (game.status === "playing") {
+    const lead = game.scores[0] === game.scores[1] ? randomInt(0, 2) : game.scores[0] > game.scores[1] ? 0 : 1;
+    game.status = "finished";
+    game.winner = lead;
+    game.reason = reason;
+  }
+  room.saved = reason === "forfeit" || reason === "absence";
+  emitState(room, { type: reason });
+}
+
+function concludeTourneyMatch(room) {
+  room.tournament.done = true;
+  const game = room.game;
+  if (game.winner !== 0 && game.winner !== 1) {
+    game.winner = randomInt(0, 2);
+    game.reason = "tirage";
+  }
+  const seat = game.winner;
+  const reason = game.reason || "score";
+  finishMatch({
+    matchId: room.tournament.matchId,
+    winner: room.players[seat].id,
+    scores: game.scores.slice(0, 2),
+    reason,
+  }).then(async (result) => {
+    if (!result) return;
+    if (result.next === "final") await startTourneyMatches(result.code);
+    else broadcastTourneyLater(result.code);
+  }).catch((error) => console.error("Match de tournoi:", error.message));
+}
+
+function checkTourneyShowUp(room, now) {
+  if (!room.tournament || room.game || now < room.tournament.showUpBy) return;
+  const present = [0, 1].filter((seat) => room.players[seat]?.connected && socketAlive(room.players[seat].socketId));
+  room.game = createGame(room.settings, 0);
+  room.game.status = "finished";
+  room.game.reason = present.length === 1 ? "forfeit" : "absence";
+  room.game.winner = present.length === 1 ? present[0] : randomInt(0, 2);
+  room.saved = true;
+  emitState(room, { type: room.game.reason });
 }
 
 function celebrateStreak(playerId) {
@@ -1054,6 +1322,8 @@ function saveOnlineMatch(room) {
 
 function emitState(room, event = null) {
   room.touched = Date.now();
+  startTourneyGame(room);
+  if (room.tournament && !room.tournament.done && room.game?.status === "finished") concludeTourneyMatch(room);
   if (room.game?.status === "finished") saveOnlineMatch(room);
   const paired = pairState(room);
   if (room.listed !== paired) {
@@ -1261,6 +1531,13 @@ function reapRooms() {
       if (player && !socketAlive(player.socketId)) player.connected = false;
     }
     const anyone = room.players.some((player) => player?.connected && socketAlive(player.socketId));
+    if (room.tournament) {
+      if (!room.tournament.done && room.game?.status === "playing" && !anyone && now - room.touched > PLAY_GRACE_MS) {
+        resolveTourneyRoom(room, "absence");
+      }
+      if (room.tournament.done && !anyone && now - room.touched > 60_000) rooms.delete(code);
+      continue;
+    }
     if (!room.game) {
       const hostGone = !socketAlive(room.players[0]?.socketId);
       if ((hostGone && now - room.touched > 30_000) || now - (room.opened || room.touched) > WAITING_ROOM_MS) {
@@ -1325,6 +1602,12 @@ function leaveRoom(socket) {
   const { room, seat } = live;
   socket.leave(room.code);
   socket.data.roomCode = "";
+  if (room.tournament && !room.game) {
+    room.players[seat].connected = false;
+    room.players[seat].socketId = "";
+    emitState(room, { type: "left" });
+    return;
+  }
   if (!room.game && seat === 0) {
     dropRoom(room);
     broadcastFind();
@@ -1401,6 +1684,8 @@ io.on("connection", (socket) => {
     const code = roomCode(payload.code);
     const room = code ? rooms.get(code) : null;
     if (!room) return ack?.({ ok: false, error: "Salle introuvable." });
+    const prior = liveRoom(socket);
+    if (prior && prior.room.code !== room.code && prior.room.game?.status === "finished") leaveRoom(socket);
     const key = playerKey(socket, payload.playerId);
     const existing = seatOf(room, key);
     if (existing >= 0) {
@@ -1565,7 +1850,7 @@ socket.on("move", (move, ack) => {
   socket.on("rematch", () => {
     const room = rooms.get(socket.data.roomCode);
     const seat = room ? seatOf(room, socket.data.playerId) : -1;
-    if (!room?.game || seat < 0 || room.game.status !== "finished") return;
+    if (!room?.game || seat < 0 || room.game.status !== "finished" || room.tournament) return;
     room.rematch[seat] = true;
     if (room.rematch[0] && room.rematch[1]) {
       const starter = room.game.starter === 0 ? 1 : 0;
@@ -1609,7 +1894,7 @@ socket.on("move", (move, ack) => {
     patch = asObject(patch);
     const room = rooms.get(socket.data.roomCode);
     const seat = room ? seatOf(room, socket.data.playerId) : -1;
-    if (!room || seat !== 0 || room.game || limited(`${socket.id}:table`, 20, 60_000)) return;
+    if (!room || seat !== 0 || room.game || room.tournament || limited(`${socket.id}:table`, 20, 60_000)) return;
     const next = { ...room.settings };
     if (patch.timeMode === "none" || patch.timeMode === "global") next.timeMode = patch.timeMode;
     if (Number.isFinite(Number(patch.timeLimit))) next.timeLimit = Number(patch.timeLimit);
@@ -1793,7 +2078,12 @@ setInterval(() => {
       const dt = room.clockAt ? Math.max(0, now - room.clockAt) : 200;
       room.clockAt = now;
       const clock = tick(room.game, dt);
-      if (clock.timedOut && clock.kind === "turn") {
+      if (clock.timedOut && clock.kind === "turn" && room.tournament) {
+        skipTurn(room.game);
+        emitState(room, { type: "skip" });
+      } else if (clock.timedOut && clock.kind === "golden") {
+        emitState(room, { type: "golden" });
+      } else if (clock.timedOut && clock.kind === "turn") {
         const moves = legalMoves(room.game);
         if (moves.length) {
           const move = moves[Math.floor(Math.random() * moves.length)];
@@ -1805,6 +2095,7 @@ setInterval(() => {
       }
     } else {
       room.clockAt = now;
+      checkTourneyShowUp(room, now);
     }
   }
   for (const [key, times] of hits) {
@@ -1826,4 +2117,9 @@ initDb()
       const base = dbReady() ? "avec la base" : "sans base, profil dans le navigateur";
       console.log(`Jeu - chimie prêt sur http://${host}:${port} ${base}`);
     });
+    if (dbReady()) {
+      resetPlayingMatches()
+        .then((codes) => Promise.all(codes.map((code) => startTourneyMatches(code))))
+        .catch((error) => console.error("Reprise des tournois:", error.message));
+    }
   });

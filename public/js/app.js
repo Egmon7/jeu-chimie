@@ -51,6 +51,11 @@ const COLOR_LABEL = {
 };
 
 const REASON = {
+  golden: "Égalité à la fin du temps : la maison suivante a décidé.",
+  forfeit: "L’adversaire n’est pas venu : victoire par forfait.",
+  absence: "Personne n’est venu à temps : le vainqueur a été tiré au sort.",
+  skip: "Temps écoulé : le tour passe.",
+  tirage: "Égalité parfaite : le vainqueur du match a été tiré au sort.",
   board: "Tous les points ont été posés.",
   score: "L’objectif de score est atteint.",
   time: "Le temps global est écoulé.",
@@ -1433,10 +1438,10 @@ function updateTimers() {
   const game = app.game;
   if (!game) return;
   const global = game.settings.timeMode === "global";
-  const turn = game.settings.timeMode === "turn";
+  const turn = game.turnLimit != null;
   $("clock").hidden = !global;
-  $("clock").classList.toggle("low", global && remaining("global") <= 30_000 && game.status === "playing");
-  if (global) $("clock").textContent = formatClock(remaining("global"));
+  $("clock").classList.toggle("low", global && (game.suddenDeath || remaining("global") <= 30_000) && game.status === "playing");
+  if (global) $("clock").textContent = game.suddenDeath ? "Mort subite" : formatClock(remaining("global"));
   const turnMs = turn ? remaining("turn") : 0;
   const ratio = turn && game.turnLimit ? Math.max(0, Math.min(1, turnMs / game.turnLimit)) : 0;
   [0, 1].forEach((index) => {
@@ -1552,7 +1557,7 @@ function canPlay() {
   if ($("app-dialog") && !$("app-dialog").hidden) return false;
   if ($("rank-card") && !$("rank-card").hidden) return false;
   if (!app.game || app.game.status !== "playing" || app.paused || app.inputLock) return false;
-  if (app.game.settings.timeMode === "global" && remaining("global") <= 0) return false;
+  if (app.game.settings.timeMode === "global" && remaining("global") <= 0 && !app.game.suddenDeath) return false;
   if (app.mode === "online") return app.seat === app.game.current;
   if (app.mode === "solo") return app.players[app.game.current]?.kind === "human";
   return true;
@@ -1883,6 +1888,16 @@ function resultCopy() {
 
 function showResult() {
   const { title, text, celebrate, kicker } = resultCopy();
+  if (app.mode === "online" && app.tourneyMatch) {
+    showOverlay({
+      kicker: app.tourneyMatch.round === "final" ? "Finale" : "Demi-finale",
+      title,
+      text,
+      celebrate,
+      actions: [{ label: "Voir le tournoi", primary: true, on: () => backToTourney() }],
+    });
+    return;
+  }
   const offer = app.mode === "online" ? app.rematchOffer : "";
   let actions = [
     { label: "Accueil", on: () => goHome() },
@@ -2763,11 +2778,13 @@ function ensureSocket() {
   if (app.socket) return app.socket;
   app.socket = window.io({ autoConnect: false });
   app.socket.on("notify", receiveNote);
+  app.socket.on("tourney", receiveTourney);
   app.socket.on("connect", () => {
     clearTimeout(app.reconnectNote);
     app.selfBackAt = null;
     announcePresence();
     loadBell();
+    loadMyTourney();
     if (app.ignoreOnline) return;
     if (app.holdRejoin) {
       app.rejoinAfterHold = true;
@@ -2961,6 +2978,8 @@ function onOnlineState(msg) {
     sound: app.prefs.sound,
   };
   app.game = msg.game;
+  app.tourneyMatch = msg.tournament || null;
+  if (msg.tournament) app.lastTourneyCode = msg.tournament.code;
   if (msg.game) {
     app.clockSync = {
       global: msg.game.globalRemaining,
@@ -3011,6 +3030,8 @@ function onOnlineState(msg) {
     announcePresence();
     return;
   }
+  if (event.type === "skip") toast("Temps écoulé : le tour passe.");
+  if (event.type === "golden") toast("Égalité à la fin du temps : la prochaine maison décide !");
   if (event.type === "rematch-wait") {
     app.rematchOffer = msg.rematch?.[app.seat] ? "mine" : "theirs";
   }
@@ -3029,9 +3050,55 @@ function tableText(settings) {
   return `${time} · ${score}`;
 }
 
-function renderLobby(msg) {
+function renderTourneyLobby(msg) {
   const mine = msg.you;
   const seats = msg.seats || [];
+  const foe = seats[1 - mine] || {};
+  const final = msg.tournament.round === "final";
+  document.querySelector("#screen-lobby .eyebrow").textContent = final ? "Finale du tournoi" : "Demi-finale du tournoi";
+  $("lobby-code").hidden = true;
+  $("lobby-share").hidden = true;
+  $("lobby-present").hidden = true;
+  $("lobby-launch").hidden = true;
+  $("lobby-rules").textContent = final ? "Premier à 10 maisons · 20 s par tour" : "15 minutes · 20 s par tour · égalité : la maison suivante décide";
+  $("lobby-seats").innerHTML = [0, 1].map((index) => {
+    const seat = seats[index] || {};
+    return `<p><strong>${esc(seat.name || "Joueur")}</strong><span>${seat.connected ? "Là" : "Pas encore là"}</span></p>`;
+  }).join("");
+  const minutes = Math.max(1, Math.ceil((Number(msg.tournament.showUpBy) - Date.now()) / 60_000));
+  $("lobby-status").textContent = foe.connected
+    ? "La partie commence…"
+    : `En attente de ${foe.name || "ton adversaire"}. S’il n’arrive pas d’ici ${minutes} min, tu gagnes par forfait.`;
+}
+
+async function backToTourney() {
+  const code = app.tourneyMatch?.code || app.lastTourneyCode || "";
+  try { sessionStorage.removeItem(MATCH_KEY); } catch {}
+  dropOnlineRoom();
+  app.paused = false;
+  app.tourneyMatch = null;
+  hideOverlay();
+  show("screen-modes", "replace");
+  const result = code ? await tourneyCall(`/api/tourneys/${encodeURIComponent(code)}`) : null;
+  if (result?.ok) openTourneyRoom(result.data);
+  else openHub("tourney-4");
+}
+
+async function playTourneyMatch(room) {
+  if (!room) return;
+  const res = await joinRoom(room, app.prefs.p1Color);
+  if (!res?.ok) loadMyTourney();
+}
+
+function renderLobby(msg) {
+  document.querySelector("#screen-lobby .eyebrow").textContent = "Salle privée";
+  const mine = msg.you;
+  const seats = msg.seats || [];
+  if (msg.tournament) {
+    renderTourneyLobby(msg);
+    return;
+  }
+  $("lobby-present").hidden = false;
   $("lobby-code").textContent = msg.code;
   $("lobby-code").hidden = msg.direct === true;
   $("lobby-share").hidden = msg.direct === true || mine !== 0;
@@ -3573,12 +3640,392 @@ const HUB_TITLES = {
   play: "Jouer une partie",
   challenges: "Défis",
   competitions: "Compétitions",
+  "tourney-create": "Créer ou rejoindre un tournoi",
+  "tourney-4": "Tournoi à 4",
+  "tourney-code": "Rejoindre avec un code",
+  "tourney-room": "Salle d’attente",
+  "tourney-history": "Mes tournois",
+  "tourney-join": "Tournois officiels",
   profiles: "Profils",
 };
+
+const HUB_PARENT = {
+  "tourney-create": "competitions",
+  "tourney-4": "tourney-create",
+  "tourney-code": "tourney-4",
+  "tourney-room": "tourney-4",
+  "tourney-history": "tourney-4",
+  "tourney-join": "competitions",
+};
+
+const TOURNEY_CODE = /^TRN-[A-HJ-NP-Z2-9]{6}$/;
+const tourneyDraft = { name: "", code: "", link: "" };
+let pendingTourney = "";
+
+function cleanTourneyCode(value) {
+  const raw = String(value || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+  const body = raw.startsWith("TRN") ? raw.slice(3) : raw;
+  return `TRN-${body}`;
+}
+
+function tourneyLink(code) {
+  const url = new URL(location.href);
+  url.hash = "";
+  url.search = "";
+  url.searchParams.set("tournoi", code);
+  return url.toString();
+}
+
+async function tourneyCall(path, body) {
+  try {
+    const response = await fetch(path, body === undefined
+      ? {}
+      : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const data = await response.json().catch(() => ({}));
+    if (response.status === 401) {
+      saveSession(null);
+      paintUserChip();
+    }
+    return response.ok ? { ok: true, data } : { ok: false, error: data.error || "Réessaie dans un instant.", code: data.code || "" };
+  } catch {
+    return { ok: false, error: "La connexion a sauté. Réessaie dans un instant." };
+  }
+}
+
+function setTourney(state) {
+  app.tourney = state && state.youIn && (state.status === "waiting" || state.status === "running") ? state : null;
+  if (state?.youIn && state.status === "finished") app.lastTourney = state;
+  if (state?.code) {
+    tourneyDraft.name = state.name;
+    tourneyDraft.code = state.code;
+    tourneyDraft.link = tourneyLink(state.code);
+  }
+  paintTourneyShortcut();
+}
+
+function paintTourneyShortcut() {
+  const current = $("go-tourney-current");
+  if (!current) return;
+  current.hidden = !isConnected();
+  const live = app.tourney;
+  const detail = live
+    ? `${live.name} · ${live.status === "running" ? "en cours" : `en attente ${live.players.length}/${live.size}`}`
+    : "Tes tournois joués et leur tableau.";
+  $("tourney-current-name").textContent = detail;
+}
+
+function tourneyHistoryLine(item) {
+  const date = new Date(item.at).toLocaleDateString("fr-FR", { day: "numeric", month: "short" });
+  if (item.status === "waiting") return `En attente · ${item.players}/${item.size}`;
+  if (item.status === "running") return "En cours";
+  if (item.youWon) return `🏆 Tu as gagné · ${date}`;
+  return `Vainqueur : ${item.winner || "—"} · ${date}`;
+}
+
+async function loadTourneyHistory() {
+  const list = $("tourney-history-list");
+  list.innerHTML = `<p class="empty">Chargement…</p>`;
+  const result = await tourneyCall("/api/tourneys/history");
+  if (!result.ok) {
+    list.innerHTML = `<p class="empty">${esc(result.error)}</p>`;
+    return;
+  }
+  const items = result.data.items || [];
+  if (!items.length) {
+    list.innerHTML = `<p class="empty">Tu n’as pas encore joué de tournoi.</p>`;
+    return;
+  }
+  list.innerHTML = items.map((item) => `<button type="button" class="tourney-history-item is-${esc(item.status)}" data-code="${esc(item.code)}"><strong>${esc(item.name)}</strong><span>${esc(tourneyHistoryLine(item))}</span></button>`).join("");
+}
+
+async function openTourneyFromHistory(code) {
+  const result = await tourneyCall(`/api/tourneys/${encodeURIComponent(code)}`);
+  if (!result.ok) {
+    toast(result.error);
+    return;
+  }
+  openTourneyRoom(result.data, "tourney-history");
+}
+
+function seatMarkup(player, index) {
+  if (!player) {
+    return `<li class="tourney-seat is-free"><span class="face">${FACE_ICON}</span><span class="tourney-seat-name">Place libre</span></li>`;
+  }
+  const tags = [
+    player.creator ? `<em class="tourney-tag">Créateur</em>` : "",
+    player.you ? `<em class="tourney-tag is-you">Toi</em>` : "",
+  ].join("");
+  return `<li class="tourney-seat" data-seat="${index}"><span class="face">${faceMarkup(player.photo, true)}</span><span class="tourney-seat-name">${esc(player.name)}</span>${tags}</li>`;
+}
+
+function bracketCard(match, title) {
+  if (!match) return "";
+  const who = (player) => (player ? `${esc(player.name)}${player.you ? " (toi)" : ""}` : "À venir");
+  const won = (player) => (player && match.winner === player.key ? " is-winner" : "");
+  const state = match.status === "done" ? "Terminé" : match.status === "playing" ? "En cours" : "À venir";
+  const play = match.room ? `<button type="button" class="btn primary tourney-play" data-room="${esc(match.room)}">Jouer</button>` : "";
+  return `<div class="tb-match is-${esc(match.status)}${match.mine ? " is-mine" : ""}">
+    <span class="tb-title">${title}</span>
+    <span class="tb-player${won(match.p1)}">${who(match.p1)}</span>
+    <span class="tb-vs">vs</span>
+    <span class="tb-player${won(match.p2)}">${who(match.p2)}</span>
+    <span class="tb-state">${state}</span>${play}
+  </div>`;
+}
+
+function bracketMarkup(state) {
+  const semi = (slot) => state.matches.find((match) => match.round === "semi" && match.slot === slot);
+  const final = state.matches.find((match) => match.round === "final");
+  const champion = state.winner ? `<span class="tb-champion">${esc(state.winner.name)}${state.winner.you ? " (toi)" : ""}</span>` : "";
+  return `<div class="tb-side tb-left">${bracketCard(semi(1), "Demi 1")}</div>
+    <div class="tb-center"><img class="tb-cup" src="img/hub/comp4.png" alt="">${champion}${bracketCard(final, "Finale")}</div>
+    <div class="tb-side tb-right">${bracketCard(semi(2), "Demi 2")}</div>`;
+}
+
+function renderTourneyRoom(state) {
+  if (!state) return;
+  setTourney(state);
+  const finished = state.status === "finished";
+  const running = state.status === "running" || finished;
+  const missing = state.size - state.players.length;
+  const myMatch = state.matches?.find((match) => match.room);
+  $("tourney-room-name").textContent = state.name;
+  $("tourney-room-code").textContent = state.code;
+  let status;
+  if (finished) status = state.winner ? `Tournoi terminé : ${state.winner.name}${state.winner.you ? " (toi)" : ""} gagne !` : "Tournoi terminé.";
+  else if (myMatch) status = "Ton match est prêt : clique sur « Jouer ». Tu as 2 minutes.";
+  else if (running) status = "Tirage au sort fait. Les matchs sont en cours.";
+  else if (missing > 0) status = `En attente de ${missing} joueur${missing > 1 ? "s" : ""} · ${state.players.length}/${state.size}`;
+  else status = state.youCreator ? "Complet : tu peux lancer le tirage au sort." : "Complet : le créateur va lancer le tirage au sort.";
+  $("tourney-room-status").textContent = status;
+  const seats = $("tourney-room-seats");
+  seats.hidden = running;
+  if (!running) {
+    const list = [];
+    for (let i = 0; i < state.size; i += 1) list.push(seatMarkup(state.players[i], i));
+    seats.innerHTML = list.join("");
+    bindFaceImages(seats);
+  }
+  const bracket = $("tourney-bracket");
+  bracket.hidden = !running;
+  bracket.innerHTML = running ? bracketMarkup(state) : "";
+  $("tourney-room-share").hidden = running || !state.youCreator;
+  $("tourney-room-leave").hidden = running;
+  $("tourney-room-leave").closest(".tourney-room-actions").classList.toggle("is-single", !state.youCreator);
+  const launch = $("tourney-room-launch");
+  launch.hidden = running || !state.youCreator;
+  launch.disabled = missing > 0;
+  if (document.querySelector('[data-hub-panel="tourney-room"]')?.hidden) openHub("tourney-room");
+  $("modes-title").textContent = running ? "Le tournoi" : HUB_TITLES["tourney-room"];
+}
+
+function openTourneyRoom(state, from = "") {
+  if ($("screen-modes").hidden) show("screen-modes");
+  app.roomFrom = from;
+  renderTourneyRoom(state);
+}
+
+function receiveTourney(state) {
+  if (!state?.code) return;
+  const watching = app.tourney?.code === state.code || tourneyDraft.code === state.code;
+  if (!watching) return;
+  if (state.status === "cancelled") {
+    setTourney(null);
+    if (!document.querySelector('[data-hub-panel="tourney-room"]')?.hidden) openHub("tourney-4");
+    if (!state.youCreator) toast("Le créateur a annulé le tournoi.");
+    return;
+  }
+  if (!state.youIn) {
+    setTourney(null);
+    return;
+  }
+  const hadMatch = app.tourney?.matches?.some((match) => match.room);
+  const ready = state.matches?.find((match) => match.room);
+  if (ready && !hadMatch && $("screen-game").hidden) toast("Ton match de tournoi est prêt !");
+  setTourney(state);
+  if (!document.querySelector('[data-hub-panel="tourney-room"]')?.hidden) renderTourneyRoom(state);
+}
+
+async function loadMyTourney() {
+  if (!isConnected()) {
+    app.lastTourney = null;
+    setTourney(null);
+    return;
+  }
+  const result = await tourneyCall("/api/tourneys/mine");
+  if (!result.ok) return;
+  app.lastTourney = result.data.recent || null;
+  setTourney(result.data.state);
+}
+
+async function joinTourney(code) {
+  const result = await tourneyCall("/api/tourneys/join", { code });
+  if (result.ok) {
+    openTourneyRoom(result.data);
+    return true;
+  }
+  if (result.code) {
+    toast(`${result.error} Je t’y emmène.`);
+    const mine = await tourneyCall(`/api/tourneys/${encodeURIComponent(result.code)}`);
+    if (mine.ok) openTourneyRoom(mine.data);
+    return false;
+  }
+  return result.error;
+}
+
+async function joinTourneyByCode(event) {
+  event.preventDefault();
+  const error = $("tourney-code-error");
+  const code = cleanTourneyCode($("tourney-code").value);
+  $("tourney-code").value = code === "TRN-" ? "" : code;
+  if (!TOURNEY_CODE.test(code)) {
+    error.textContent = "Le code a la forme TRN- suivie de 6 lettres ou chiffres.";
+    error.hidden = false;
+    return;
+  }
+  error.hidden = true;
+  if (!isConnected()) {
+    pendingTourney = code;
+    toast("Connecte-toi d’abord pour rejoindre un tournoi.");
+    openAuth();
+    return;
+  }
+  const outcome = await joinTourney(code);
+  if (typeof outcome === "string") {
+    error.textContent = outcome;
+    error.hidden = false;
+  }
+}
+
+async function enterSharedTourney() {
+  const code = pendingTourney;
+  pendingTourney = "";
+  const url = new URL(location.href);
+  if (url.searchParams.has("tournoi")) {
+    url.searchParams.delete("tournoi");
+    history.replaceState(history.state, "", `${url.pathname}${url.search}${url.hash}`);
+  }
+  if (!code) return;
+  const outcome = await joinTourney(code);
+  if (typeof outcome === "string") {
+    toast(outcome);
+    show("screen-modes");
+    openHub("tourney-4");
+  }
+}
+
+function leaveTourneyRoom() {
+  const state = app.tourney;
+  if (!state) return;
+  askDialog({
+    kicker: "Tournoi",
+    title: state.youCreator ? "Annuler le tournoi ?" : "Quitter le tournoi ?",
+    text: state.youCreator
+      ? "Tu es le créateur : en quittant, le tournoi est annulé pour tout le monde."
+      : "Ta place sera libérée. Tu pourras revenir avec le code tant que le tournoi n’a pas commencé.",
+    confirm: state.youCreator ? "Annuler le tournoi" : "Quitter",
+    cancel: "Rester",
+    onYes: async () => {
+      const result = await tourneyCall("/api/tourneys/leave", { code: state.code });
+      if (!result.ok) {
+        toast(result.error);
+        return;
+      }
+      setTourney(null);
+      openHub("tourney-4");
+      toast(result.data.cancelled ? "Le tournoi est annulé." : "Tu as quitté le tournoi.");
+    },
+  });
+}
+
+async function launchTourney() {
+  const state = app.tourney;
+  if (!state) return;
+  const button = $("tourney-room-launch");
+  button.disabled = true;
+  const result = await tourneyCall("/api/tourneys/launch", { code: state.code });
+  if (!result.ok) {
+    toast(result.error);
+    button.disabled = false;
+    return;
+  }
+  renderTourneyRoom(result.data);
+}
+
+function openTourneyNew() {
+  if (!isConnected()) {
+    toast("Connecte-toi d’abord pour créer un tournoi.");
+    openAuth();
+    return;
+  }
+  if (app.tourney) {
+    toast("Tu es déjà dans un tournoi.");
+    openTourneyRoom(app.tourney);
+    return;
+  }
+  const input = $("tourney-name");
+  input.value = "";
+  $("tourney-name-error").hidden = true;
+  $("tourney-new-dialog").hidden = false;
+  window.setTimeout(() => input.focus(), 30);
+}
+
+function closeTourneyDialogs() {
+  $("tourney-new-dialog").hidden = true;
+  $("tourney-ready-dialog").hidden = true;
+}
+
+async function createTourney() {
+  const name = $("tourney-name").value.trim();
+  const error = $("tourney-name-error");
+  if (!name) {
+    error.textContent = "Donne un nom au tournoi.";
+    error.hidden = false;
+    $("tourney-name").focus();
+    return;
+  }
+  error.hidden = true;
+  const submit = $("tourney-new-form").querySelector('button[type="submit"]');
+  submit.disabled = true;
+  const result = await tourneyCall("/api/tourneys", { name });
+  submit.disabled = false;
+  if (!result.ok) {
+    error.textContent = result.error;
+    error.hidden = false;
+    return;
+  }
+  setTourney(result.data);
+  $("tourney-ready-name").textContent = result.data.name;
+  $("tourney-ready-code").textContent = result.data.code;
+  $("tourney-ready-link").value = tourneyLink(result.data.code);
+  $("tourney-new-dialog").hidden = true;
+  $("tourney-ready-dialog").hidden = false;
+}
+
+async function shareTourney() {
+  const text = `Rejoins mon tournoi « ${tourneyDraft.name} » sur Jeu - chimie. Code : ${tourneyDraft.code}`;
+  if (navigator.share) {
+    try {
+      await navigator.share({ title: tourneyDraft.name, text, url: tourneyDraft.link });
+      return;
+    } catch (error) {
+      if (error?.name === "AbortError") return;
+    }
+  }
+  copyText(tourneyDraft.link, "Lien copié.");
+}
+
+
+function setTourneyDot(on) {
+  document.querySelectorAll("[data-tourney-dot]").forEach((dot) => {
+    dot.hidden = !on;
+  });
+}
 
 function savedHub() {
   try {
     const name = sessionStorage.getItem("egmon-hub") || "";
+    if (name === "tourney-room") return "tourney-4";
     return HUB_TITLES[name] ? name : "";
   } catch {
     return "";
@@ -3594,6 +4041,8 @@ function openHub(name) {
   const home = $("mode-home");
   if (!home) return;
   home.hidden = Boolean(next);
+  if (next === "tourney-history") loadTourneyHistory();
+  if (next === "tourney-4") paintTourneyShortcut();
   document.querySelectorAll("[data-hub-panel]").forEach((panel) => {
     panel.hidden = panel.dataset.hubPanel !== next;
   });
@@ -3783,9 +4232,13 @@ async function sendSubscription(subscription) {
 
 async function enablePush() {
   if (!pushSupported() || !isConnected()) return false;
+  const asked = performance.now();
   const permission = await Notification.requestPermission();
   if (permission !== "granted") {
-    toast("Les alertes ne sont pas activées. Tu pourras changer d’avis dans la cloche.");
+    const automatic = permission === "denied" && performance.now() - asked < 400;
+    toast(automatic
+      ? "Ce navigateur bloque les alertes (navigation privée ou réglages)."
+      : "D’accord, pas d’alertes. Tu pourras changer d’avis dans la cloche.");
     return false;
   }
   try {
@@ -3853,10 +4306,16 @@ async function maybeAskPush() {
   if (pushAskedThisVisit || !isConnected() || pushLaterRecently()) return;
   const screen = document.querySelector(".screen:not([hidden])")?.id;
   if (screen !== "screen-home" && screen !== "screen-modes") return;
-  if (!$("auth-dialog").hidden || !$("bell-dialog").hidden) return;
+  if (document.querySelector(".overlay.page-dialog:not([hidden])")) return;
   const state = await pushState();
   if (state !== "ios-install" && state !== "off") return;
+  if (document.querySelector(".overlay.page-dialog:not([hidden])")) return;
+  if (state === "off" && navigator.permissions?.query) {
+    const status = await navigator.permissions.query({ name: "notifications" }).catch(() => null);
+    if (status?.state === "denied") return;
+  }
   pushAskedThisVisit = true;
+  try { localStorage.setItem(PUSH_LATER_KEY, String(Date.now())); } catch {}
   showPushDialog(state === "ios-install" ? "ios" : "ask");
 }
 
@@ -3909,6 +4368,16 @@ async function accountReady() {
   }
 }
 
+async function claimTourneyLink(code) {
+  pendingTourney = code;
+  if (!(await accountReady())) {
+    toast("Connecte-toi pour rejoindre le tournoi.");
+    openAuth();
+    return;
+  }
+  enterSharedTourney();
+}
+
 async function claimRoomLink(code) {
   const room = validRoomCode(code);
   if (!room) return;
@@ -3959,7 +4428,7 @@ async function authFetch(url, body) {
       body: JSON.stringify(body),
     });
     const data = await response.json().catch(() => ({}));
-    if (!response.ok) return { ok: false, error: data.error || "" };
+    if (!response.ok) return { ok: false, error: data.error || "", field: data.field || "" };
     return { ok: true, data };
   } catch {
     return { ok: false, error: "Réessaie dans un instant." };
@@ -4130,6 +4599,8 @@ async function logout() {
   } catch {}
   saveSession(null);
   noteAdmin(null);
+  app.lastTourney = null;
+  setTourney(null);
   paintUserChip();
   refreshSocketIdentity();
   toast("Tu es déconnecté.");
@@ -4165,6 +4636,8 @@ function finishAuth(profile) {
   pullHistory();
   if (!$("screen-profile").hidden) fillProfileForm(loadProfile());
   if (pendingRoom) enterSharedRoom();
+  if (pendingTourney) enterSharedTourney();
+  else loadMyTourney();
 }
 
 async function submitAuth(event) {
@@ -4188,6 +4661,12 @@ function applyFoundAccount(found, key) {
   auth.knownMail = isEmail;
   $("auth-password").value = "";
   $("auth-confirm").value = "";
+  if (!auth.exists && !auth.name && auth.email) {
+    showAuthFace("create");
+    $("auth-email").value = auth.email;
+    window.setTimeout(() => $("auth-name").focus(), 30);
+    return;
+  }
   if (!auth.exists && !auth.email) {
     showAuthFace("add-email");
     window.setTimeout(() => $("auth-email").focus(), 30);
@@ -4260,7 +4739,7 @@ async function sendAuth() {
     return;
   }
   if (auth.step === "identity") {
-    const name = loadProfile().name || auth.name || $("auth-name").value.trim();
+    const name = $("auth-name").value.trim() || loadProfile().name || auth.name;
     const email = $("auth-email").value.trim();
     if (!name) {
       showAuthError("Écris ton nom et prénom.");
@@ -4317,6 +4796,27 @@ async function sendAuth() {
       password,
     });
   if (!result.ok) {
+    if (result.field === "name" || result.field === "email") {
+      showAuthFace("create");
+      $("auth-name").value = auth.name || "";
+      $("auth-email").value = auth.email || "";
+      showAuthError(result.error);
+      window.setTimeout(() => $(result.field === "name" ? "auth-name" : "auth-email").focus(), 30);
+      return;
+    }
+    if (result.field === "key") {
+      showAuthFace("recover");
+      showAuthError(result.error);
+      return;
+    }
+    if (result.field === "claim" && !auth.exists) {
+      auth.exists = true;
+      showAuthFace("reset-request");
+      $("auth-email").value = auth.email || "";
+      $("auth-kicker").textContent = "Profil existant";
+      $("auth-text").textContent = "Cet e-mail a déjà un profil. Pour le récupérer, reçois un code à 6 chiffres sur cette adresse.";
+      return;
+    }
     showAuthError(result.error || "Réessaie dans un instant.");
     return;
   }
@@ -4429,7 +4929,10 @@ function bind() {
     const hubBtn = event.target.closest("[data-open-hub]");
     if (hubBtn) openHub(hubBtn.dataset.openHub);
     if (event.target.closest("#modes-back")) {
-      if ($("mode-home")?.hidden) openHub("");
+      const open = document.querySelector("[data-hub-panel]:not([hidden])")?.dataset.hubPanel;
+      const parent = open === "tourney-room" && app.roomFrom ? app.roomFrom : HUB_PARENT[open];
+      if (open && parent) openHub(parent);
+      else if ($("mode-home")?.hidden) openHub("");
       else if (history.state?.page && history.state.page !== "home") history.back();
       else goHome();
     }
@@ -4710,6 +5213,8 @@ function bind() {
   const sameRoom = room && readRoomSnap()?.code === room;
   const resumed = (!room || sameRoom) && resumeSavedRoom();
   if (room && !sameRoom) claimRoomLink(room);
+  const sharedTourney = cleanTourneyCode(params.get("tournoi"));
+  if (!room && TOURNEY_CODE.test(sharedTourney)) claimTourneyLink(sharedTourney);
   const kept = !resumed && !room && restoreMatch();
 
   const opened = (location.hash || "#home").slice(1);
@@ -4811,6 +5316,49 @@ function bind() {
   $("auth-forgot").addEventListener("click", forgotPassword);
   $("profile-logout")?.addEventListener("click", logout);
   $("bell").addEventListener("click", openBell);
+  $("go-tourney-new").addEventListener("click", openTourneyNew);
+  $("tourney-code-form").addEventListener("submit", joinTourneyByCode);
+  $("tourney-code").addEventListener("input", (event) => {
+    event.target.value = event.target.value.toUpperCase();
+    $("tourney-code-error").hidden = true;
+  });
+  $("tourney-room-share").addEventListener("click", shareTourney);
+  $("tourney-room-leave").addEventListener("click", leaveTourneyRoom);
+  $("tourney-room-launch").addEventListener("click", launchTourney);
+  $("tourney-bracket").addEventListener("click", (event) => {
+    const button = event.target.closest(".tourney-play");
+    if (button) playTourneyMatch(button.dataset.room);
+  });
+  $("go-tourney-current").addEventListener("click", () => {
+    if (!isConnected()) {
+      openAuth();
+      return;
+    }
+    openHub("tourney-history");
+  });
+  $("tourney-history-list").addEventListener("click", (event) => {
+    const item = event.target.closest(".tourney-history-item");
+    if (item) openTourneyFromHistory(item.dataset.code);
+  });
+  $("tourney-new-cancel").addEventListener("click", closeTourneyDialogs);
+  $("tourney-new-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    createTourney();
+  });
+  $("tourney-share").addEventListener("click", shareTourney);
+  $("tourney-copy-link").addEventListener("click", () => copyText(tourneyDraft.link, "Lien copié."));
+  $("tourney-copy-code").addEventListener("click", () => copyText(tourneyDraft.code, "Code copié."));
+  $("tourney-ready-link").addEventListener("focus", (event) => event.target.select());
+  $("tourney-ready-open").addEventListener("click", () => {
+    closeTourneyDialogs();
+    if (app.tourney) openTourneyRoom(app.tourney);
+  });
+  $("tourney-new-dialog").addEventListener("click", (event) => {
+    if (event.target === event.currentTarget) closeTourneyDialogs();
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") closeTourneyDialogs();
+  });
   window.addEventListener("beforeinstallprompt", (event) => {
     event.preventDefault();
     installPrompt = event;

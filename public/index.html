@@ -83,8 +83,9 @@
             <img class="mode-icon" src="img/hub/icons2.png" alt="">
             <span class="mode-copy">
               <strong>Compétitions</strong>
-              <span>Créer un tournoi à 4 et à 8.</span>
+              <span>Créer ou rejoindre un tournoi entre amis.</span>
             </span>
+            <span class="mode-dot" data-tourney-dot hidden aria-label="Tournois ouverts"></span>
           </button>
           <button type="button" class="mode" data-open-hub="challenges">
             <img class="mode-icon" src="img/hub/icons3.png" alt="">
@@ -137,20 +138,102 @@
           <div id="challenge-list" class="challenge-list"></div>
         </div>
         <div class="mode-list" data-hub-panel="competitions" hidden>
-          <button type="button" class="mode" id="go-tourney-4" data-soon>
+          <button type="button" class="mode" data-open-hub="tourney-create">
+            <img class="mode-icon" src="img/hub/trophy3.png" alt="">
+            <span class="mode-copy">
+              <strong>Créer ou rejoindre un tournoi</strong>
+              <span>Entre amis, avec un code à partager.</span>
+            </span>
+          </button>
+          <button type="button" class="mode" data-open-hub="tourney-join">
+            <img class="mode-icon" src="img/hub/world-cup.png" alt="">
+            <span class="mode-copy">
+              <strong>Tournois officiels</strong>
+              <span>Organisés par Jeu - chimie, ouverts à tous.</span>
+            </span>
+            <span class="mode-dot" data-tourney-dot hidden aria-label="Tournois ouverts"></span>
+          </button>
+        </div>
+        <div class="mode-list" data-hub-panel="tourney-create" hidden>
+          <p class="tourney-lead">Crée un tournoi et envoie le code à tes amis, ou rejoins celui d’un ami.</p>
+          <button type="button" class="mode" data-open-hub="tourney-4">
             <img class="mode-icon" src="img/hub/comp4.png" alt="">
             <span class="mode-copy">
               <strong>Tournoi à 4</strong>
-              <span>Entre amis.</span>
+              <span>Deux demi-finales, puis la finale.</span>
             </span>
           </button>
-          <button type="button" class="mode" id="go-tourney-8" data-soon>
-            <img class="mode-icon" src="img/hub/comp8.png" alt="">
+          <div class="tourney-rules">
+            <h2>Les règles</h2>
+            <ul>
+              <li>Le créateur lance quand toutes les places sont prises, puis tirage au sort.</li>
+              <li>Demi-finale : 15 minutes. En cas d’égalité, la prochaine maison décide.</li>
+              <li>Finale : sans limite de temps, le premier à 10 maisons gagne.</li>
+              <li>20 secondes par tour, sinon le tour passe. Abandon = défaite.</li>
+              <li>Vainqueur : +150 XP. Finaliste : +100 XP.</li>
+            </ul>
+          </div>
+        </div>
+        <div class="mode-list" data-hub-panel="tourney-4" hidden>
+          <button type="button" class="mode tourney-current" id="go-tourney-current">
+            <img class="mode-icon" src="img/hub/comp4.png" alt="">
             <span class="mode-copy">
-              <strong>Tournoi à 8</strong>
-              <span>Entre amis.</span>
+              <strong>Mes tournois</strong>
+              <span id="tourney-current-name">Tes tournois joués et leur tableau.</span>
             </span>
           </button>
+          <button type="button" class="mode" id="go-tourney-new">
+            <img class="mode-icon" src="img/hub/trophy.png" alt="">
+            <span class="mode-copy">
+              <strong>Créer un tournoi</strong>
+              <span>Tu reçois un code et un lien à envoyer à 3 amis.</span>
+            </span>
+          </button>
+          <button type="button" class="mode" data-open-hub="tourney-code">
+            <img class="mode-icon" src="img/hub/users.png" alt="">
+            <span class="mode-copy">
+              <strong>Rejoindre avec un code</strong>
+              <span>Un ami t’a donné le code de son tournoi.</span>
+            </span>
+          </button>
+        </div>
+        <div class="mode-list" data-hub-panel="tourney-history" hidden>
+          <div class="tourney-box">
+            <div id="tourney-history-list" class="tourney-history-list"></div>
+          </div>
+        </div>
+        <div class="mode-list" data-hub-panel="tourney-code" hidden>
+          <form class="tourney-box tourney-code" id="tourney-code-form" novalidate>
+            <label for="tourney-code">Code du tournoi</label>
+            <div class="tourney-code-row">
+              <input id="tourney-code" type="text" autocomplete="off" autocapitalize="characters" spellcheck="false" maxlength="10" placeholder="TRN-XXXXXX">
+              <button type="submit" class="btn primary">Rejoindre</button>
+            </div>
+            <p class="tourney-code-error" id="tourney-code-error" hidden></p>
+          </form>
+        </div>
+        <div class="mode-list" data-hub-panel="tourney-room" hidden>
+          <div class="tourney-box tourney-room">
+            <p class="tourney-room-name" id="tourney-room-name"></p>
+            <p class="tourney-room-code">Code : <strong id="tourney-room-code"></strong></p>
+            <p class="tourney-room-status" id="tourney-room-status"></p>
+            <ul class="tourney-room-seats" id="tourney-room-seats"></ul>
+            <div class="tourney-bracket" id="tourney-bracket" hidden></div>
+            <div class="tourney-room-actions">
+              <button type="button" class="btn" id="tourney-room-share">Partager</button>
+              <button type="button" class="btn" id="tourney-room-leave">Quitter</button>
+            </div>
+            <button type="button" class="btn primary tourney-room-launch" id="tourney-room-launch" disabled>Lancer le tirage au sort</button>
+          </div>
+        </div>
+        <div class="mode-list" data-hub-panel="tourney-join" hidden>
+          <p class="tourney-lead">Choisis un tournoi qui a encore des places.</p>
+          <div class="tourney-open">
+            <h2>Places libres</h2>
+            <div id="tourney-open-list" class="tourney-open-list">
+              <p class="empty">Aucun tournoi ouvert pour l’instant.</p>
+            </div>
+          </div>
         </div>
         <div class="mode-list" data-hub-panel="profiles" hidden>
           <button type="button" class="mode" id="go-account">
@@ -686,6 +769,49 @@
       <div class="form-actions bell-actions">
         <button type="button" class="btn" id="bell-feedback">Envoyer un message ou un retour</button>
         <button type="button" class="btn primary" id="bell-close">Fermer</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="tourney-new-dialog" class="overlay page-dialog" hidden>
+    <form class="dialog tourney-dialog" id="tourney-new-form" role="dialog" aria-modal="true" aria-labelledby="tourney-new-title" novalidate>
+      <p class="eyebrow">Tournoi à 4</p>
+      <h2 id="tourney-new-title">Créer le tournoi</h2>
+      <label class="tourney-field"><span>Nom du tournoi</span>
+        <input id="tourney-name" type="text" maxlength="40" autocomplete="off" required placeholder="Ex. Coupe du quartier">
+      </label>
+      <p class="tourney-code-error" id="tourney-name-error" hidden></p>
+      <ul class="tourney-facts">
+        <li>4 places, dont la tienne.</li>
+        <li>Tu reçois un lien à envoyer à 3 amis.</li>
+        <li>Tu lances quand les 4 places sont prises.</li>
+        <li>Demi-finales de 15 min, finale au premier à 10.</li>
+      </ul>
+      <div class="form-actions">
+        <button type="button" class="btn" id="tourney-new-cancel">Annuler</button>
+        <button type="submit" class="btn primary">Créer le tournoi</button>
+      </div>
+    </form>
+  </div>
+
+  <div id="tourney-ready-dialog" class="overlay page-dialog" hidden>
+    <div class="dialog tourney-dialog" role="dialog" aria-modal="true" aria-labelledby="tourney-ready-title">
+      <img class="tourney-ready-icon" src="img/hub/comp4.png" alt="" width="56" height="56">
+      <h2 id="tourney-ready-title">Ton tournoi est prêt</h2>
+      <p class="tourney-ready-name" id="tourney-ready-name"></p>
+      <p class="tourney-ready-text">Envoie le lien à 3 amis. Dès que les 4 places sont prises, tu pourras lancer le tirage au sort.</p>
+      <p class="tourney-ready-code" id="tourney-ready-code" aria-label="Code du tournoi"></p>
+      <label class="tourney-field">Lien à partager
+        <input id="tourney-ready-link" type="text" readonly>
+      </label>
+      <p class="tourney-ready-seats"><span class="tourney-seats"><i class="is-taken"></i><i></i><i></i><i></i></span><span>1/4 places : toi</span></p>
+      <div class="tourney-share">
+        <button type="button" class="btn" id="tourney-share">Partager</button>
+        <button type="button" class="btn" id="tourney-copy-link">Copier le lien</button>
+        <button type="button" class="btn" id="tourney-copy-code">Copier le code</button>
+      </div>
+      <div class="form-actions tourney-ready-actions">
+        <button type="button" class="btn primary" id="tourney-ready-open">Voir le tournoi</button>
       </div>
     </div>
   </div>
