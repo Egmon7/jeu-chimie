@@ -10,10 +10,10 @@
     [hidden] { display: none !important; }
     body:not(.ready) { visibility: hidden; }
   </style>
-  <link rel="icon" href="img/logo-jeu.jpg" type="image/jpeg">
-  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/img/logo-jeu.jpg?v=2" type="image/jpeg">
+  <link rel="manifest" href="/manifest.webmanifest?v=2">
   <meta name="theme-color" content="#0e1616">
-  <link rel="apple-touch-icon" href="/img/icon-180.png">
+  <link rel="apple-touch-icon" href="/img/icon-180.png?v=2">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-title" content="Jeu - chimie">
@@ -229,10 +229,18 @@
         <div class="mode-list" data-hub-panel="tourney-join" hidden>
           <p class="tourney-lead">Choisis un tournoi qui a encore des places.</p>
           <div class="tourney-open">
-            <h2>Places libres</h2>
+            <h2>Les tournois</h2>
             <div id="tourney-open-list" class="tourney-open-list">
-              <p class="empty">Aucun tournoi ouvert pour l’instant.</p>
+              <p class="empty">Aucun tournoi officiel pour l’instant.</p>
             </div>
+          </div>
+          <div class="tourney-rules">
+            <h2>Comment ça marche</h2>
+            <ul>
+              <li>4 places. Le tirage au sort se fait tout seul 30 secondes après le 4ᵉ joueur.</li>
+              <li>Tu peux quitter tant que le tirage au sort n’a pas eu lieu.</li>
+              <li>Mêmes règles que les tournois entre amis. Vainqueur : +150 XP. Finaliste : +100 XP.</li>
+            </ul>
           </div>
         </div>
         <div class="mode-list" data-hub-panel="profiles" hidden>
@@ -703,35 +711,104 @@
     <section id="screen-admin" class="screen" hidden>
       <div class="sheet">
         <p class="eyebrow">Réservé</p>
-        <h1>Admin</h1>
-        <h2>En ce moment</h2>
-        <div class="stats" id="admin-live"></div>
-        <h2>Au total</h2>
-        <div class="stats" id="admin-stats"></div>
-        <div class="admin-filters" id="admin-filters"></div>
-        <p id="admin-reach" class="admin-reach"></p>
-        <div class="admin-block">
-          <h2>Personnes connectées</h2>
-          <div id="admin-chart-people" class="admin-chart"></div>
+        <h1 id="admin-title">Admin</h1>
+        <div class="admin-menu" id="admin-menu">
+          <button type="button" class="admin-card" data-admin-open="stats">
+            <img class="admin-card-icon" src="img/hub/icon10.png" alt="">
+            <span class="admin-card-copy">
+              <strong>Statistiques</strong>
+              <span id="admin-sum-stats">…</span>
+            </span>
+          </button>
+          <button type="button" class="admin-card" data-admin-open="players">
+            <img class="admin-card-icon" src="img/hub/users.png" alt="">
+            <span class="admin-card-copy">
+              <strong>Joueurs</strong>
+              <span id="admin-sum-players">…</span>
+            </span>
+          </button>
+          <button type="button" class="admin-card" data-admin-open="tourneys">
+            <img class="admin-card-icon" src="img/hub/world-cup.png" alt="">
+            <span class="admin-card-copy">
+              <strong>Compétitions</strong>
+              <span id="admin-sum-tourneys">…</span>
+            </span>
+          </button>
+          <button type="button" class="admin-card" data-admin-open="messages">
+            <span class="admin-card-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16v11H9l-5 4z"/><path d="M8 9.5h8M8 12.5h5"/></svg></span>
+            <span class="admin-card-copy">
+              <strong>Messages</strong>
+              <span id="admin-sum-messages">…</span>
+            </span>
+          </button>
+          <button type="button" class="admin-card" data-admin-open="robot">
+            <img class="admin-card-icon" src="img/hub/icons5.png" alt="">
+            <span class="admin-card-copy">
+              <strong>Robot (IA)</strong>
+              <span id="admin-sum-robot">…</span>
+            </span>
+          </button>
         </div>
-        <div class="admin-block">
-          <h2>Parties jouées</h2>
-          <div id="admin-chart-games" class="admin-chart"></div>
+        <div class="admin-panel" data-admin-panel="stats" hidden>
+          <h2>En ce moment</h2>
+          <div class="stats" id="admin-live"></div>
+          <h2>Au total</h2>
+          <div class="stats" id="admin-stats"></div>
+          <div class="admin-filters" id="admin-filters"></div>
+          <p id="admin-reach" class="admin-reach"></p>
+          <div class="admin-block">
+            <h2>Personnes connectées</h2>
+            <div id="admin-chart-people" class="admin-chart"></div>
+          </div>
+          <div class="admin-block">
+            <h2>Parties jouées</h2>
+            <div id="admin-chart-games" class="admin-chart"></div>
+          </div>
+          <div class="admin-block">
+            <h2>Parties en ligne</h2>
+            <div id="admin-chart-online" class="admin-chart"></div>
+          </div>
         </div>
-        <div class="admin-block">
-          <h2>Parties en ligne</h2>
-          <div id="admin-chart-online" class="admin-chart"></div>
-        </div>
-        <div class="admin-block">
-          <h2>Joueurs</h2>
+        <div class="admin-panel" data-admin-panel="players" hidden>
+          <input id="admin-player-search" class="admin-search" type="search" autocomplete="off" placeholder="Chercher un nom ou un e-mail" aria-label="Chercher un joueur">
+          <p class="admin-count" id="admin-player-count"></p>
           <div id="admin-players" class="admin-scroll"></div>
         </div>
-        <div class="admin-block">
-          <h2>Messages</h2>
+        <div class="admin-panel" data-admin-panel="tourneys" hidden>
+          <h2>Publier un tournoi officiel</h2>
+          <p class="admin-help">Il apparaît tout de suite dans « Tournois officiels ». Le tirage au sort se fait tout seul 30 secondes après le 4ᵉ joueur.</p>
+          <form id="admin-tourney-form" class="admin-tourney-form" novalidate>
+            <input id="admin-tourney-name" type="text" maxlength="40" autocomplete="off" placeholder="Nom du tournoi" aria-label="Nom du tournoi officiel">
+            <button type="submit" class="btn primary">Publier</button>
+          </form>
+          <p class="tourney-code-error" id="admin-tourney-error" hidden></p>
+          <h2>Tournois publiés</h2>
+          <div id="admin-tourneys" class="admin-scroll"></div>
+        </div>
+        <div class="admin-panel" data-admin-panel="messages" hidden>
           <div id="admin-messages" class="admin-scroll"></div>
         </div>
+        <div class="admin-panel" data-admin-panel="robot" hidden>
+          <h2>Le robot d’aujourd’hui</h2>
+          <p class="admin-help">Parties jouées contre le robot, par niveau. « Robot gagne » compte aussi les abandons.</p>
+          <div id="admin-robot-levels" class="admin-robot-levels"></div>
+          <h2>Les 8 dernières semaines</h2>
+          <div id="admin-robot-weeks" class="admin-robot-weeks"></div>
+          <h2>Robot qui apprend</h2>
+          <div class="admin-learn">
+            <p class="admin-learn-state"><b>Pas commencé</b><span>Version en jeu : robot actuel (v1)</span></p>
+            <ol class="admin-learn-steps">
+              <li>Collecte des coups</li>
+              <li>Analyse des situations</li>
+              <li>Entraînement d’un candidat</li>
+              <li>Comparaison avec l’ancien robot</li>
+              <li>Ta décision : activer ou non</li>
+            </ol>
+            <p class="admin-help">Aujourd’hui le robot cherche ses coups mais n’apprend pas : la base garde le résultat des parties, pas les coups. Le suivi s’allumera ici quand l’enregistrement des coups sera en place. Facile et Moyen ne changeront pas.</p>
+          </div>
+        </div>
         <div class="form-actions">
-          <button type="button" class="btn" data-home>Retour</button>
+          <button type="button" class="btn" id="admin-back">Retour</button>
         </div>
       </div>
     </section>

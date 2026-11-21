@@ -2012,6 +2012,115 @@ body[data-page="modes"] .tourney-room-actions .btn { border: 1px solid #2a3a3a; 
 .tourney-room-launch:disabled { opacity: 0.45; cursor: not-allowed; }
 .tourney-room-launch[hidden] { display: none; }
 .tourney-open-list { display: grid; gap: 8px; }
+.tourney-official {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid #2a3a3a;
+  border-radius: 8px;
+  background: transparent;
+  color: #f4f6f8;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.tourney-official-copy { display: grid; gap: 2px; min-width: 0; }
+.tourney-official-copy strong { font-size: 0.95rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tourney-official-copy span { color: #9aa8ba; font-size: 0.8rem; }
+.tourney-official.is-waiting { border-color: rgba(143, 209, 143, 0.6); }
+.tourney-official.is-mine { border-color: rgba(231, 197, 106, 0.7); }
+.tourney-official-go {
+  flex: 0 0 auto;
+  padding: 5px 12px;
+  border: 1px solid #2a3a3a;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  font-style: normal;
+  font-weight: 600;
+}
+.tourney-official-go.is-join { background: #f2f4f7; color: #0e1616; border-color: transparent; }
+.tourney-open + .tourney-rules { margin-top: 10px; }
+.admin-menu { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 10px; margin: 18px 0; }
+.admin-menu[hidden], .admin-panel[hidden] { display: none; }
+.admin-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 14px;
+  border: 1px solid #2a3a3a;
+  border-radius: 10px;
+  background: #1c2a29;
+  color: #f4f6f8;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.admin-card:hover { border-color: #4a5f5d; }
+.admin-card-icon { flex: 0 0 auto; width: 38px; height: 38px; object-fit: contain; color: #e7c56a; }
+.admin-card-icon svg { width: 100%; height: 100%; }
+.admin-card-copy { display: grid; gap: 2px; min-width: 0; }
+.admin-card-copy strong { font-size: 1rem; }
+.admin-card-copy span { color: #9aa8ba; font-size: 0.85rem; }
+.admin-panel { margin-top: 8px; }
+.admin-help { margin: 0 0 10px; color: #9aa8ba; font-size: 0.88rem; }
+.admin-count { margin: 8px 0; color: #9aa8ba; font-size: 0.85rem; }
+.admin-search {
+  width: 100%;
+  padding: 10px 14px;
+  border: 1px solid #2a3a3a;
+  border-radius: 999px;
+  background: #0e1616;
+  color: #f4f6f8;
+  font: inherit;
+}
+.admin-robot-levels { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; align-items: start; }
+.admin-robot-level {
+  display: grid;
+  gap: 3px;
+  padding: 12px;
+  border: 1px solid #2a3a3a;
+  border-radius: 10px;
+  background: #1c2a29;
+  color: #f4f6f8;
+  align-content: start;
+}
+.admin-robot-level strong { font-size: 0.95rem; }
+.admin-robot-level > span { color: #9aa8ba; font-size: 0.8rem; }
+.admin-robot-level p { margin: 0; color: #c5d0dc; font-size: 0.82rem; }
+.admin-robot-level p b { color: #f4f6f8; }
+.admin-robot-level.is-empty { opacity: 0.6; }
+.admin-robot-weeks { display: grid; gap: 6px; }
+.admin-week { display: grid; grid-template-columns: 58px 1fr auto; align-items: center; gap: 10px; font-size: 0.82rem; color: #c5d0dc; }
+.admin-week-bar { height: 10px; border-radius: 999px; background: #1c2a29; overflow: hidden; }
+.admin-week-bar i { display: block; height: 100%; border-radius: 999px; background: #e7c56a; }
+.admin-week-text { white-space: nowrap; color: #9aa8ba; }
+.admin-learn { padding: 14px; border: 1px dashed #3a4c4b; border-radius: 10px; }
+.admin-learn-state { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px; margin: 0 0 10px; }
+.admin-learn-state b { color: #e7c56a; }
+.admin-learn-state span { color: #9aa8ba; font-size: 0.85rem; }
+.admin-learn-steps { margin: 0 0 10px; padding-left: 1.2rem; display: grid; gap: 4px; color: #9aa8ba; font-size: 0.88rem; }
+.admin-tourney-form { display: flex; gap: 8px; margin-bottom: 8px; }
+.admin-tourney-form input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid #2a3a3a;
+  border-radius: 999px;
+  background: #0e1616;
+  color: #f4f6f8;
+  font: inherit;
+}
+.admin-tourney-form .btn { flex: 0 0 auto; }
+.admin-tourney > div:first-child { min-width: 0; }
+.admin-tourney > div:last-child { display: grid; justify-items: end; gap: 6px; flex: 0 0 auto; }
+.admin-tourney b { white-space: nowrap; font-size: 0.85rem; }
+.admin-tourney .btn { padding: 4px 12px; font-size: 0.78rem; }
+.admin-tourney.is-waiting b { color: #8fd18f; }
+#admin-tourney-error { margin: 0 0 8px; }
 .tourney-open-list .empty { margin: 0; color: #9aa8ba; font-size: 0.9rem; }
 .tourney-card {
   display: grid;
@@ -2231,6 +2340,7 @@ button.challenge-card:focus-visible { border-color: #f2f4f7; }
   display: grid;
   gap: 8px;
 }
+.admin-panel .admin-scroll { max-height: none; overflow: visible; }
 .admin-note { height: auto; overflow: visible; align-items: start; }
 .admin-note p { margin: 6px 0 0; white-space: normal; color: #d5deea; }
 .admin-note strong, .admin-note span { white-space: normal; }

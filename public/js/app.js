@@ -3467,8 +3467,105 @@ function stopAdminWatch() {
   adminWatch = 0;
 }
 
+const ADMIN_PANELS = {
+  stats: "Statistiques",
+  players: "Joueurs",
+  tourneys: "Compétitions",
+  messages: "Messages",
+  robot: "Robot (IA)",
+};
+const ROBOT_LEVELS = [
+  ["easy", "Facile"],
+  ["medium", "Moyen"],
+  ["hard", "Difficile"],
+  ["veryhard", "Très difficile"],
+  ["expert", "Expert"],
+];
+let adminPanel = "";
+
+function openAdminPanel(name) {
+  adminPanel = ADMIN_PANELS[name] ? name : "";
+  try {
+    if (adminPanel) sessionStorage.setItem("egmon-admin-panel", adminPanel);
+    else sessionStorage.removeItem("egmon-admin-panel");
+  } catch { /* ignore */ }
+  $("admin-menu").hidden = Boolean(adminPanel);
+  document.querySelectorAll("[data-admin-panel]").forEach((panel) => {
+    panel.hidden = panel.dataset.adminPanel !== adminPanel;
+  });
+  $("admin-title").textContent = ADMIN_PANELS[adminPanel] || "Admin";
+  window.scrollTo(0, 0);
+}
+
+function savedAdminPanel() {
+  try {
+    const name = sessionStorage.getItem("egmon-admin-panel") || "";
+    return ADMIN_PANELS[name] ? name : "";
+  } catch {
+    return "";
+  }
+}
+
+function adminPercent(part, total) {
+  return total ? `${Math.round((part / total) * 100)} %` : "—";
+}
+
+function renderAdminSummary(data) {
+  const live = data.live || {};
+  const plural = (n, one, many) => `${n} ${n > 1 ? many : one}`;
+  const openTourneys = (data.tourneys || []).filter((item) => item.status === "waiting" || item.status === "running").length;
+  const robotGames = (data.robot?.levels || []).reduce((sum, level) => sum + level.games, 0);
+  $("admin-sum-stats").textContent = `${plural(Number(live.connected) || 0, "connecté", "connectés")} maintenant`;
+  $("admin-sum-players").textContent = `${plural(Number(data.accounts) || 0, "compte", "comptes")} · ${plural(Number(data.people) || 0, "personne", "personnes")}`;
+  $("admin-sum-tourneys").textContent = openTourneys ? `${plural(openTourneys, "tournoi en cours", "tournois en cours")}` : "Publier un tournoi officiel";
+  $("admin-sum-messages").textContent = plural(Number(data.messages) || 0, "message", "messages");
+  $("admin-sum-robot").textContent = `${plural(robotGames, "partie", "parties")} contre le robot`;
+}
+
+function renderAdminPlayers(players) {
+  const box = $("admin-players");
+  const query = $("admin-player-search").value.trim().toLowerCase();
+  const list = query
+    ? players.filter((player) => `${player.name || ""} ${player.email || ""}`.toLowerCase().includes(query))
+    : players;
+  $("admin-player-count").textContent = query
+    ? `${list.length} sur ${players.length}`
+    : `${players.length} joueur${players.length > 1 ? "s" : ""}`;
+  box.innerHTML = list.length
+    ? list.map((player) => {
+      const games = `${player.games} partie${player.games > 1 ? "s" : ""}`;
+      const online = player.online ? ` · ${player.online} en ligne` : "";
+      const when = player.lastPlayed ? adminDate(player.lastPlayed) : "Aucune partie";
+      return `<article class="history-item"><div><strong>${esc(player.name || "Sans nom")}</strong><span>${esc(player.email || "Sans e-mail")}</span></div><div><b>${esc(games)}${esc(online)}</b><span>${esc(when)}</span></div></article>`;
+    }).join("")
+    : `<p class="empty">${query ? "Personne ne correspond." : "Aucun joueur."}</p>`;
+}
+
+function renderAdminRobot(robot) {
+  const levels = new Map((robot?.levels || []).map((level) => [level.difficulty, level]));
+  $("admin-robot-levels").innerHTML = ROBOT_LEVELS.map(([key, label]) => {
+    const level = levels.get(key);
+    if (!level || !level.games) {
+      return `<article class="admin-robot-level is-empty"><strong>${label}</strong><span>Aucune partie</span></article>`;
+    }
+    return `<article class="admin-robot-level"><strong>${label}</strong><span>${level.games} partie${level.games > 1 ? "s" : ""}</span><p><b>${adminPercent(level.robotWins, level.games)}</b> robot gagne</p><p><b>${adminPercent(level.playerWins, level.games)}</b> joueur gagne${level.draws ? ` · ${level.draws} nul${level.draws > 1 ? "s" : ""}` : ""}</p><p>Maisons : joueur ${level.playerHouses} · robot ${level.robotHouses}</p><p>Abandons : ${level.abandons}</p></article>`;
+  }).join("");
+  const weeks = robot?.weeks || [];
+  const most = Math.max(1, ...weeks.map((week) => week.games));
+  $("admin-robot-weeks").innerHTML = weeks.length
+    ? weeks.map((week) => {
+      const day = new Date(`${week.week}T12:00:00`).toLocaleDateString("fr-FR", { day: "numeric", month: "short" });
+      const width = Math.round((week.games / most) * 100);
+      const rate = week.games ? `robot ${adminPercent(week.robotWins, week.games)}` : "";
+      return `<div class="admin-week"><span class="admin-week-day">${esc(day)}</span><span class="admin-week-bar"><i style="width:${width}%"></i></span><span class="admin-week-text">${week.games}${rate ? ` · ${esc(rate)}` : ""}</span></div>`;
+    }).join("")
+    : `<p class="empty">Pas encore de données.</p>`;
+}
+
 function renderAdmin(data) {
   adminData = data;
+  renderAdminSummary(data);
+  renderAdminRobot(data.robot);
   const live = data.live || {};
   $("admin-live").innerHTML = [
     [live.connected, "Connectés"],
@@ -3509,19 +3606,71 @@ function renderAdmin(data) {
   adminBars($("admin-chart-people"), days, "connected", "personnes");
   adminBars($("admin-chart-games"), days, "games", "parties");
   adminBars($("admin-chart-online"), days, "online", "en ligne");
-  const players = $("admin-players");
-  players.innerHTML = (data.players || []).length
-    ? data.players.map((player) => {
-      const games = `${player.games} partie${player.games > 1 ? "s" : ""}`;
-      const online = player.online ? ` · ${player.online} en ligne` : "";
-      const when = player.lastPlayed ? adminDate(player.lastPlayed) : "Aucune partie";
-      return `<article class="history-item"><div><strong>${esc(player.name || "Sans nom")}</strong><span>${esc(player.email || "Sans e-mail")}</span></div><div><b>${esc(games)}${esc(online)}</b><span>${esc(when)}</span></div></article>`;
-    }).join("")
-    : `<p class="empty">Aucun joueur.</p>`;
+  renderAdminPlayers(data.players || []);
+  renderAdminTourneys(data.tourneys || []);
   const notes = $("admin-messages");
   notes.innerHTML = (data.notes || []).length
     ? data.notes.map((note) => `<article class="history-item admin-note"><div><strong>${esc(note.name || "Sans nom")}</strong><span>${esc(adminDate(note.at))}</span><p>${esc(note.body || "")}</p></div></article>`).join("")
     : `<p class="empty">Aucun message.</p>`;
+}
+
+function renderAdminTourneys(items) {
+  const box = $("admin-tourneys");
+  if (!box) return;
+  box.innerHTML = items.length
+    ? items.map((item) => {
+      const line = {
+        waiting: `${item.players}/${item.size} inscrits`,
+        running: "En cours",
+        finished: `Gagné par ${item.winner || "—"}`,
+        cancelled: "Annulé",
+      }[item.status] || "";
+      const cancel = item.status === "waiting" ? `<button type="button" class="btn admin-tourney-cancel" data-code="${esc(item.code)}" data-name="${esc(item.name)}">Annuler</button>` : "";
+      return `<article class="history-item admin-tourney is-${esc(item.status)}"><div><strong>${esc(item.name)}</strong><span>${esc(item.code)} · ${esc(adminDate(item.at))}</span></div><div><b>${esc(line)}</b>${cancel}</div></article>`;
+    }).join("")
+    : `<p class="empty">Aucun tournoi officiel.</p>`;
+}
+
+async function createOfficialTourney(event) {
+  event.preventDefault();
+  const input = $("admin-tourney-name");
+  const error = $("admin-tourney-error");
+  const name = input.value.trim();
+  if (!name) {
+    error.textContent = "Donne un nom au tournoi.";
+    error.hidden = false;
+    input.focus();
+    return;
+  }
+  error.hidden = true;
+  const result = await tourneyCall("/api/admin/tourneys", { name });
+  if (!result.ok) {
+    error.textContent = result.error;
+    error.hidden = false;
+    return;
+  }
+  input.value = "";
+  renderAdminTourneys(result.data.tourneys || []);
+  toast(`Tournoi officiel créé : ${result.data.code}`);
+}
+
+function cancelOfficialTourney(code, name) {
+  askDialog({
+    kicker: "Tournoi officiel",
+    title: "Annuler ce tournoi ?",
+    text: `« ${name} » sera annulé et les joueurs inscrits seront prévenus.`,
+    confirm: "Annuler le tournoi",
+    cancel: "Garder",
+    onYes: async () => {
+      const result = await tourneyCall("/api/admin/tourneys/cancel", { code });
+      if (!result.ok) {
+        toast(result.error);
+        return;
+      }
+      renderAdminTourneys(result.data.tourneys || []);
+      toast("Tournoi annulé.");
+    },
+  });
 }
 
 async function loadAdmin() {
@@ -3535,7 +3684,9 @@ async function loadAdmin() {
     return;
   }
   noteAdmin({ admin: true });
+  const first = !adminData;
   renderAdmin(data);
+  if (first) openAdminPanel(savedAdminPanel());
   if (!adminWatch) adminWatch = setInterval(loadAdmin, 15000);
 }
 
@@ -3778,8 +3929,106 @@ function bracketMarkup(state) {
   const final = state.matches.find((match) => match.round === "final");
   const champion = state.winner ? `<span class="tb-champion">${esc(state.winner.name)}${state.winner.you ? " (toi)" : ""}</span>` : "";
   return `<div class="tb-side tb-left">${bracketCard(semi(1), "Demi 1")}</div>
-    <div class="tb-center"><img class="tb-cup" src="img/hub/comp4.png" alt="">${champion}${bracketCard(final, "Finale")}</div>
+    <div class="tb-center"><img class="tb-cup" src="img/hub/trophy-final.png" alt="">${champion}${bracketCard(final, "Finale")}</div>
     <div class="tb-side tb-right">${bracketCard(semi(2), "Demi 2")}</div>`;
+}
+
+let officialTick = 0;
+
+function officialCountdown(state) {
+  const left = Math.ceil(((Number(state.launchAt) || 0) - Date.now()) / 1000);
+  return left > 0 ? `Complet : tirage au sort dans ${left} s.` : "Complet : tirage au sort en cours…";
+}
+
+function watchOfficialCountdown(state) {
+  window.clearInterval(officialTick);
+  officialTick = 0;
+  if (!state) return;
+  officialTick = window.setInterval(() => {
+    if (app.tourney?.code !== state.code || app.tourney.status !== "waiting") {
+      window.clearInterval(officialTick);
+      officialTick = 0;
+      return;
+    }
+    $("tourney-room-status").textContent = officialCountdown(state);
+  }, 1000);
+}
+
+let officialWatch = 0;
+
+function officialLine(item) {
+  if (item.status === "waiting") {
+    const free = item.size - item.players;
+    if (item.youIn) return `Tu es inscrit · ${item.players}/${item.size}`;
+    if (free > 0) return `${free} place${free > 1 ? "s" : ""} libre${free > 1 ? "s" : ""} · ${item.players}/${item.size}`;
+    return "Complet · tirage au sort imminent";
+  }
+  if (item.status === "running") return item.youIn ? "En cours · tu joues" : "En cours";
+  return `Terminé · vainqueur : ${item.winner || "—"}`;
+}
+
+function officialCanJoin(item) {
+  return item.status === "waiting" && !item.youIn && item.players < item.size;
+}
+
+async function loadOfficialTourneys(quiet = false) {
+  const list = $("tourney-open-list");
+  const panel = document.querySelector('[data-hub-panel="tourney-join"]');
+  if (!quiet) list.innerHTML = `<p class="empty">Chargement…</p>`;
+  let items = null;
+  try {
+    const response = await fetch("/api/tourneys/official");
+    if (response.ok) items = (await response.json()).items;
+  } catch { /* hors ligne */ }
+  if (!Array.isArray(items)) {
+    if (!quiet) list.innerHTML = `<p class="empty">La liste n’a pas pu être chargée. Réessaie dans un instant.</p>`;
+    return;
+  }
+  setTourneyDot(items.some(officialCanJoin));
+  if (panel?.hidden) return;
+  list.innerHTML = items.length
+    ? items.map((item) => {
+      const join = officialCanJoin(item);
+      return `<button type="button" class="tourney-official is-${esc(item.status)}${item.youIn ? " is-mine" : ""}" data-code="${esc(item.code)}" data-action="${join ? "join" : "view"}"><span class="tourney-official-copy"><strong>${esc(item.name)}</strong><span>${esc(officialLine(item))}</span></span><em class="tourney-official-go${join ? " is-join" : ""}">${join ? "Rejoindre" : "Voir"}</em></button>`;
+    }).join("")
+    : `<p class="empty">Aucun tournoi officiel pour l’instant. Reviens bientôt !</p>`;
+}
+
+function watchOfficialTourneys() {
+  loadOfficialTourneys();
+  if (officialWatch) return;
+  officialWatch = window.setInterval(() => {
+    if ($("screen-modes").hidden || document.querySelector('[data-hub-panel="tourney-join"]')?.hidden) {
+      window.clearInterval(officialWatch);
+      officialWatch = 0;
+      return;
+    }
+    loadOfficialTourneys(true);
+  }, 10000);
+}
+
+async function openOfficialTourney(code, action) {
+  if (!TOURNEY_CODE.test(code)) return;
+  if (!isConnected()) {
+    if (action === "join") pendingTourney = code;
+    toast(action === "join" ? "Connecte-toi d’abord pour rejoindre un tournoi." : "Connecte-toi pour voir ce tournoi.");
+    openAuth();
+    return;
+  }
+  if (action === "join") {
+    const outcome = await joinTourney(code, "tourney-join");
+    if (typeof outcome === "string") {
+      toast(outcome);
+      loadOfficialTourneys(true);
+    }
+    return;
+  }
+  const result = await tourneyCall(`/api/tourneys/${encodeURIComponent(code)}`);
+  if (!result.ok) {
+    toast(result.error);
+    return;
+  }
+  openTourneyRoom(result.data, "tourney-join");
 }
 
 function renderTourneyRoom(state) {
@@ -3795,9 +4044,11 @@ function renderTourneyRoom(state) {
   if (finished) status = state.winner ? `Tournoi terminé : ${state.winner.name}${state.winner.you ? " (toi)" : ""} gagne !` : "Tournoi terminé.";
   else if (myMatch) status = "Ton match est prêt : clique sur « Jouer ». Tu as 2 minutes.";
   else if (running) status = "Tirage au sort fait. Les matchs sont en cours.";
-  else if (missing > 0) status = `En attente de ${missing} joueur${missing > 1 ? "s" : ""} · ${state.players.length}/${state.size}`;
+  else if (missing > 0) status = `En attente de ${missing} joueur${missing > 1 ? "s" : ""} · ${state.players.length}/${state.size}${state.official ? ". Le tirage au sort se fera tout seul." : ""}`;
+  else if (state.official) status = officialCountdown(state);
   else status = state.youCreator ? "Complet : tu peux lancer le tirage au sort." : "Complet : le créateur va lancer le tirage au sort.";
   $("tourney-room-status").textContent = status;
+  watchOfficialCountdown(!running && !missing && state.official ? state : null);
   const seats = $("tourney-room-seats");
   seats.hidden = running;
   if (!running) {
@@ -3831,8 +4082,8 @@ function receiveTourney(state) {
   if (!watching) return;
   if (state.status === "cancelled") {
     setTourney(null);
-    if (!document.querySelector('[data-hub-panel="tourney-room"]')?.hidden) openHub("tourney-4");
-    if (!state.youCreator) toast("Le créateur a annulé le tournoi.");
+    if (!document.querySelector('[data-hub-panel="tourney-room"]')?.hidden) openHub(state.official ? "tourney-join" : "tourney-4");
+    if (!state.youCreator) toast(state.official ? "Ce tournoi officiel a été annulé." : "Le créateur a annulé le tournoi.");
     return;
   }
   if (!state.youIn) {
@@ -3858,10 +4109,10 @@ async function loadMyTourney() {
   setTourney(result.data.state);
 }
 
-async function joinTourney(code) {
+async function joinTourney(code, from = "") {
   const result = await tourneyCall("/api/tourneys/join", { code });
   if (result.ok) {
-    openTourneyRoom(result.data);
+    openTourneyRoom(result.data, from || (result.data.official ? "tourney-join" : ""));
     return true;
   }
   if (result.code) {
@@ -3932,7 +4183,7 @@ function leaveTourneyRoom() {
         return;
       }
       setTourney(null);
-      openHub("tourney-4");
+      openHub(state.official ? "tourney-join" : "tourney-4");
       toast(result.data.cancelled ? "Le tournoi est annulé." : "Tu as quitté le tournoi.");
     },
   });
@@ -4043,6 +4294,8 @@ function openHub(name) {
   home.hidden = Boolean(next);
   if (next === "tourney-history") loadTourneyHistory();
   if (next === "tourney-4") paintTourneyShortcut();
+  if (next === "tourney-join") watchOfficialTourneys();
+  if (next === "competitions") loadOfficialTourneys(true);
   document.querySelectorAll("[data-hub-panel]").forEach((panel) => {
     panel.hidden = panel.dataset.hubPanel !== next;
   });
@@ -4170,6 +4423,11 @@ function followNote(link) {
     show("screen-history");
   } else if (link === "modes") {
     show("screen-modes");
+  } else if (typeof link === "string" && link.startsWith("tournoi:")) {
+    const code = link.slice(8);
+    if (!TOURNEY_CODE.test(code)) return;
+    show("screen-modes");
+    openTourneyFromHistory(code);
   }
 }
 
@@ -5336,11 +5594,30 @@ function bind() {
     }
     openHub("tourney-history");
   });
+  $("tourney-open-list").addEventListener("click", (event) => {
+    const item = event.target.closest(".tourney-official");
+    if (item) openOfficialTourney(item.dataset.code, item.dataset.action);
+  });
   $("tourney-history-list").addEventListener("click", (event) => {
     const item = event.target.closest(".tourney-history-item");
     if (item) openTourneyFromHistory(item.dataset.code);
   });
   $("tourney-new-cancel").addEventListener("click", closeTourneyDialogs);
+  $("admin-tourney-form").addEventListener("submit", createOfficialTourney);
+  $("admin-menu").addEventListener("click", (event) => {
+    const card = event.target.closest("[data-admin-open]");
+    if (card) openAdminPanel(card.dataset.adminOpen);
+  });
+  $("admin-back").addEventListener("click", () => {
+    if (adminPanel) openAdminPanel("");
+    else if (history.state?.page && history.state.page !== "home") history.back();
+    else goHome();
+  });
+  $("admin-player-search").addEventListener("input", () => renderAdminPlayers(adminData?.players || []));
+  $("admin-tourneys").addEventListener("click", (event) => {
+    const button = event.target.closest(".admin-tourney-cancel");
+    if (button) cancelOfficialTourney(button.dataset.code, button.dataset.name);
+  });
   $("tourney-new-form").addEventListener("submit", (event) => {
     event.preventDefault();
     createTourney();

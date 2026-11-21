@@ -739,10 +739,56 @@ export async function activeTourneyOf(playerId) {
 export async function cancelStaleTourneys() {
   const { rows } = await pool.query(
     `UPDATE tournaments SET status = 'cancelled', finished_at = now()
-     WHERE status = 'waiting' AND created_at < now() - interval '24 hours'
+     WHERE status = 'waiting'
+       AND created_at < now() - CASE WHEN official THEN interval '7 days' ELSE interval '24 hours' END
      RETURNING code`,
   );
   return rows.map((row) => row.code);
+}
+
+export const OFFICIAL_LAUNCH_SECONDS = 30;
+
+export async function officialReadyCodes() {
+  const { rows } = await pool.query(
+    `SELECT t.code
+     FROM tournaments t
+     JOIN tournament_players p ON p.tournament_id = t.id
+     WHERE t.official AND t.status = 'waiting'
+     GROUP BY t.id, t.code, t.size
+     HAVING COUNT(*) = t.size AND MAX(p.joined_at) <= now() - make_interval(secs => $1)`,
+    [OFFICIAL_LAUNCH_SECONDS],
+  );
+  return rows.map((row) => row.code);
+}
+
+export async function officialTourneys(viewerId, { all = false } = {}) {
+  const { rows } = await pool.query(
+    `SELECT t.code, t.name, t.size, t.status, t.created_at,
+       COUNT(p.player_id)::int AS players,
+       COALESCE(bool_or(p.player_id = $1), false) AS you_in,
+       w.name AS winner_name
+     FROM tournaments t
+     LEFT JOIN tournament_players p ON p.tournament_id = t.id
+     LEFT JOIN profiles w ON w.id = t.winner_id
+     WHERE t.official
+       AND (t.status IN ('waiting', 'running')
+         OR (t.status = 'finished' AND t.finished_at > now() - interval '2 days')
+         OR ($2 AND t.created_at > now() - interval '30 days'))
+     GROUP BY t.id, w.name
+     ORDER BY CASE t.status WHEN 'waiting' THEN 0 WHEN 'running' THEN 1 ELSE 2 END, t.created_at DESC
+     LIMIT 30`,
+    [viewerId || null, all],
+  );
+  return rows.map((row) => ({
+    code: row.code,
+    name: row.name,
+    size: row.size,
+    status: row.status,
+    players: row.players,
+    youIn: row.you_in,
+    winner: row.winner_name || "",
+    at: new Date(row.created_at).getTime(),
+  }));
 }
 
 export async function tourneyHistoryOf(playerId) {
@@ -784,16 +830,20 @@ export async function recentTourneyOf(playerId) {
   return rows[0]?.code || "";
 }
 
-export async function createTourney({ creatorId, name, code }) {
+export async function createTourney({ creatorId, name, code, official = false }) {
   try {
     return await inTransaction(async (client) => {
-      const active = await activeTourneyCode(client, creatorId);
-      if (active) return { error: "active", code: active };
+      if (!official) {
+        const active = await activeTourneyCode(client, creatorId);
+        if (active) return { error: "active", code: active };
+      }
       const { rows } = await client.query(
-        "INSERT INTO tournaments (code, name, creator_id) VALUES ($1, $2, $3) RETURNING id",
-        [code, name, creatorId],
+        "INSERT INTO tournaments (code, name, creator_id, official) VALUES ($1, $2, $3, $4) RETURNING id",
+        [code, name, creatorId, official],
       );
-      await client.query("INSERT INTO tournament_players (tournament_id, player_id) VALUES ($1, $2)", [rows[0].id, creatorId]);
+      if (!official) {
+        await client.query("INSERT INTO tournament_players (tournament_id, player_id) VALUES ($1, $2)", [rows[0].id, creatorId]);
+      }
       return { code };
     });
   } catch (error) {
@@ -804,9 +854,10 @@ export async function createTourney({ creatorId, name, code }) {
 
 export async function joinTourney(code, playerId) {
   return inTransaction(async (client) => {
-    const { rows } = await client.query("SELECT id, size, status FROM tournaments WHERE code = $1 FOR UPDATE", [code]);
+    const { rows } = await client.query("SELECT id, size, status, official, creator_id FROM tournaments WHERE code = $1 FOR UPDATE", [code]);
     const tourney = rows[0];
     if (!tourney) return { error: "unknown" };
+    if (tourney.official && tourney.creator_id === playerId) return { error: "organizer" };
     const { rows: mine } = await client.query(
       "SELECT 1 FROM tournament_players WHERE tournament_id = $1 AND player_id = $2",
       [tourney.id, playerId],
@@ -839,10 +890,10 @@ export async function leaveTourney(code, playerId) {
 
 export async function launchTourney(code, playerId) {
   return inTransaction(async (client) => {
-    const { rows } = await client.query("SELECT id, size, creator_id, status FROM tournaments WHERE code = $1 FOR UPDATE", [code]);
+    const { rows } = await client.query("SELECT id, size, creator_id, status, official FROM tournaments WHERE code = $1 FOR UPDATE", [code]);
     const tourney = rows[0];
     if (!tourney) return { error: "unknown" };
-    if (tourney.creator_id !== playerId) return { error: "creator" };
+    if (playerId ? tourney.creator_id !== playerId : !tourney.official) return { error: "creator" };
     if (tourney.status !== "waiting") return { error: "started" };
     const { rows: players } = await client.query("SELECT player_id FROM tournament_players WHERE tournament_id = $1", [tourney.id]);
     if (players.length !== tourney.size) return { error: "missing" };
@@ -890,7 +941,7 @@ export async function markMatchPlaying(matchId, roomCode) {
 }
 
 export async function finishMatch({ matchId, winner, scores, reason }) {
-  return inTransaction(async (client) => {
+  const result = await inTransaction(async (client) => {
     const { rows } = await client.query(
       `UPDATE tournament_matches SET status = 'done', winner = $2, scores = $3::text::jsonb, reason = $4, finished_at = now()
        WHERE id = $1 AND status = 'playing'
@@ -901,6 +952,7 @@ export async function finishMatch({ matchId, winner, scores, reason }) {
     if (!match) return null;
     const { rows: tourneys } = await client.query("SELECT code FROM tournaments WHERE id = $1 FOR UPDATE", [match.tournament_id]);
     const code = tourneys[0]?.code || "";
+    const loser = winner === match.p1 ? match.p2 : match.p1;
     if (match.round === "semi") {
       const { rows: semis } = await client.query(
         "SELECT slot, status, winner FROM tournament_matches WHERE tournament_id = $1 AND round = 'semi' ORDER BY slot",
@@ -911,24 +963,46 @@ export async function finishMatch({ matchId, winner, scores, reason }) {
           "UPDATE tournament_matches SET p1 = $2, p2 = $3 WHERE tournament_id = $1 AND round = 'final'",
           [match.tournament_id, semis[0].winner, semis[1].winner],
         );
-        return { code, next: "final" };
+        return { code, round: "semi", next: "final", winner, loser };
       }
-      return { code, next: "wait" };
+      return { code, round: "semi", next: "wait", winner, loser };
     }
-    const runnerUp = winner === match.p1 ? match.p2 : match.p1;
+    const runnerUp = loser;
     await client.query(
       `UPDATE tournaments SET status = 'finished', winner_id = $2, runner_up_id = $3, finished_at = now()
        WHERE id = $1`,
       [match.tournament_id, winner, runnerUp],
     );
-    return { code, next: "done", winner, runnerUp };
+    return { code, round: "final", next: "done", winner, loser, runnerUp };
   });
+  if (result?.next === "done") forgetRanking();
+  return result;
 }
 
 export async function resetPlayingMatches() {
   await pool.query("UPDATE tournament_matches SET status = 'pending', room_code = NULL, started_at = NULL WHERE status = 'playing'");
   const { rows } = await pool.query("SELECT code FROM tournaments WHERE status = 'running'");
   return rows.map((row) => row.code);
+}
+
+export async function tourneyPeople(code) {
+  const { rows } = await pool.query(
+    `SELECT t.name AS tourney, t.creator_id, t.status, t.official, p.player_id, pr.name
+     FROM tournaments t
+     JOIN tournament_players p ON p.tournament_id = t.id
+     JOIN profiles pr ON pr.id = p.player_id
+     WHERE t.code = $1
+     ORDER BY p.joined_at`,
+    [code],
+  );
+  if (!rows[0]) return null;
+  return {
+    name: rows[0].tourney,
+    creatorId: rows[0].creator_id,
+    status: rows[0].status,
+    official: rows[0].official,
+    players: rows.map((row) => ({ id: row.player_id, name: row.name })),
+  };
 }
 
 export async function tourneyPlayerIds(code) {
@@ -947,7 +1021,7 @@ export async function tourneyState(code, viewerId) {
   const tourney = rows[0];
   if (!tourney) return null;
   const { rows: players } = await pool.query(
-    `SELECT p.player_id, p.seat, pr.name, pr.photo, pr.public_id::text AS public_id
+    `SELECT p.player_id, p.seat, p.joined_at, pr.name, pr.photo, pr.public_id::text AS public_id
      FROM tournament_players p JOIN profiles pr ON pr.id = p.player_id
      WHERE p.tournament_id = $1 ORDER BY p.joined_at`,
     [tourney.id],
@@ -970,7 +1044,10 @@ export async function tourneyState(code, viewerId) {
     official: tourney.official,
     status: tourney.status,
     youIn: byId.has(viewerId),
-    youCreator: tourney.creator_id === viewerId,
+    youCreator: !tourney.official && tourney.creator_id === viewerId,
+    launchAt: tourney.official && tourney.status === "waiting" && players.length === tourney.size
+      ? Math.max(...players.map((row) => new Date(row.joined_at).getTime())) + OFFICIAL_LAUNCH_SECONDS * 1000
+      : 0,
     players: players.map((row) => ({
       key: row.public_id,
       name: row.name,
@@ -1003,6 +1080,66 @@ export async function hasGames(playerId) {
 export async function clearGames(playerId) {
   await pool.query("DELETE FROM games WHERE player_id = $1", [playerId]);
   forgetRanking();
+}
+
+const ROBOT_GAMES = `
+  SELECT g.difficulty, g.played_at, g.reason,
+    CASE WHEN g.winner = g.user_seat::text THEN 'player'
+         WHEN g.winner IN ('0', '1') THEN 'robot'
+         ELSE 'draw' END AS result,
+    CASE WHEN jsonb_typeof(g.scores) = 'array' AND (g.scores ->> 0) ~ '^[0-9]+$' THEN (g.scores ->> 0)::int END AS player_houses,
+    CASE WHEN jsonb_typeof(g.scores) = 'array' AND (g.scores ->> 1) ~ '^[0-9]+$' THEN (g.scores ->> 1)::int END AS robot_houses
+  FROM games g
+  WHERE g.mode = 'solo' AND g.user_seat = 0
+`;
+
+export async function robotOverview() {
+  const { rows: levels } = await pool.query(`
+    SELECT COALESCE(difficulty, 'medium') AS difficulty,
+      COUNT(*)::int AS games,
+      COUNT(*) FILTER (WHERE result = 'robot')::int AS robot_wins,
+      COUNT(*) FILTER (WHERE result = 'player')::int AS player_wins,
+      COUNT(*) FILTER (WHERE result = 'draw')::int AS draws,
+      COUNT(*) FILTER (WHERE reason = 'abandon')::int AS abandons,
+      COALESCE(ROUND(AVG(player_houses), 1), 0)::float AS player_houses,
+      COALESCE(ROUND(AVG(robot_houses), 1), 0)::float AS robot_houses
+    FROM (${ROBOT_GAMES}) played
+    GROUP BY 1
+  `);
+  const { rows: weeks } = await pool.query(`
+    WITH series AS (
+      SELECT generate_series(
+        date_trunc('week', (now() AT TIME ZONE 'Europe/Paris')::date) - interval '7 weeks',
+        date_trunc('week', (now() AT TIME ZONE 'Europe/Paris')::date),
+        interval '1 week'
+      )::date AS week
+    ),
+    played AS (
+      SELECT date_trunc('week', (played_at AT TIME ZONE 'Europe/Paris')::date)::date AS week, result
+      FROM (${ROBOT_GAMES}) g
+      WHERE played_at >= now() - interval '9 weeks'
+    )
+    SELECT series.week::text AS week,
+      COUNT(played.result)::int AS games,
+      COUNT(*) FILTER (WHERE played.result = 'robot')::int AS robot_wins
+    FROM series
+    LEFT JOIN played USING (week)
+    GROUP BY series.week
+    ORDER BY series.week
+  `);
+  return {
+    levels: levels.map((row) => ({
+      difficulty: row.difficulty,
+      games: row.games,
+      robotWins: row.robot_wins,
+      playerWins: row.player_wins,
+      draws: row.draws,
+      abandons: row.abandons,
+      playerHouses: Number(row.player_houses) || 0,
+      robotHouses: Number(row.robot_houses) || 0,
+    })),
+    weeks: weeks.map((row) => ({ week: row.week, games: row.games, robotWins: row.robot_wins })),
+  };
 }
 
 export async function adminOverview() {
@@ -1245,12 +1382,25 @@ async function onlineTotals(playerId) {
   );
   const row = rows[0] || {};
   return {
-    xp: Number(row.xp) || 0,
+    xp: (Number(row.xp) || 0) + (await tourneyXp(playerId)),
     houses: Number(row.houses) || 0,
     best: Number(row.best) || 0,
     games: Number(row.games) || 0,
     wins: Number(row.wins) || 0,
   };
+}
+
+const TOURNEY_WIN_XP = 150;
+const TOURNEY_RUNNER_UP_XP = 100;
+
+async function tourneyXp(playerId) {
+  const { rows } = await pool.query(
+    `SELECT COALESCE(SUM(CASE WHEN winner_id = $1 THEN ${TOURNEY_WIN_XP} ELSE ${TOURNEY_RUNNER_UP_XP} END), 0)::int AS xp
+     FROM tournaments
+     WHERE status = 'finished' AND (winner_id = $1 OR runner_up_id = $1)`,
+    [playerId],
+  );
+  return Number(rows[0]?.xp) || 0;
 }
 
 function packRank(rows) {
@@ -1381,12 +1531,22 @@ async function generalRankRows() {
        FROM online_games
        GROUP BY player_id
      ),
+     tourney_xp AS (
+       SELECT player_id, SUM(xp)::int AS xp
+       FROM (
+         SELECT winner_id AS player_id, ${TOURNEY_WIN_XP} AS xp FROM tournaments WHERE status = 'finished' AND winner_id IS NOT NULL
+         UNION ALL
+         SELECT runner_up_id, ${TOURNEY_RUNNER_UP_XP} FROM tournaments WHERE status = 'finished' AND runner_up_id IS NOT NULL
+       ) won
+       GROUP BY player_id
+     ),
      scored AS (
        SELECT p.id, p.public_id, p.name, p.icon, COALESCE(p.photo, '') AS photo,
          (COALESCE(SUM(15 + pg.houses * pg.per_house + pg.win_bonus), 0)
           + COALESCE(MAX(flag_xp.xp), 0)
           + COALESCE(MAX(streak_xp.xp), 0)
-          + COALESCE(MAX(ox.xp), 0))::int AS xp,
+          + COALESCE(MAX(ox.xp), 0)
+          + COALESCE(MAX(tx.xp), 0))::int AS xp,
          (COALESCE(SUM(pg.houses), 0) + COALESCE(MAX(ox.houses), 0))::int AS houses,
          GREATEST(COALESCE(MAX(pg.houses), 0), COALESCE(MAX(ox.best), 0))::int AS best,
          (COUNT(pg.player_id) + COALESCE(MAX(ox.games), 0))::int AS games,
@@ -1397,6 +1557,7 @@ async function generalRankRows() {
        LEFT JOIN flag_xp ON flag_xp.player_id = p.id
        LEFT JOIN streak_xp ON streak_xp.player_id = p.id
        LEFT JOIN online_xp ox ON ox.player_id = p.id
+       LEFT JOIN tourney_xp tx ON tx.player_id = p.id
        GROUP BY p.id
      ),
      ranked AS (
@@ -1428,16 +1589,27 @@ async function onlineRankRows() {
             ELSE g.scores ->> g.user_seat::text
           END) ~ '^[0-9]+$'
      ),
+     tourney_xp AS (
+       SELECT player_id, SUM(xp)::int AS xp
+       FROM (
+         SELECT winner_id AS player_id, ${TOURNEY_WIN_XP} AS xp FROM tournaments WHERE status = 'finished' AND winner_id IS NOT NULL
+         UNION ALL
+         SELECT runner_up_id, ${TOURNEY_RUNNER_UP_XP} FROM tournaments WHERE status = 'finished' AND runner_up_id IS NOT NULL
+       ) won
+       GROUP BY player_id
+     ),
      scored AS (
        SELECT p.id, p.public_id, p.name, p.icon, COALESCE(p.photo, '') AS photo,
-         COALESCE(SUM(15 + houses * 9 + win_bonus), 0)::int AS xp,
+         (COALESCE(SUM(15 + houses * 9 + win_bonus), 0) + COALESCE(MAX(tx.xp), 0))::int AS xp,
          COALESCE(SUM(houses), 0)::int AS houses,
          COALESCE(MAX(houses), 0)::int AS best,
          COUNT(pg.player_id)::int AS games,
          COALESCE(SUM(CASE WHEN win_bonus > 0 THEN 1 ELSE 0 END), 0)::int AS wins,
          0::int AS expert_wins
        FROM profiles p
-       JOIN per_game pg ON pg.player_id = p.id
+       LEFT JOIN per_game pg ON pg.player_id = p.id
+       LEFT JOIN tourney_xp tx ON tx.player_id = p.id
+       WHERE pg.player_id IS NOT NULL OR tx.player_id IS NOT NULL
        GROUP BY p.id
      ),
      ranked AS (

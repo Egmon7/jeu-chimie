@@ -51,6 +51,11 @@ import {
   tourneyPlayerIds,
   tourneyState,
   tourneyMatchesToStart,
+  tourneyPeople,
+  officialReadyCodes,
+  officialTourneys,
+  robotOverview,
+  OFFICIAL_LAUNCH_SECONDS,
   markMatchPlaying,
   finishMatch,
   resetPlayingMatches,
@@ -586,7 +591,12 @@ app.get("/api/admin", api(async (req, res) => {
     return;
   }
   const overview = await adminOverview();
-  res.json({ ...overview, live: liveSnapshot() });
+  res.json({
+    ...overview,
+    live: liveSnapshot(),
+    tourneys: await officialTourneys(null, { all: true }),
+    robot: await robotOverview(),
+  });
 }));
 
 app.get("/api/games/:id", api(async (req, res) => {
@@ -701,6 +711,7 @@ const TOURNEY_ERRORS = {
   active: [409, "Tu es déjà dans un autre tournoi."],
   creator: [403, "Seul le créateur peut lancer le tournoi."],
   missing: [409, "Il faut que les 4 places soient prises."],
+  organizer: [409, "Tu organises ce tournoi : tu ne peux pas y jouer."],
 };
 
 function tourneyCode(value) {
@@ -747,6 +758,73 @@ app.get("/api/tourneys/mine", api(async (req, res) => {
 app.get("/api/tourneys/history", api(async (req, res) => {
   const id = await sessionAccount(req, res);
   if (id) res.json({ items: await tourneyHistoryOf(id) });
+}));
+
+app.get("/api/tourneys/official", api(async (req, res) => {
+  if (!dbReady()) {
+    res.status(503).json({ error: "Base indisponible." });
+    return;
+  }
+  if (ipLimited(clientIp(req), "tourney-official", 60, 60_000)) {
+    res.status(429).json({ error: "Trop d'essais." });
+    return;
+  }
+  const viewer = await sessionPlayer(readCookie(req, "egmon_session"));
+  res.json({ items: await officialTourneys(viewer) });
+}));
+
+async function adminAccount(req, res) {
+  if (!dbReady()) {
+    res.status(503).json({ error: "Base indisponible." });
+    return null;
+  }
+  const id = await sessionPlayer(readCookie(req, "egmon_session"));
+  if (!id) {
+    res.status(401).json({ error: "Connexion requise." });
+    return null;
+  }
+  if (limited(`${id}:admin`, 40, 60_000)) {
+    res.status(429).json({ error: "Trop d'essais." });
+    return null;
+  }
+  if (!isAdminAccount(await readProfile(id))) {
+    res.status(403).json({ error: "Accès refusé." });
+    return null;
+  }
+  return id;
+}
+
+app.post("/api/admin/tourneys", api(async (req, res) => {
+  const id = await adminAccount(req, res);
+  if (!id) return;
+  const name = String(req.body?.name || "").replace(/[\u0000-\u001f]/g, "").trim().slice(0, 40);
+  if (!name) {
+    res.status(400).json({ error: "Donne un nom au tournoi." });
+    return;
+  }
+  let result = { error: "code" };
+  for (let tries = 0; tries < 5 && result.error === "code"; tries += 1) {
+    result = await createTourney({ creatorId: id, name, code: newTourneyCode(), official: true });
+  }
+  if (result.error) {
+    tourneyError(res, result);
+    return;
+  }
+  res.json({ code: result.code, tourneys: await officialTourneys(null, { all: true }) });
+}));
+
+app.post("/api/admin/tourneys/cancel", api(async (req, res) => {
+  const id = await adminAccount(req, res);
+  if (!id) return;
+  const code = tourneyCode(req.body?.code);
+  const result = code ? await leaveTourney(code, id) : { error: "unknown" };
+  if (result.error || !result.cancelled) {
+    tourneyError(res, result.error ? result : { error: "unknown" });
+    return;
+  }
+  broadcastTourneyLater(code);
+  tourneyCancelAlertLater(code, id);
+  res.json({ ok: true, tourneys: await officialTourneys(null, { all: true }) });
 }));
 
 app.get("/api/tourneys/:code", api(async (req, res) => {
@@ -801,7 +879,10 @@ app.post("/api/tourneys/join", api(async (req, res) => {
     tourneyError(res, result);
     return;
   }
-  if (!result.already) broadcastTourneyLater(code);
+  if (!result.already) {
+    broadcastTourneyLater(code);
+    tourneyFullAlertLater(code);
+  }
   res.json(await tourneyState(code, id));
 }));
 
@@ -815,6 +896,7 @@ app.post("/api/tourneys/leave", api(async (req, res) => {
     return;
   }
   broadcastTourneyLater(code);
+  if (result.cancelled) tourneyCancelAlertLater(code, id);
   res.json({ ok: true, cancelled: result.cancelled === true });
 }));
 
@@ -1100,9 +1182,31 @@ setInterval(pushRounds, 10 * 60 * 1000).unref();
 setInterval(() => {
   if (!dbReady()) return;
   cancelStaleTourneys()
-    .then((codes) => codes.forEach((code) => broadcastTourneyLater(code)))
+    .then((codes) => codes.forEach((code) => {
+      broadcastTourneyLater(code);
+      tourneyCancelAlertLater(code, "");
+    }))
     .catch((error) => console.error("Tournois en attente:", error.message));
 }, 30 * 60 * 1000).unref();
+
+let launchingOfficials = false;
+
+async function launchReadyOfficials() {
+  if (launchingOfficials || !dbReady()) return;
+  launchingOfficials = true;
+  try {
+    for (const code of await officialReadyCodes()) {
+      const result = await launchTourney(code, null);
+      if (result.ok) await startTourneyMatches(code);
+    }
+  } finally {
+    launchingOfficials = false;
+  }
+}
+
+setInterval(() => {
+  launchReadyOfficials().catch((error) => console.error("Tournois officiels:", error.message));
+}, 5000).unref();
 
 function notifyLater(playerId, note) {
   notify(playerId, note).catch((error) => console.error("Notification:", error.message));
@@ -1170,6 +1274,125 @@ const TOURNEY_RULES = {
   final: { timeMode: "none", scoreLimit: 10, turnSeconds: 20 },
 };
 
+const SHOW_UP_TEXT = TOURNEY_SHOW_UP_MS >= 60_000
+  ? `${Math.round(TOURNEY_SHOW_UP_MS / 60_000)} min`
+  : `${Math.round(TOURNEY_SHOW_UP_MS / 1000)} s`;
+
+async function tourneyAlert(playerId, note, push = false) {
+  const link = `tournoi:${note.code}`;
+  const saved = await notify(playerId, { kind: "tournament", ref: note.ref, title: note.title, body: note.body, link });
+  if (!saved || !push || accountOnline(playerId)) return;
+  await pushTo(playerId, {
+    title: note.title,
+    body: note.body,
+    url: `/?tournoi=${encodeURIComponent(note.code)}`,
+    tag: `tournoi-${note.code}`,
+  });
+}
+
+function tourneyAlertsLater(job) {
+  if (!dbReady()) return;
+  job().catch((error) => console.error("Notification de tournoi:", error.message));
+}
+
+function tourneyFullAlertLater(code) {
+  tourneyAlertsLater(async () => {
+    const people = await tourneyPeople(code);
+    if (!people || people.status !== "waiting" || people.players.length < 4) return;
+    if (people.official) {
+      for (const player of people.players) {
+        await tourneyAlert(player.id, {
+          code,
+          ref: `${code}:full`,
+          title: `« ${people.name} » est complet`,
+          body: `Le tirage au sort a lieu dans ${OFFICIAL_LAUNCH_SECONDS} secondes. Reste près de ton écran.`,
+        }, true);
+      }
+      return;
+    }
+    await tourneyAlert(people.creatorId, {
+      code,
+      ref: `${code}:full`,
+      title: `« ${people.name} » est complet`,
+      body: "Les 4 joueurs sont là. Tu peux lancer le tournoi.",
+    }, true);
+  });
+}
+
+function tourneyCancelAlertLater(code, byId) {
+  tourneyAlertsLater(async () => {
+    const people = await tourneyPeople(code);
+    if (!people) return;
+    for (const player of people.players) {
+      if (player.id === byId) continue;
+      await tourneyAlert(player.id, {
+        code,
+        ref: `${code}:cancel`,
+        title: `« ${people.name} » est annulé`,
+        body: people.official
+          ? "Jeu - chimie a annulé ce tournoi officiel."
+          : byId ? "Le créateur a annulé le tournoi." : "Le tournoi n’a pas été lancé à temps.",
+      });
+    }
+  });
+}
+
+function tourneyMatchAlertLater(code, match) {
+  tourneyAlertsLater(async () => {
+    const people = await tourneyPeople(code);
+    if (!people) return;
+    const final = match.round === "final";
+    for (const [me, other] of [[match.p1, match.p2_name], [match.p2, match.p1_name]]) {
+      await tourneyAlert(me, {
+        code,
+        ref: `${code}:${match.round}:start`,
+        title: final ? `La finale de « ${people.name} » est prête` : `Ta demi-finale de « ${people.name} » commence`,
+        body: `Contre ${other}. Viens dans les ${SHOW_UP_TEXT}, sinon c’est perdu par forfait.`,
+      }, true);
+    }
+  });
+}
+
+function tourneyResultAlertLater(result) {
+  tourneyAlertsLater(async () => {
+    const people = await tourneyPeople(result.code);
+    if (!people) return;
+    const nameOf = (id) => people.players.find((player) => player.id === id)?.name || "Un joueur";
+    const code = result.code;
+    if (result.round === "semi") {
+      await tourneyAlert(result.loser, {
+        code,
+        ref: `${code}:semi:out`,
+        title: `Éliminé de « ${people.name} »`,
+        body: `${nameOf(result.winner)} a gagné la demi-finale. Tu peux suivre la finale dans l’arbre.`,
+      });
+      if (result.next === "wait") {
+        await tourneyAlert(result.winner, {
+          code,
+          ref: `${code}:semi:win`,
+          title: `Tu es en finale de « ${people.name} »`,
+          body: "La finale commencera dès que l’autre demi-finale sera finie.",
+        });
+      }
+      return;
+    }
+    for (const player of people.players) {
+      const won = player.id === result.winner;
+      const second = player.id === result.runnerUp;
+      await tourneyAlert(player.id, {
+        code,
+        ref: `${code}:done`,
+        title: won ? `Tu as gagné « ${people.name} » !` : second ? `Finaliste de « ${people.name} »` : `« ${people.name} » est terminé`,
+        body: won
+          ? "Bravo ! +150 XP au classement."
+          : second
+            ? `${nameOf(result.winner)} a gagné la finale. +100 XP au classement.`
+            : `${nameOf(result.winner)} a gagné le tournoi.`,
+      }, won || second);
+    }
+  });
+}
+
 async function startTourneyMatches(code) {
   for (const match of await tourneyMatchesToStart(code)) {
     const roomCode = makeRoomCode(rooms);
@@ -1198,6 +1421,7 @@ async function startTourneyMatches(code) {
       opened: Date.now(),
       tournament: { code, matchId: match.id, round: match.round, showUpBy: Date.now() + TOURNEY_SHOW_UP_MS, done: false },
     });
+    tourneyMatchAlertLater(code, match);
   }
   broadcastTourneyLater(code);
 }
@@ -1240,6 +1464,7 @@ function concludeTourneyMatch(room) {
     reason,
   }).then(async (result) => {
     if (!result) return;
+    tourneyResultAlertLater(result);
     if (result.next === "final") await startTourneyMatches(result.code);
     else broadcastTourneyLater(result.code);
   }).catch((error) => console.error("Match de tournoi:", error.message));
