@@ -3115,16 +3115,42 @@ function renderFind(people) {
     list.innerHTML = `<p class="empty">Personne d’autre n’est connecté pour le moment.</p>`;
     return;
   }
-  list.innerHTML = people.map((person) => {
-    const busy = person.busy === true || person.activity === "duo" || person.activity === "robot";
-    const state = person.activity === "robot"
-      ? "Occupé · match robot"
-      : busy
-        ? "Occupé · match à 2"
-        : "Libre";
-    return `<button type="button" class="find-card${busy ? " is-taken" : ""}" data-token="${esc(person.token)}" data-busy="${busy ? "1" : "0"}"${busy ? " disabled" : ""}><span class="face">${faceMarkup(person.photo, true)}</span><span class="find-copy"><strong>${esc(person.name)}</strong><span class="find-state">${state}</span></span></button>`;
-  }).join("");
+  const pairs = new Map();
+  for (const person of people) {
+    if (!person.match) continue;
+    if (!pairs.has(person.match)) pairs.set(person.match, []);
+    pairs.get(person.match).push(person);
+  }
+  const matches = [...pairs.values()].filter((pair) => pair.length === 2);
+  const paired = new Set(matches.flat());
+  const singles = people.filter((person) => !paired.has(person));
+  const isBusy = (person) => person.busy === true || person.activity === "duo" || person.activity === "robot";
+  const free = singles.filter((person) => !isBusy(person));
+  const busy = singles.filter(isBusy);
+  list.innerHTML = [
+    ...free.map((person) => findCard(person, false)),
+    ...matches.map(findMatch),
+    ...busy.map((person) => findCard(person, true)),
+  ].join("");
   bindFaceImages(list);
+}
+
+const MATCH_STATE = {
+  playing: "Match en cours",
+  lobby: "Avant la table",
+  rematch: "Revanche demandée",
+};
+
+function findCard(person, busy) {
+  const state = !busy ? "Libre" : person.activity === "robot" ? "Occupé · match robot" : "Occupé · match à 2";
+  return `<button type="button" class="find-card${busy ? " is-taken" : ""}" data-token="${esc(person.token)}" data-busy="${busy ? "1" : "0"}"${busy ? " disabled" : ""}><span class="face">${faceMarkup(person.photo, true)}</span><span class="find-copy"><strong>${esc(person.name)}</strong><span class="find-state">${state}</span></span></button>`;
+}
+
+function findMatch(pair) {
+  const [a, b] = pair;
+  const player = (person) => `<span class="find-player"><span class="face">${faceMarkup(person.photo, true)}</span><strong title="${esc(person.name)}">${esc(person.name)}</strong></span>`;
+  const state = MATCH_STATE[a.matchState] || MATCH_STATE.playing;
+  return `<div class="find-match" role="group" aria-label="${esc(`${a.name} contre ${b.name}`)}"><div class="find-duo">${player(a)}<span class="find-vs">vs</span>${player(b)}</div><p class="find-match-foot"><strong>1 vs 1</strong><span>${esc(state)}</span></p></div>`;
 }
 
 function matchActivity() {

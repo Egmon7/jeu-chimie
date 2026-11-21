@@ -789,6 +789,11 @@ function saveOnlineMatch(room) {
 function emitState(room, event = null) {
   room.touched = Date.now();
   if (room.game?.status === "finished") saveOnlineMatch(room);
+  const paired = pairState(room);
+  if (room.listed !== paired) {
+    room.listed = paired;
+    setImmediate(broadcastFind);
+  }
   const sent = new Set();
   const send = (sock, seat) => {
     if (!sock || sent.has(sock.id)) return;
@@ -893,6 +898,22 @@ function roomPhase(socketId) {
   return "waiting";
 }
 
+function seatedRoom(socketId) {
+  const socket = io.sockets.sockets.get(socketId);
+  const room = socket?.data.roomCode ? rooms.get(socket.data.roomCode) : null;
+  if (!room) return null;
+  const seat = seatOf(room, socket.data.playerId);
+  return seat >= 0 && room.players[seat]?.socketId === socketId ? room : null;
+}
+
+function pairState(room) {
+  if (!room?.players?.[0] || !room.players[1]) return "";
+  const status = room.game?.status;
+  if (status === "playing") return "playing";
+  if (status === "finished") return room.rematch.some(Boolean) ? "rematch" : "";
+  return room.game ? "" : "lobby";
+}
+
 function accountBusy(item) {
   if (!item) return false;
   for (const other of presence.values()) {
@@ -920,7 +941,10 @@ function findPeople(except) {
   return [...byId.values()]
     .map((item) => {
       const phase = roomPhase(item.socketId);
-      const activity = phase === "playing" || phase === "waiting"
+      const room = seatedRoom(item.socketId);
+      const paired = pairState(room);
+      if (paired && !room.matchId) room.matchId = randomBytes(8).toString("hex");
+      const activity = paired || phase === "playing" || phase === "waiting"
         ? "duo"
         : phase === "finished"
           ? ""
@@ -929,8 +953,10 @@ function findPeople(except) {
         token: item.token,
         name: item.name,
         photo: item.photo,
-        busy: phase === "finished" ? false : accountBusy(item) || activity !== "",
+        busy: paired ? true : phase === "finished" ? false : accountBusy(item) || activity !== "",
         activity,
+        match: paired ? room.matchId : "",
+        matchState: paired,
       };
     })
     .sort((a, b) => Number(a.busy) - Number(b.busy) || a.name.localeCompare(b.name, "fr"))
