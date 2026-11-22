@@ -163,11 +163,19 @@
               <span>Deux demi-finales, puis la finale.</span>
             </span>
           </button>
+          <button type="button" class="mode" data-open-hub="tourney-8">
+            <img class="mode-icon" src="img/hub/comp8.png" alt="">
+            <span class="mode-copy">
+              <strong>Tournoi à 8</strong>
+              <span>Quatre quarts de finale, deux demi-finales, puis la finale.</span>
+            </span>
+          </button>
           <div class="tourney-rules">
             <h2>Les règles</h2>
             <ul>
               <li>Le créateur lance quand toutes les places sont prises, puis tirage au sort.</li>
-              <li>Demi-finale : 15 minutes. En cas d’égalité, la prochaine maison décide.</li>
+              <li>À 4 : demi-finales puis finale. À 8 : quarts de finale, demi-finales, puis finale.</li>
+              <li>Quarts et demi-finales : 10 minutes. En cas d’égalité, la prochaine maison décide.</li>
               <li>Finale : sans limite de temps, le premier à 10 maisons gagne.</li>
               <li>20 secondes par tour, sinon le tour passe. Abandon = défaite.</li>
               <li>Vainqueur : +150 XP. Finaliste : +100 XP.</li>
@@ -175,14 +183,14 @@
           </div>
         </div>
         <div class="mode-list" data-hub-panel="tourney-4" hidden>
-          <button type="button" class="mode tourney-current" id="go-tourney-current">
+          <button type="button" class="mode tourney-current" id="go-tourney-current" data-tourney-current>
             <img class="mode-icon" src="img/hub/comp4.png" alt="">
             <span class="mode-copy">
               <strong>Mes tournois</strong>
-              <span id="tourney-current-name">Tes tournois joués et leur tableau.</span>
+              <span id="tourney-current-name" class="tourney-current-name">Tes tournois joués et leur tableau.</span>
             </span>
           </button>
-          <button type="button" class="mode" id="go-tourney-new">
+          <button type="button" class="mode" id="go-tourney-new" data-tourney-new="4">
             <img class="mode-icon" src="img/hub/trophy.png" alt="">
             <span class="mode-copy">
               <strong>Créer un tournoi</strong>
@@ -194,6 +202,29 @@
             <span class="mode-copy">
               <strong>Rejoindre avec un code</strong>
               <span>Un ami t’a donné le code de son tournoi.</span>
+            </span>
+          </button>
+        </div>
+        <div class="mode-list" data-hub-panel="tourney-8" hidden>
+          <button type="button" class="mode tourney-current" data-tourney-current>
+            <img class="mode-icon" src="img/hub/comp8.png" alt="">
+            <span class="mode-copy">
+              <strong>Mes tournois</strong>
+              <span class="tourney-current-name">Tes tournois joués et leur tableau.</span>
+            </span>
+          </button>
+          <button type="button" class="mode" data-tourney-new="8">
+            <img class="mode-icon" src="img/hub/trophy.png" alt="">
+            <span class="mode-copy">
+              <strong>Créer un tournoi à 8</strong>
+              <span>Tu reçois un code et un lien à envoyer à 7 amis.</span>
+            </span>
+          </button>
+          <button type="button" class="mode" data-open-hub="tourney-code">
+            <img class="mode-icon" src="img/hub/users.png" alt="">
+            <span class="mode-copy">
+              <strong>Rejoindre avec un code</strong>
+              <span>Un ami t’a donné le code de son tournoi à 8.</span>
             </span>
           </button>
         </div>
@@ -237,8 +268,9 @@
           <div class="tourney-rules">
             <h2>Comment ça marche</h2>
             <ul>
-              <li>4 places. Le tirage au sort se fait tout seul 30 secondes après le 4ᵉ joueur.</li>
-              <li>Tu peux quitter tant que le tirage au sort n’a pas eu lieu.</li>
+              <li>4 ou 8 places. Si le tournoi a une heure, la présence se valide 10 minutes avant : les premiers gardent leur place.</li>
+              <li>L’organisateur démarre le tournoi : reste près de ton écran.</li>
+              <li>Tu peux quitter tant que le tournoi n’a pas démarré.</li>
               <li>Mêmes règles que les tournois entre amis. Vainqueur : +150 XP. Finaliste : +100 XP.</li>
             </ul>
           </div>
@@ -776,13 +808,28 @@
         </div>
         <div class="admin-panel" data-admin-panel="tourneys" hidden>
           <h2>Publier un tournoi officiel</h2>
-          <p class="admin-help">Il apparaît tout de suite dans « Tournois officiels ». Le tirage au sort se fait tout seul 30 secondes après le 4ᵉ joueur.</p>
+          <p class="admin-help">Il apparaît tout de suite dans « Tournois officiels ». Avec une heure, les joueurs valident leur présence 10 minutes avant : les premiers gardent la place. C’est toi qui démarres le tournoi.</p>
           <form id="admin-tourney-form" class="admin-tourney-form" novalidate>
-            <input id="admin-tourney-name" type="text" maxlength="40" autocomplete="off" placeholder="Nom du tournoi" aria-label="Nom du tournoi officiel">
+            <label class="admin-field admin-field-name">
+              <span>Nom</span>
+              <input id="admin-tourney-name" type="text" maxlength="40" autocomplete="off" placeholder="Coupe du dimanche">
+            </label>
+            <label class="admin-field">
+              <span>Joueurs</span>
+              <select id="admin-tourney-size">
+                <option value="4" selected>4 joueurs</option>
+                <option value="8">8 joueurs</option>
+              </select>
+            </label>
+            <label class="admin-field">
+              <span>Date et heure (facultatif)</span>
+              <input id="admin-tourney-when" type="datetime-local">
+            </label>
             <button type="submit" class="btn primary">Publier</button>
           </form>
           <p class="tourney-code-error" id="admin-tourney-error" hidden></p>
           <h2>Tournois publiés</h2>
+          <p class="admin-help">Touche un tournoi pour voir les joueurs ou l’arbre.</p>
           <div id="admin-tourneys" class="admin-scroll"></div>
         </div>
         <div class="admin-panel" data-admin-panel="messages" hidden>
@@ -795,16 +842,25 @@
           <h2>Les 8 dernières semaines</h2>
           <div id="admin-robot-weeks" class="admin-robot-weeks"></div>
           <h2>Robot qui apprend</h2>
-          <div class="admin-learn">
-            <p class="admin-learn-state"><b>Pas commencé</b><span>Version en jeu : robot actuel (v1)</span></p>
+          <div class="admin-learn" id="admin-learn">
+            <p class="admin-learn-state"><b id="admin-learn-status">…</b><span id="admin-learn-meta">Version en jeu : robot actuel (v1)</span></p>
             <ol class="admin-learn-steps">
-              <li>Collecte des coups</li>
-              <li>Analyse des situations</li>
-              <li>Entraînement d’un candidat</li>
-              <li>Comparaison avec l’ancien robot</li>
-              <li>Ta décision : activer ou non</li>
+              <li id="admin-learn-step-collect">Collecte des coups</li>
+              <li id="admin-learn-step-analyse">Analyse des situations</li>
+              <li id="admin-learn-step-train">Entraînement d’un candidat</li>
+              <li id="admin-learn-step-valid">Comparaison avec l’ancien robot</li>
+              <li id="admin-learn-step-done">Ta décision : activer ou non</li>
             </ol>
-            <p class="admin-help">Aujourd’hui le robot cherche ses coups mais n’apprend pas : la base garde le résultat des parties, pas les coups. Le suivi s’allumera ici quand l’enregistrement des coups sera en place. Facile et Moyen ne changeront pas.</p>
+            <p class="admin-help" id="admin-learn-help">Les parties de Ntotimbe, H2O, Beni mbuyi et Joel mifuba sont gardées coup par coup, sans rien montrer pendant le match. Facile et Moyen ne changent pas.</p>
+            <div id="admin-learn-watch" class="admin-learn-watch"></div>
+            <div id="admin-learn-sits" class="admin-learn-sits" hidden></div>
+            <p class="admin-learn-report" id="admin-learn-report"></p>
+            <div class="admin-learn-actions" id="admin-learn-actions">
+              <button type="button" class="btn" id="admin-learn-analyze">Lire les situations</button>
+              <button type="button" class="btn" id="admin-learn-revert">Revenir au robot v1</button>
+            </div>
+            <div id="admin-learn-runs" class="admin-learn-runs"></div>
+            <div id="admin-learn-list" class="admin-learn-list"></div>
           </div>
         </div>
         <div class="form-actions">
@@ -817,6 +873,18 @@
     <div class="dialog rank-card" role="dialog" aria-modal="true" aria-label="Fiche du joueur">
       <button type="button" class="chat-close rank-card-close" id="rank-card-close" aria-label="Fermer">×</button>
       <div id="rank-card-body"></div>
+    </div>
+  </div>
+  <div id="admin-bracket-dialog" class="overlay page-dialog" hidden>
+    <div class="dialog admin-bracket-dialog" role="dialog" aria-modal="true" aria-labelledby="admin-bracket-title">
+      <p class="eyebrow">Tournoi officiel</p>
+      <h2 id="admin-bracket-title"></h2>
+      <p class="admin-help" id="admin-bracket-status"></p>
+      <ul class="tourney-room-seats" id="admin-bracket-seats"></ul>
+      <div class="tourney-bracket" id="admin-bracket" hidden></div>
+      <div class="form-actions">
+        <button type="button" class="btn" id="admin-bracket-close">Fermer</button>
+      </div>
     </div>
   </div>
   <div id="app-dialog" class="overlay page-dialog" hidden>
@@ -852,17 +920,17 @@
 
   <div id="tourney-new-dialog" class="overlay page-dialog" hidden>
     <form class="dialog tourney-dialog" id="tourney-new-form" role="dialog" aria-modal="true" aria-labelledby="tourney-new-title" novalidate>
-      <p class="eyebrow">Tournoi à 4</p>
+      <p class="eyebrow" id="tourney-new-kicker">Tournoi à 4</p>
       <h2 id="tourney-new-title">Créer le tournoi</h2>
       <label class="tourney-field"><span>Nom du tournoi</span>
         <input id="tourney-name" type="text" maxlength="40" autocomplete="off" required placeholder="Ex. Coupe du quartier">
       </label>
       <p class="tourney-code-error" id="tourney-name-error" hidden></p>
-      <ul class="tourney-facts">
+      <ul class="tourney-facts" id="tourney-new-facts">
         <li>4 places, dont la tienne.</li>
         <li>Tu reçois un lien à envoyer à 3 amis.</li>
         <li>Tu lances quand les 4 places sont prises.</li>
-        <li>Demi-finales de 15 min, finale au premier à 10.</li>
+        <li>Demi-finales de 10 min, finale au premier à 10.</li>
       </ul>
       <div class="form-actions">
         <button type="button" class="btn" id="tourney-new-cancel">Annuler</button>
@@ -876,12 +944,12 @@
       <img class="tourney-ready-icon" src="img/hub/comp4.png" alt="" width="56" height="56">
       <h2 id="tourney-ready-title">Ton tournoi est prêt</h2>
       <p class="tourney-ready-name" id="tourney-ready-name"></p>
-      <p class="tourney-ready-text">Envoie le lien à 3 amis. Dès que les 4 places sont prises, tu pourras lancer le tirage au sort.</p>
+      <p class="tourney-ready-text" id="tourney-ready-text">Envoie le lien à 3 amis. Dès que les 4 places sont prises, tu pourras lancer le tirage au sort.</p>
       <p class="tourney-ready-code" id="tourney-ready-code" aria-label="Code du tournoi"></p>
       <label class="tourney-field">Lien à partager
         <input id="tourney-ready-link" type="text" readonly>
       </label>
-      <p class="tourney-ready-seats"><span class="tourney-seats"><i class="is-taken"></i><i></i><i></i><i></i></span><span>1/4 places : toi</span></p>
+      <p class="tourney-ready-seats" id="tourney-ready-seats"><span class="tourney-seats"><i class="is-taken"></i><i></i><i></i><i></i></span><span>1/4 places : toi</span></p>
       <div class="tourney-share">
         <button type="button" class="btn" id="tourney-share">Partager</button>
         <button type="button" class="btn" id="tourney-copy-link">Copier le lien</button>

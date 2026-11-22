@@ -18,6 +18,13 @@ import {
   REACTIONS,
 } from "../public/js/engine.js";
 import {
+  LEARN_NAMES,
+  boardSnap,
+  learnFingerprint,
+  LEARN_CHECKPOINT,
+} from "./learn.js";
+import { runLearnJob } from "./learnJobs.js";
+import {
   clearGames,
   closeOtherSessions,
   closeSession,
@@ -52,15 +59,25 @@ import {
   tourneyState,
   tourneyMatchesToStart,
   tourneyPeople,
-  officialReadyCodes,
+  deleteOfficial,
+  officialDueCodes,
   officialTourneys,
   robotOverview,
-  OFFICIAL_LAUNCH_SECONDS,
+  OFFICIAL_OPEN_MINUTES,
   markMatchPlaying,
   finishMatch,
   resetPlayingMatches,
   initDb,
   insertGame,
+  insertLearnMatch,
+  findLearnWatchIds,
+  learnOverview,
+  getLearnMatch,
+  replaceLearnSituations,
+  listLearnMatchesNeedingAnalysis,
+  insertLearnRun,
+  updateLearnMeta,
+  getLearnMeta,
   adminOverview,
   recordVisit,
   insertMessage,
@@ -596,7 +613,133 @@ app.get("/api/admin", api(async (req, res) => {
     live: liveSnapshot(),
     tourneys: await officialTourneys(null, { all: true }),
     robot: await robotOverview(),
+    learn: await learnOverview(),
   });
+}));
+
+app.post("/api/admin/learn/analyze", api(async (req, res) => {
+  if (!dbReady()) {
+    res.status(503).json({ error: "Base indisponible." });
+    return;
+  }
+  const adminId = await sessionPlayer(readCookie(req, "egmon_session"));
+  if (!adminId) {
+    res.status(401).json({ error: "Connexion requise." });
+    return;
+  }
+  const profile = await readProfile(adminId);
+  if (!isAdminAccount(profile)) {
+    res.status(403).json({ error: "Accès refusé." });
+    return;
+  }
+  if (limited(`${adminId}:learn-analyze`, 10, 60_000)) {
+    res.status(429).json({ error: "Trop d'essais." });
+    return;
+  }
+  const started = startLearnAnalysis(80, { recordRun: true });
+  res.json({ ok: true, started, learn: await learnOverview() });
+}));
+
+app.post("/api/admin/learn/model", api(async (req, res) => {
+  if (!dbReady()) {
+    res.status(503).json({ error: "Base indisponible." });
+    return;
+  }
+  const adminId = await sessionPlayer(readCookie(req, "egmon_session"));
+  if (!adminId) {
+    res.status(401).json({ error: "Connexion requise." });
+    return;
+  }
+  const profile = await readProfile(adminId);
+  if (!isAdminAccount(profile)) {
+    res.status(403).json({ error: "Accès refusé." });
+    return;
+  }
+  const action = String(req.body?.action || "");
+  const meta = await getLearnMeta();
+  if (action === "activate") {
+    if (!meta.candidateVersion) {
+      res.status(400).json({ error: "Pas de candidat. Termine d’abord la phase 3." });
+      return;
+    }
+    const veryhard = req.body?.veryhard === true;
+    const expert = req.body?.expert === true;
+    if (!veryhard && !expert) {
+      res.status(400).json({ error: "Choisis Très difficile et/ou Expert." });
+      return;
+    }
+    const next = await updateLearnMeta({
+      veryhardUsesCandidate: veryhard,
+      expertUsesCandidate: expert,
+      status: "termine",
+      lastError: "",
+    });
+    const overview = await learnOverview();
+    await insertLearnRun({
+      kind: "activation",
+      status: "ok",
+      modelVersion: next.candidateVersion || next.activeVersion,
+      matches: overview.matches,
+      moves: overview.moves,
+      situations: overview.situations?.total || 0,
+      report: overview.report,
+      detail: { veryhard, expert },
+    });
+    res.json({ ok: true, learn: await learnOverview() });
+    return;
+  }
+  if (action === "revert") {
+    const next = await updateLearnMeta({
+      veryhardUsesCandidate: false,
+      expertUsesCandidate: false,
+      clearCandidate: false,
+      status: meta.candidateVersion ? "validation" : "analyse",
+      lastError: "",
+    });
+    const overview = await learnOverview();
+    await insertLearnRun({
+      kind: "retour",
+      status: "ok",
+      modelVersion: next.activeVersion || "v1",
+      matches: overview.matches,
+      moves: overview.moves,
+      situations: overview.situations?.total || 0,
+      report: "Retour au robot actuel (v1) sur Très difficile et Expert.",
+      detail: { activeVersion: next.activeVersion },
+    });
+    res.json({ ok: true, learn: await learnOverview() });
+    return;
+  }
+  res.status(400).json({ error: "Action inconnue." });
+}));
+
+app.get("/api/admin/learn/:id", api(async (req, res) => {
+  if (!dbReady()) {
+    res.status(503).json({ error: "Base indisponible." });
+    return;
+  }
+  const adminId = await sessionPlayer(readCookie(req, "egmon_session"));
+  if (!adminId) {
+    res.status(401).json({ error: "Connexion requise." });
+    return;
+  }
+  const profile = await readProfile(adminId);
+  if (!isAdminAccount(profile)) {
+    res.status(403).json({ error: "Accès refusé." });
+    return;
+  }
+  const match = await getLearnMatch(req.params.id);
+  if (!match) {
+    res.status(404).json({ error: "Partie introuvable." });
+    return;
+  }
+  let replay = null;
+  try {
+    replay = await runLearnJob("replay", match);
+  } catch (error) {
+    replay = { ok: false, error: error.message };
+  }
+  res.json({ match, replay });
 }));
 
 app.get("/api/games/:id", api(async (req, res) => {
@@ -710,8 +853,10 @@ const TOURNEY_ERRORS = {
   full: [409, "Ce tournoi est complet."],
   active: [409, "Tu es déjà dans un autre tournoi."],
   creator: [403, "Seul le créateur peut lancer le tournoi."],
-  missing: [409, "Il faut que les 4 places soient prises."],
+  missing: [409, "Il faut que toutes les places soient prises."],
   organizer: [409, "Tu organises ce tournoi : tu ne peux pas y jouer."],
+  early: [409, `La validation de présence ouvre ${OFFICIAL_OPEN_MINUTES} minutes avant le début.`],
+  running: [409, "Ce tournoi est en cours : attends la fin pour le supprimer."],
 };
 
 function tourneyCode(value) {
@@ -739,8 +884,19 @@ async function broadcastTourney(code) {
   }
 }
 
+let tourneysChangedTimer = null;
+
+function tourneysChanged() {
+  if (tourneysChangedTimer) return;
+  tourneysChangedTimer = setTimeout(() => {
+    tourneysChangedTimer = null;
+    io.emit("tourneys-changed");
+  }, 400);
+}
+
 function broadcastTourneyLater(code) {
   broadcastTourney(code).catch((error) => console.error("Tournoi:", error.message));
+  tourneysChanged();
 }
 
 app.get("/api/tourneys/mine", api(async (req, res) => {
@@ -802,28 +958,61 @@ app.post("/api/admin/tourneys", api(async (req, res) => {
     res.status(400).json({ error: "Donne un nom au tournoi." });
     return;
   }
+  const size = Number(req.body?.size) || 4;
+  if (size !== 4 && size !== 8) {
+    res.status(400).json({ error: "Choisis 4 ou 8 joueurs." });
+    return;
+  }
+  let startsAt = null;
+  if (req.body?.startsAt) {
+    const when = new Date(Number(req.body.startsAt));
+    const now = Date.now();
+    if (!Number.isFinite(when.getTime()) || when.getTime() < now + 60_000 || when.getTime() > now + 60 * 24 * 60 * 60_000) {
+      res.status(400).json({ error: "Choisis une heure dans le futur (60 jours au plus)." });
+      return;
+    }
+    startsAt = when;
+  }
   let result = { error: "code" };
   for (let tries = 0; tries < 5 && result.error === "code"; tries += 1) {
-    result = await createTourney({ creatorId: id, name, code: newTourneyCode(), official: true });
+    result = await createTourney({ creatorId: id, name, code: newTourneyCode(), official: true, size, startsAt });
   }
   if (result.error) {
     tourneyError(res, result);
     return;
   }
+  tourneysChanged();
   res.json({ code: result.code, tourneys: await officialTourneys(null, { all: true }) });
 }));
 
-app.post("/api/admin/tourneys/cancel", api(async (req, res) => {
+app.post("/api/admin/tourneys/delete", api(async (req, res) => {
   const id = await adminAccount(req, res);
   if (!id) return;
   const code = tourneyCode(req.body?.code);
-  const result = code ? await leaveTourney(code, id) : { error: "unknown" };
-  if (result.error || !result.cancelled) {
-    tourneyError(res, result.error ? result : { error: "unknown" });
+  const result = code ? await deleteOfficial(code) : { error: "unknown" };
+  if (result.error) {
+    tourneyError(res, result);
     return;
   }
-  broadcastTourneyLater(code);
-  tourneyCancelAlertLater(code, id);
+  if (result.cancelled) {
+    broadcastTourneyLater(code);
+    tourneyCancelAlertLater(code, id);
+  } else {
+    tourneysChanged();
+  }
+  res.json({ ok: true, tourneys: await officialTourneys(null, { all: true }) });
+}));
+
+app.post("/api/admin/tourneys/start", api(async (req, res) => {
+  const id = await adminAccount(req, res);
+  if (!id) return;
+  const code = tourneyCode(req.body?.code);
+  const result = code ? await launchTourney(code, id) : { error: "unknown" };
+  if (result.error) {
+    tourneyError(res, result);
+    return;
+  }
+  await startTourneyMatches(code);
   res.json({ ok: true, tourneys: await officialTourneys(null, { all: true }) });
 }));
 
@@ -851,9 +1040,10 @@ app.post("/api/tourneys", api(async (req, res) => {
     res.status(400).json({ error: "Donne un nom au tournoi." });
     return;
   }
+  const size = Number(req.body?.size) === 8 ? 8 : 4;
   let result = { error: "code" };
   for (let tries = 0; tries < 5 && result.error === "code"; tries += 1) {
-    result = await createTourney({ creatorId: id, name, code: newTourneyCode() });
+    result = await createTourney({ creatorId: id, name, code: newTourneyCode(), size });
   }
   if (result.error) {
     tourneyError(res, result);
@@ -1189,24 +1379,24 @@ setInterval(() => {
     .catch((error) => console.error("Tournois en attente:", error.message));
 }, 30 * 60 * 1000).unref();
 
-let launchingOfficials = false;
+let startingDue = false;
 
-async function launchReadyOfficials() {
-  if (launchingOfficials || !dbReady()) return;
-  launchingOfficials = true;
+async function startDueOfficials() {
+  if (startingDue || !dbReady()) return;
+  startingDue = true;
   try {
-    for (const code of await officialReadyCodes()) {
+    for (const code of await officialDueCodes()) {
       const result = await launchTourney(code, null);
       if (result.ok) await startTourneyMatches(code);
     }
   } finally {
-    launchingOfficials = false;
+    startingDue = false;
   }
 }
 
 setInterval(() => {
-  launchReadyOfficials().catch((error) => console.error("Tournois officiels:", error.message));
-}, 5000).unref();
+  startDueOfficials().catch((error) => console.error("Tournois à l'heure:", error.message));
+}, 15_000).unref();
 
 function notifyLater(playerId, note) {
   notify(playerId, note).catch((error) => console.error("Notification:", error.message));
@@ -1270,7 +1460,8 @@ function matchNote(seat, names, scores, winner, reason) {
 
 const TOURNEY_SHOW_UP_MS = Number(process.env.TOURNEY_SHOW_UP_MS) || 2 * 60 * 1000;
 const TOURNEY_RULES = {
-  semi: { timeMode: "global", timeLimit: 900, turnSeconds: 20, suddenDeath: true, scoreLimit: 0 },
+  quarter: { timeMode: "global", timeLimit: 600, turnSeconds: 20, suddenDeath: true, scoreLimit: 0 },
+  semi: { timeMode: "global", timeLimit: 600, turnSeconds: 20, suddenDeath: true, scoreLimit: 0 },
   final: { timeMode: "none", scoreLimit: 10, turnSeconds: 20 },
 };
 
@@ -1298,23 +1489,29 @@ function tourneyAlertsLater(job) {
 function tourneyFullAlertLater(code) {
   tourneyAlertsLater(async () => {
     const people = await tourneyPeople(code);
-    if (!people || people.status !== "waiting" || people.players.length < 4) return;
+    if (!people || people.status !== "waiting" || people.players.length < people.size) return;
     if (people.official) {
       for (const player of people.players) {
         await tourneyAlert(player.id, {
           code,
           ref: `${code}:full`,
-          title: `« ${people.name} » est complet`,
-          body: `Le tirage au sort a lieu dans ${OFFICIAL_LAUNCH_SECONDS} secondes. Reste près de ton écran.`,
+          title: `Ta place est gardée dans « ${people.name} »`,
+          body: `Les ${people.size} places sont prises. Reste près de ton écran : le tournoi va démarrer.`,
         }, true);
       }
+      await tourneyAlert(people.creatorId, {
+        code,
+        ref: `${code}:full`,
+        title: `« ${people.name} » est complet`,
+        body: `Les ${people.size} joueurs ont validé leur présence. Tu peux démarrer le tournoi dans Admin → Compétitions.`,
+      }, true);
       return;
     }
     await tourneyAlert(people.creatorId, {
       code,
       ref: `${code}:full`,
       title: `« ${people.name} » est complet`,
-      body: "Les 4 joueurs sont là. Tu peux lancer le tournoi.",
+      body: `Les ${people.size} joueurs sont là. Tu peux lancer le tournoi.`,
     }, true);
   });
 }
@@ -1341,12 +1538,16 @@ function tourneyMatchAlertLater(code, match) {
   tourneyAlertsLater(async () => {
     const people = await tourneyPeople(code);
     if (!people) return;
-    const final = match.round === "final";
+    const title = {
+      final: `La finale de « ${people.name} » est prête`,
+      semi: `Ta demi-finale de « ${people.name} » commence`,
+      quarter: `Ton quart de finale de « ${people.name} » commence`,
+    }[match.round];
     for (const [me, other] of [[match.p1, match.p2_name], [match.p2, match.p1_name]]) {
       await tourneyAlert(me, {
         code,
         ref: `${code}:${match.round}:start`,
-        title: final ? `La finale de « ${people.name} » est prête` : `Ta demi-finale de « ${people.name} » commence`,
+        title,
         body: `Contre ${other}. Viens dans les ${SHOW_UP_TEXT}, sinon c’est perdu par forfait.`,
       }, true);
     }
@@ -1359,19 +1560,22 @@ function tourneyResultAlertLater(result) {
     if (!people) return;
     const nameOf = (id) => people.players.find((player) => player.id === id)?.name || "Un joueur";
     const code = result.code;
-    if (result.round === "semi") {
+    if (result.round !== "final") {
+      const played = result.round === "quarter" ? "le quart de finale" : "la demi-finale";
       await tourneyAlert(result.loser, {
         code,
-        ref: `${code}:semi:out`,
+        ref: `${code}:${result.round}:out`,
         title: `Éliminé de « ${people.name} »`,
-        body: `${nameOf(result.winner)} a gagné la demi-finale. Tu peux suivre la finale dans l’arbre.`,
+        body: `${nameOf(result.winner)} a gagné ${played}. Tu peux suivre la suite dans l’arbre.`,
       });
       if (result.next === "wait") {
+        const reached = result.nextRound === "final" ? "en finale" : "en demi-finale";
+        const other = result.round === "quarter" ? "l’autre quart de finale de ton côté" : "l’autre demi-finale";
         await tourneyAlert(result.winner, {
           code,
-          ref: `${code}:semi:win`,
-          title: `Tu es en finale de « ${people.name} »`,
-          body: "La finale commencera dès que l’autre demi-finale sera finie.",
+          ref: `${code}:${result.round}:win`,
+          title: `Tu es ${reached} de « ${people.name} »`,
+          body: `Ton prochain match commencera dès que ${other} sera fini.`,
         });
       }
       return;
@@ -1432,6 +1636,7 @@ function startTourneyGame(room) {
   room.startedAt = Date.now();
   room.saved = false;
   room.saving = false;
+  armLearn(room);
 }
 
 function resolveTourneyRoom(room, reason) {
@@ -1465,7 +1670,7 @@ function concludeTourneyMatch(room) {
   }).then(async (result) => {
     if (!result) return;
     tourneyResultAlertLater(result);
-    if (result.next === "final") await startTourneyMatches(result.code);
+    if (result.next === "start") await startTourneyMatches(result.code);
     else broadcastTourneyLater(result.code);
   }).catch((error) => console.error("Match de tournoi:", error.message));
 }
@@ -1495,6 +1700,170 @@ function celebrateStreak(playerId) {
       await pushTo(playerId, { title: "3 victoires d'affilée !", body: "Bravo ! Viens voir ta place au classement.", url: "/", tag: "streak" });
     }
   }).catch((error) => console.error("Série:", error.message));
+}
+
+let learnWatch = { at: 0, ids: new Set() };
+
+async function learnWatchIds() {
+  if (!dbReady()) return new Set();
+  if (Date.now() - learnWatch.at < 60_000 && learnWatch.ids.size) return learnWatch.ids;
+  const ids = await findLearnWatchIds(LEARN_NAMES);
+  learnWatch = { at: Date.now(), ids: new Set(ids) };
+  return learnWatch.ids;
+}
+
+function armLearn(room) {
+  room.learn = { active: false, steps: [], saved: false, saving: false };
+  const a = room.players?.[0]?.id;
+  const b = room.players?.[1]?.id;
+  if (!dbReady() || !isUuid(a) || !isUuid(b)) return;
+  if (learnWatch.ids.has(a) || learnWatch.ids.has(b)) room.learn.active = true;
+  learnWatchIds().then((ids) => {
+    if (!room.learn) return;
+    if (ids.has(a) || ids.has(b)) room.learn.active = true;
+    else if (!room.learn.steps.length) room.learn.active = false;
+  }).catch((error) => console.error("Learn arm:", error.message));
+}
+
+function noteLearnMove(room, seat, move) {
+  const learn = room?.learn;
+  if (!learn?.active || !room.game || !move) return;
+  try {
+    const step = learn.steps.length;
+    learn.steps.push({
+      step,
+      seat: seat === 1 ? 1 : 0,
+      r: move.r,
+      c: move.c,
+      after: (step + 1) % LEARN_CHECKPOINT === 0 ? boardSnap(room.game) : null,
+      at: Date.now(),
+    });
+  } catch (error) {
+    console.error("Learn move:", error.message);
+  }
+}
+
+function saveLearnMatch(room) {
+  const learn = room?.learn;
+  const game = room?.game;
+  if (!learn?.active || !game || game.status !== "finished" || learn.saved || learn.saving) return;
+  if (!isUuid(room.players[0]?.id) || !isUuid(room.players[1]?.id)) return;
+  learn.saving = true;
+  const last = learn.steps.at(-1);
+  if (last && !last.after) {
+    try {
+      last.after = boardSnap(game);
+    } catch {
+      last.after = null;
+    }
+  }
+  const endedAt = Date.now();
+  const startedAt = room.startedAt || endedAt;
+  const winner = game.winner === 0 || game.winner === 1 || game.winner === "0" || game.winner === "1"
+    ? String(Number(game.winner))
+    : "draw";
+  const entry = {
+    id: randomUUID(),
+    fingerprint: learnFingerprint(room.players[0].id, room.players[1].id, startedAt, game.rows, game.cols),
+    roomCode: room.code || "",
+    player0Id: room.players[0].id,
+    player1Id: room.players[1].id,
+    player0Name: cleanName(room.players[0].name, "Joueur 1"),
+    player1Name: cleanName(room.players[1].name, "Joueur 2"),
+    startedAt,
+    endedAt,
+    durationMs: Math.max(1, Math.round(endedAt - startedAt)),
+    rows: game.rows,
+    cols: game.cols,
+    starter: game.starter === 1 ? 1 : 0,
+    scores: [Number(game.scores[0]) || 0, Number(game.scores[1]) || 0],
+    winner,
+    reason: game.reason ? String(game.reason).slice(0, 24) : null,
+    settings: room.settings || {},
+    moveCount: learn.steps.length,
+    moves: learn.steps,
+  };
+  insertLearnMatch(entry).then(async (result) => {
+    learn.saved = true;
+    learn.steps = [];
+    if (!result?.duplicate) startLearnAnalysis(5);
+  }).catch((error) => {
+    console.error("Learn save:", error.message);
+    learn.saved = false;
+  }).finally(() => {
+    learn.saving = false;
+  });
+}
+
+let learnAnalyzing = false;
+
+function playingRooms() {
+  let n = 0;
+  for (const room of rooms.values()) if (room.game?.status === "playing") n += 1;
+  return n;
+}
+
+/** Lance l'analyse en arrière-plan si rien ne tourne déjà. Renvoie false si une analyse est en cours. */
+function startLearnAnalysis(limit, options = {}) {
+  if (learnAnalyzing || !dbReady()) return false;
+  learnAnalyzing = true;
+  analyzePendingLearnMatches(limit, options)
+    .catch((error) => console.error("Learn analyse:", error.message))
+    .finally(() => {
+      learnAnalyzing = false;
+    });
+  return true;
+}
+
+// Rattrapage tranquille : toutes les 2 minutes, 2 parties au plus, seulement quand peu de matchs tournent.
+setInterval(() => {
+  if (playingRooms() <= 3) startLearnAnalysis(2);
+}, 2 * 60 * 1000).unref();
+
+async function analyzePendingLearnMatches(limit = 40, { recordRun = false } = {}) {
+  if (!dbReady()) return { analyzed: 0, situations: 0 };
+  const ids = await listLearnMatchesNeedingAnalysis(limit);
+  let analyzed = 0;
+  let situations = 0;
+  try {
+    for (const id of ids) {
+      try {
+        const match = await getLearnMatch(id);
+        if (!match) continue;
+        const found = await runLearnJob("analyze", match);
+        situations += await replaceLearnSituations(id, found);
+        analyzed += 1;
+      } catch (error) {
+        console.error("Learn analyze:", error.message);
+      }
+    }
+    if (recordRun) {
+      const overview = await learnOverview();
+      await insertLearnRun({
+        kind: analyzed || situations ? "analyse" : "collecte",
+        status: "ok",
+        modelVersion: overview.model?.activeVersion || "v1",
+        matches: overview.matches,
+        moves: overview.moves,
+        situations: overview.situations?.total || 0,
+        report: overview.report,
+        detail: { analyzed, situationsAdded: situations },
+      });
+    }
+  } catch (error) {
+    if (recordRun) {
+      await insertLearnRun({
+        kind: "echec",
+        status: "echec",
+        modelVersion: "v1",
+        report: error.message,
+        detail: { error: error.message },
+      }).catch(() => {});
+      await updateLearnMeta({ status: "echec", lastError: error.message }).catch(() => {});
+    }
+    throw error;
+  }
+  return { analyzed, situations };
 }
 
 function saveOnlineMatch(room) {
@@ -1549,7 +1918,10 @@ function emitState(room, event = null) {
   room.touched = Date.now();
   startTourneyGame(room);
   if (room.tournament && !room.tournament.done && room.game?.status === "finished") concludeTourneyMatch(room);
-  if (room.game?.status === "finished") saveOnlineMatch(room);
+  if (room.game?.status === "finished") {
+    saveOnlineMatch(room);
+    saveLearnMatch(room);
+  }
   const paired = pairState(room);
   if (room.listed !== paired) {
     room.listed = paired;
@@ -2059,6 +2431,7 @@ socket.on("move", (move, ack) => {
     if (!play) return ack?.({ ok: false, error: "Coup impossible." });
     const result = applyMove(room.game, play);
     if (!result.ok) return ack?.({ ok: false, error: "Coup impossible." });
+    noteLearnMove(room, seat, play);
     room.rematch = [false, false];
     ack?.({ ok: true });
     emitState(room, { type: "move", move: play, result });
@@ -2084,6 +2457,7 @@ socket.on("move", (move, ack) => {
       room.saved = false;
       room.saving = false;
       room.rematch = [false, false];
+      armLearn(room);
       emitState(room, { type: "rematch" });
     } else {
       emitState(room, { type: "rematch-wait" });
@@ -2139,6 +2513,7 @@ socket.on("move", (move, ack) => {
     room.startedAt = Date.now();
     room.saved = false;
     room.saving = false;
+    armLearn(room);
     emitState(room, { type: "start" });
   });
 
@@ -2312,7 +2687,9 @@ setInterval(() => {
         const moves = legalMoves(room.game);
         if (moves.length) {
           const move = moves[Math.floor(Math.random() * moves.length)];
+          const seat = room.game.current;
           const result = applyMove(room.game, move);
+          if (result.ok) noteLearnMove(room, seat, move);
           emitState(room, { type: "timeout", move, result });
         }
       } else if (clock.timedOut && clock.kind === "global") {
@@ -2343,6 +2720,7 @@ initDb()
       console.log(`Jeu - chimie prêt sur http://${host}:${port} ${base}`);
     });
     if (dbReady()) {
+      learnWatchIds().catch(() => {});
       resetPlayingMatches()
         .then((codes) => Promise.all(codes.map((code) => startTourneyMatches(code))))
         .catch((error) => console.error("Reprise des tournois:", error.message));
