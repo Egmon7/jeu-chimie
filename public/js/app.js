@@ -3316,19 +3316,37 @@ function askWatch(match, names) {
     text: `${names}. Tu regardes seulement : tu ne peux ni jouer ni envoyer de message.`,
     confirm: "Oui",
     cancel: "Non",
-    onYes: () => startWatch(match),
+    onYes: () => startWatch({ match }, { type: "find" }),
   });
 }
 
-async function startWatch(match) {
+function askWatchTourney(code, round, slot, from) {
+  if (!TOURNEY_CODE.test(code || "")) return;
+  const label = { quarter: "ce quart de finale", semi: "cette demi-finale", final: "la finale" }[round] || "ce match";
+  askDialog({
+    kicker: "En direct",
+    title: "Voir ce match en direct ?",
+    text: `Tu regardes ${label} sans pouvoir jouer ni envoyer de message.`,
+    confirm: "Oui",
+    cancel: "Non",
+    onYes: () => {
+      if (from === "admin") $("admin-bracket-dialog").hidden = true;
+      startWatch({ code, round, slot: Number(slot) }, { type: from, code });
+    },
+  });
+}
+
+async function startWatch(payload, back = { type: "find" }) {
   try {
     await connectSocket();
-    const res = await emitAck("watch", { match });
+    const res = await emitAck("watch", payload);
     if (!res?.ok) {
       toast(res?.error || "Ce match n’est plus en cours.");
+      if (back.type === "admin") openAdminBracket(back.code);
       return;
     }
-    app.watching = match;
+    app.watchBack = back;
+    app.watching = res.state.match;
     app.board.clearAnims();
     hideOverlay();
     resetSheetZoom();
@@ -3392,10 +3410,23 @@ function stopWatching() {
   }
 }
 
-function leaveWatch() {
+async function leaveWatch() {
+  const back = app.watchBack || { type: "find" };
+  app.watchBack = null;
   stopWatching();
   closeGameMenu();
   hideOverlay();
+  if (back.type === "admin") {
+    show("screen-admin");
+    openAdminBracket(back.code);
+    return;
+  }
+  if (back.type === "tourney") {
+    show("screen-modes");
+    const result = await tourneyCall(`/api/tourneys/${encodeURIComponent(back.code)}`);
+    if (result.ok) openTourneyRoom(result.data, result.data.official ? "tourney-join" : "");
+    return;
+  }
   show("screen-find");
 }
 
@@ -4273,12 +4304,15 @@ function bracketCard(match, title) {
     ? `<span class="tb-countdown">Pour arriver : <b data-countdown="${Number(match.showUpBy)}">${countdownText(match.showUpBy)}</b></span>`
     : "";
   const play = match.room ? `<button type="button" class="btn primary tourney-play" data-room="${esc(match.room)}">Jouer</button>${left}` : "";
+  const watch = match.status === "playing" && !match.mine && match.p1 && match.p2
+    ? `<button type="button" class="btn tb-watch" data-round="${esc(match.round)}" data-slot="${Number(match.slot)}">Regarder</button>`
+    : "";
   return `<div class="tb-match is-${esc(match.status)}${match.mine ? " is-mine" : ""}">
     <span class="tb-title">${title}</span>
     <span class="tb-player${won(match.p1)}">${who(match.p1)}</span>
     <span class="tb-vs">vs</span>
     <span class="tb-player${won(match.p2)}">${who(match.p2)}</span>
-    <span class="tb-state">${state}</span>${play}
+    <span class="tb-state">${state}</span>${play}${watch}
   </div>`;
 }
 
@@ -4296,6 +4330,7 @@ function bracketMarkup8(state) {
 }
 
 function paintBracket(box, state, running) {
+  box.dataset.code = state.code || "";
   box.hidden = !running;
   box.classList.toggle("is-8", state.size === 8);
   box.innerHTML = running ? (state.size === 8 ? bracketMarkup8(state) : bracketMarkup(state)) : "";
@@ -4516,7 +4551,6 @@ function renderTourneyRoom(state) {
   if (myMatch?.showUpBy && !finished) {
     $("tourney-room-status").insertAdjacentHTML("beforeend", ` Il te reste <strong data-countdown="${Number(myMatch.showUpBy)}">${countdownText(myMatch.showUpBy)}</strong>.`);
   }
-  autoEnterTourneyMatch(myMatch);
   const seats = $("tourney-room-seats");
   seats.hidden = running;
   if (!running) {
@@ -4536,6 +4570,7 @@ function renderTourneyRoom(state) {
   launch.disabled = missing > 0;
   if (document.querySelector('[data-hub-panel="tourney-room"]')?.hidden) openHub("tourney-room");
   $("modes-title").textContent = running ? "Le tournoi" : HUB_TITLES["tourney-room"];
+  autoEnterTourneyMatch(myMatch);
 }
 
 function openTourneyRoom(state, from = "") {
@@ -5935,6 +5970,12 @@ function bind() {
     }
   });
   $("watch-leave-btn").addEventListener("click", leaveWatch);
+  document.addEventListener("click", (event) => {
+    const button = event.target.closest(".tb-watch");
+    if (!button) return;
+    const box = button.closest(".tourney-bracket");
+    askWatchTourney(box?.dataset.code || "", button.dataset.round, button.dataset.slot, box?.id === "admin-bracket" ? "admin" : "tourney");
+  });
   $("find-list").addEventListener("click", (event) => {
     const live = event.target.closest("[data-watch]");
     if (live) {

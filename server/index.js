@@ -1739,6 +1739,7 @@ async function startTourneyMatches(code) {
         code,
         matchId: match.id,
         round: match.round,
+        slot: match.slot,
         showUpBy: Date.now() + TOURNEY_SHOW_UP_MS,
         arrived: [false, false],
         waitingSent: false,
@@ -2745,12 +2746,26 @@ socket.on("move", (move, ack) => {
     broadcastFind();
   });
 
-  socket.on("watch", (payload = {}, ack) => {
+  socket.on("watch", async (payload = {}, ack) => {
+    try {
     payload = asObject(payload);
     if (limited(`${socket.id}:watch`, 20, 60_000)) return ack?.({ ok: false, error: "Trop d'essais. Patiente un peu." });
     const match = String(payload.match || "");
-    const room = match ? [...rooms.values()].find((item) => item.matchId === match) : null;
-    if (!room || pairState(room) !== "playing") return ack?.({ ok: false, error: "Ce match n’est plus en cours." });
+    let room = match ? [...rooms.values()].find((item) => item.matchId === match) : null;
+    const code = !match ? tourneyCode(payload.code) : "";
+    if (code) {
+      const round = ["quarter", "semi", "final"].includes(payload.round) ? payload.round : "";
+      const slot = Number(payload.slot);
+      room = [...rooms.values()].find((item) => item.tournament?.code === code && item.tournament.round === round && item.tournament.slot === slot) || null;
+      const account = socket.data.account;
+      if (!account) return ack?.({ ok: false, error: "Connecte-toi pour regarder ce match." });
+      const people = await tourneyPeople(code);
+      const allowed = people && (people.official || people.creatorId === account || people.players.some((player) => player.id === account));
+      if (!allowed) return ack?.({ ok: false, error: "Ce tournoi est réservé à ses joueurs." });
+      if (room?.players.some((player) => player?.id === account)) return ack?.({ ok: false, error: "C’est ton match : clique sur « Jouer »." });
+    }
+    if (!room || pairState(room) !== "playing") return ack?.({ ok: false, error: "Ce match n’est pas en cours pour l’instant." });
+    if (!room.matchId) room.matchId = randomBytes(8).toString("hex");
     if (liveRoom(socket)) return ack?.({ ok: false, error: "Quitte d’abord ta partie pour regarder un match." });
     if (room.players.some((player) => player?.socketId === socket.id)) return ack?.({ ok: false, error: "Tu joues déjà ce match." });
     const channel = watchChannel(room.code);
@@ -2759,6 +2774,9 @@ socket.on("move", (move, ack) => {
     socket.data.watching = room.code;
     socket.join(channel);
     ack?.({ ok: true, state: watchSnapshot(room) });
+    } catch {
+      ack?.({ ok: false, error: "Impossible d’ouvrir le direct." });
+    }
   });
 
   socket.on("unwatch", () => {
