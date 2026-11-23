@@ -143,6 +143,7 @@ function show(id, historyMode = "push") {
       fitSheet();
     });
   }
+  if (id !== "screen-game" && app.watching) stopWatching();
   if (id !== "screen-game") {
     const chatBtn = $("chat-open");
     cancelVoice();
@@ -1300,10 +1301,19 @@ function refreshHud() {
     chip.textContent = matchRuleText(game);
     chip.classList.remove("attach");
   }
-  $("pause-btn").hidden = app.mode === "online";
+  const watching = app.mode === "watch";
+  $("pause-btn").hidden = app.mode === "online" || watching;
+  $("restart-btn").hidden = watching;
+  $("abandon-btn").hidden = watching;
+  $("watch-leave-btn").hidden = !watching;
+  $("reactions").hidden = watching;
   paintChatMate();
   const chatBtn = $("chat-open");
-  if (chatBtn) chatBtn.hidden = false;
+  if (chatBtn) chatBtn.hidden = app.mode === "solo" || watching;
+  if (watching) {
+    const eyes = app.watchers > 1 ? ` · ${app.watchers} spectateurs` : "";
+    chip.textContent = `En direct · tu regardes${eyes}`;
+  }
   const name = app.players[game.current]?.name || "";
   const mine = app.mode !== "local" && game.current === (app.mode === "online" ? app.seat : 0);
   $("turn-label").textContent = game.status !== "playing"
@@ -1429,7 +1439,7 @@ function reactToMove(result, blocked) {
 function remaining(kind) {
   const game = app.game;
   if (!game) return 0;
-  if (app.mode === "online" && app.clockSync) {
+  if ((app.mode === "online" || app.mode === "watch") && app.clockSync) {
     return Math.max(0, (app.clockSync[kind] ?? 0) - (performance.now() - app.clockSync.at));
   }
   return kind === "global" ? game.globalRemaining ?? 0 : game.turnRemaining ?? 0;
@@ -1552,6 +1562,7 @@ function showOverlay({ kicker, title, text, actions, note = false, community = f
 }
 
 function canPlay() {
+  if (app.mode === "watch") return false;
   if (app.tracing) return false;
   if ($("game-overlay") && !$("game-overlay").hidden) return false;
   if ($("chat-panel") && !$("chat-panel").hidden) return false;
@@ -2754,7 +2765,7 @@ function showPause() {
 function loop(ts) {
   const dt = app.lastTs ? Math.max(0, ts - app.lastTs) : 0;
   app.lastTs = ts;
-  if (app.game && app.mode !== "online" && !app.paused && app.game.status === "playing") {
+  if (app.game && app.mode !== "online" && app.mode !== "watch" && !app.paused && app.game.status === "playing") {
     const clock = tick(app.game, dt);
     if (app.challengeId) app.challengeMs = (app.challengeMs || 0) + dt;
     const verdict = immediateChallengeVerdict();
@@ -2809,8 +2820,25 @@ function ensureSocket() {
   app.socket = window.io({ autoConnect: false });
   app.socket.on("notify", receiveNote);
   app.socket.on("tourney", receiveTourney);
+  app.socket.on("watch-state", onWatchState);
+  app.socket.on("watch-end", (msg) => {
+    if (!app.watching || msg?.match !== app.watching) return;
+    if (app.game?.status === "finished") return;
+    toast("Le match est terminé.");
+    leaveWatch();
+  });
   app.socket.on("tourneys-changed", onTourneysChanged);
   app.socket.on("connect", () => {
+    if (app.watching) {
+      const match = app.watching;
+      emitAck("watch", { match }).then((res) => {
+        if (res?.ok) onWatchState(res.state);
+        else if (app.watching === match) {
+          toast("Le direct est terminé.");
+          leaveWatch();
+        }
+      }).catch(() => {});
+    }
     clearTimeout(app.reconnectNote);
     app.selfBackAt = null;
     announcePresence();
@@ -3252,7 +3280,7 @@ function renderFind(people) {
   const matches = [...pairs.values()].filter((pair) => pair.length === 2);
   const paired = new Set(matches.flat());
   const singles = people.filter((person) => !paired.has(person));
-  const isBusy = (person) => person.busy === true || person.activity === "duo" || person.activity === "robot";
+  const isBusy = (person) => person.busy === true || ["duo", "robot", "local", "lobby"].includes(person.activity);
   const free = singles.filter((person) => !isBusy(person));
   const busy = singles.filter(isBusy);
   list.innerHTML = [
@@ -3270,21 +3298,125 @@ const MATCH_STATE = {
 };
 
 function findCard(person, busy) {
-  const state = !busy ? "Libre" : person.activity === "robot" ? "Occupé · match robot" : "Occupé · match à 2";
+  const state = !busy
+    ? "Libre"
+    : {
+      robot: "Occupé · match robot",
+      local: "Occupé · partie à 2 sur un appareil",
+      lobby: "En attente d’un adversaire",
+    }[person.activity] || "Occupé · match en ligne";
   return `<button type="button" class="find-card${busy ? " is-taken" : ""}" data-token="${esc(person.token)}" data-busy="${busy ? "1" : "0"}"${busy ? " disabled" : ""}><span class="face">${faceMarkup(person.photo, true)}</span><span class="find-copy"><strong>${esc(person.name)}</strong><span class="find-state">${state}</span></span></button>`;
+}
+
+function askWatch(match, names) {
+  if (!match) return;
+  askDialog({
+    kicker: "En direct",
+    title: "Voir ce match en direct ?",
+    text: `${names}. Tu regardes seulement : tu ne peux ni jouer ni envoyer de message.`,
+    confirm: "Oui",
+    cancel: "Non",
+    onYes: () => startWatch(match),
+  });
+}
+
+async function startWatch(match) {
+  try {
+    await connectSocket();
+    const res = await emitAck("watch", { match });
+    if (!res?.ok) {
+      toast(res?.error || "Ce match n’est plus en cours.");
+      return;
+    }
+    app.watching = match;
+    app.board.clearAnims();
+    hideOverlay();
+    resetSheetZoom();
+    onWatchState(res.state);
+  } catch {
+    toast("Impossible d’ouvrir le direct. Réessaie.");
+  }
+}
+
+function onWatchState(msg) {
+  if (!app.watching || !msg || msg.match !== app.watching || !msg.game) return;
+  app.mode = "watch";
+  app.seat = -1;
+  app.roomCode = null;
+  app.players = [0, 1].map((index) => {
+    const seat = msg.seats?.[index] || {};
+    return {
+      name: seat.name || (index === 0 ? msg.settings?.p1Name : msg.settings?.p2Name) || "…",
+      color: seat.color || (index === 0 ? msg.settings?.p1Color : msg.settings?.p2Color) || (index === 0 ? "blue" : "red"),
+      kind: "human",
+      connected: seat.connected !== false,
+    };
+  });
+  app.game = msg.game;
+  app.watchers = Number(msg.watchers) || 0;
+  app.clockSync = { global: msg.game.globalRemaining, turn: msg.game.turnRemaining, at: performance.now() };
+  if ($("screen-game").hidden) show("screen-game");
+  paintMatch();
+  const event = msg.event || {};
+  if ((event.type === "move" || event.type === "timeout") && event.move) {
+    app.board.animate(event.move, event.result);
+    app.sounds.line();
+    if (event.result?.completed) {
+      app.sounds.box();
+      popScore(event.result.player);
+    }
+    if (event.result?.eaten) popScore(1 - event.result.player);
+  }
+  if (msg.game.status === "finished") showWatchEnd();
+}
+
+function showWatchEnd() {
+  const game = app.game;
+  if (!game) return;
+  const winner = game.winner === 0 || game.winner === 1 ? app.players[game.winner]?.name : "";
+  showOverlay({
+    kicker: "Fin du direct",
+    title: winner ? `${winner} gagne` : "Égalité",
+    text: `${app.players[0]?.name || ""} ${game.scores[0]} – ${game.scores[1]} ${app.players[1]?.name || ""}`,
+    actions: [{ label: "Quitter", primary: true, on: () => leaveWatch() }],
+  });
+}
+
+function stopWatching() {
+  if (!app.watching) return;
+  app.watching = null;
+  app.socket?.emit("unwatch");
+  if (app.mode === "watch") {
+    app.mode = "";
+    app.game = null;
+  }
+}
+
+function leaveWatch() {
+  stopWatching();
+  closeGameMenu();
+  hideOverlay();
+  show("screen-find");
 }
 
 function findMatch(pair) {
   const [a, b] = pair;
   const player = (person) => `<span class="find-player"><span class="face">${faceMarkup(person.photo, true)}</span><strong title="${esc(person.name)}">${esc(person.name)}</strong></span>`;
   const state = MATCH_STATE[a.matchState] || MATCH_STATE.playing;
-  return `<div class="find-match" role="group" aria-label="${esc(`${a.name} contre ${b.name}`)}"><div class="find-duo">${player(a)}<span class="find-vs">vs</span>${player(b)}</div><p class="find-match-foot"><strong>1 vs 1</strong><span>${esc(state)}</span></p></div>`;
+  const scores = Array.isArray(a.scores) && a.seat >= 0 && b.seat >= 0 ? [a.scores[a.seat], a.scores[b.seat]] : null;
+  const score = scores
+    ? `<strong class="find-score" aria-label="Score ${Number(scores[0]) || 0} à ${Number(scores[1]) || 0}">${Number(scores[0]) || 0} – ${Number(scores[1]) || 0}</strong>`
+    : "<strong>1 vs 1</strong>";
+  const live = a.matchState === "playing";
+  const watch = live ? ` data-watch="${esc(a.match)}" data-names="${esc(`${a.name} contre ${b.name}`)}" role="button" tabindex="0"` : ` role="group"`;
+  const eye = live ? `<span class="find-watch">Regarder en direct</span>` : "";
+  return `<div class="find-match${live ? " is-live" : ""}"${watch} aria-label="${esc(`${a.name} contre ${b.name}`)}"><div class="find-duo">${player(a)}<span class="find-vs">vs</span>${player(b)}</div><p class="find-match-foot">${score}<span>${esc(state)}</span></p>${eye}</div>`;
 }
 
 function matchActivity() {
   if (app.game?.status === "finished") return "";
   if (app.mode === "online" && (app.game?.status === "playing" || app.roomCode || readRoomSnap())) return "duo";
-  if (app.mode === "local" && app.game?.status === "playing") return "duo";
+  if (app.mode === "local" && app.game?.status === "playing") return "local";
   if (app.mode === "solo" && app.game?.status === "playing") return "robot";
   return "";
 }
@@ -4396,6 +4528,8 @@ function renderTourneyRoom(state) {
   paintBracket($("tourney-bracket"), state, running);
   $("tourney-room-share").hidden = running || !state.youCreator;
   $("tourney-room-leave").hidden = running || !state.youIn;
+  $("tourney-room-leave").textContent = state.youCreator && !state.official ? "Supprimer" : "Quitter";
+  $("tourney-room-leave").classList.toggle("is-danger", Boolean(state.youCreator && !state.official));
   $("tourney-room-leave").closest(".tourney-room-actions").classList.toggle("is-single", !state.youCreator);
   const launch = $("tourney-room-launch");
   launch.hidden = running || !state.youCreator;
@@ -4417,7 +4551,10 @@ function receiveTourney(state) {
   if (state.status === "cancelled") {
     setTourney(null);
     if (!document.querySelector('[data-hub-panel="tourney-room"]')?.hidden) openHub(tourneyHubOf(state));
-    if (!state.youCreator) toast(state.official ? "Ce tournoi officiel a été annulé." : "Le créateur a annulé le tournoi.");
+    if (state.deleted) app.lastTourney = null;
+    if (!state.youCreator) {
+      toast(state.official ? "Ce tournoi officiel a été annulé." : state.deleted ? "Le créateur a supprimé le tournoi." : "Le créateur a annulé le tournoi.");
+    }
     return;
   }
   if (!state.youIn) {
@@ -4499,9 +4636,35 @@ async function enterSharedTourney() {
   }
 }
 
+function deleteTourneyRoom(state) {
+  askDialog({
+    kicker: "Tournoi",
+    title: "Supprimer le tournoi ?",
+    text: `« ${state.name} » disparaîtra pour tout le monde, aussi dans « Mes tournois ». Les inscrits seront prévenus.`,
+    confirm: "Supprimer",
+    cancel: "Garder",
+    onYes: async () => {
+      const result = await tourneyCall("/api/tourneys/delete", { code: state.code });
+      if (!result.ok) {
+        toast(result.error);
+        return;
+      }
+      setTourney(null);
+      if (app.lastTourney?.code === state.code) app.lastTourney = null;
+      app.roomCode = "";
+      openHub(tourneyHubOf(state));
+      toast("Tournoi supprimé.");
+    },
+  });
+}
+
 function leaveTourneyRoom() {
   const state = app.tourney;
   if (!state) return;
+  if (state.youCreator && !state.official) {
+    deleteTourneyRoom(state);
+    return;
+  }
   askDialog({
     kicker: "Tournoi",
     title: state.youCreator ? "Annuler le tournoi ?" : "Quitter le tournoi ?",
@@ -5764,7 +5927,20 @@ function bind() {
     if (!card) return;
     startChallenge(card.dataset.challenge);
   });
+  $("find-list").addEventListener("keydown", (event) => {
+    const live = event.target.closest("[data-watch]");
+    if (live && (event.key === "Enter" || event.key === " ")) {
+      event.preventDefault();
+      askWatch(live.dataset.watch, live.dataset.names);
+    }
+  });
+  $("watch-leave-btn").addEventListener("click", leaveWatch);
   $("find-list").addEventListener("click", (event) => {
+    const live = event.target.closest("[data-watch]");
+    if (live) {
+      askWatch(live.dataset.watch, live.dataset.names);
+      return;
+    }
     const card = event.target.closest("[data-token]");
     if (!card) return;
     if (card.dataset.busy === "1") {

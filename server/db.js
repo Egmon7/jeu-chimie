@@ -1016,6 +1016,20 @@ export async function joinTourney(code, playerId) {
   });
 }
 
+/** Le créateur supprime un tournoi entre amis pas encore lancé : il disparaît pour tout le monde. */
+export async function deleteFriendTourney(code, playerId) {
+  return inTransaction(async (client) => {
+    const { rows } = await client.query("SELECT id, name, creator_id, status, official FROM tournaments WHERE code = $1 FOR UPDATE", [code]);
+    const tourney = rows[0];
+    if (!tourney || tourney.official) return { error: "unknown" };
+    if (tourney.creator_id !== playerId) return { error: "notCreator" };
+    if (tourney.status !== "waiting") return { error: "started" };
+    const { rows: players } = await client.query("SELECT player_id FROM tournament_players WHERE tournament_id = $1", [tourney.id]);
+    await client.query("DELETE FROM tournaments WHERE id = $1", [tourney.id]);
+    return { ok: true, name: tourney.name, players: players.map((row) => row.player_id) };
+  });
+}
+
 export async function leaveTourney(code, playerId) {
   return inTransaction(async (client) => {
     const { rows } = await client.query("SELECT id, creator_id, status FROM tournaments WHERE code = $1 FOR UPDATE", [code]);

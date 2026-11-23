@@ -190,13 +190,14 @@ function outsideSeen(game, player) {
   return { seen };
 }
 
-function interiorRegions(game, player) {
+/** Zones enfermées par ce joueur. passFramed : ses points déjà pris par l'autre ne coupent pas la zone (comme pour l'encerclement). */
+function interiorRegions(game, player, { passFramed = false } = {}) {
   const { seen } = outsideSeen(game, player);
   const h = game.rows + 1;
   const w = game.cols + 1;
   const used = Array.from({ length: h }, () => Array(w).fill(false));
   const regions = [];
-  const blocked = (r, c) => game.dots[r][c] === player;
+  const blocked = (r, c) => game.dots[r][c] === player && (!passFramed || game.framed[r][c] == null);
   for (let r = 0; r < h; r += 1) {
     for (let c = 0; c < w; c += 1) {
       if (seen[r][c] || used[r][c] || blocked(r, c)) continue;
@@ -604,18 +605,74 @@ function sealHouse(game, player, house) {
 
 function swallowHouses(game, player) {
   const { seen } = outsideSeen(game, player);
-  let eaten = 0;
-  for (const old of game.houses) {
-    if (!old.alive || old.owner === player || !old.loop.length) continue;
-    const covered = old.loop.every((dot) => seen[dot.r][dot.c] !== true);
-    if (!covered) continue;
-    old.alive = false;
-    game.scores[old.owner] = Math.max(0, game.scores[old.owner] - 1);
-    eaten += 1;
-    for (const dot of old.loop) game.framed[dot.r][dot.c] = player;
-    for (const kid of old.children) game.framed[kid.r][kid.c] = player;
+  const covered = (game.houses || []).filter((old) => old.alive && old.owner !== player && old.loop.length
+    && old.loop.every((dot) => seen[dot.r][dot.c] !== true));
+  if (!covered.length) return [];
+  // Les maisons prises sont regroupées par zone enfermée ; le contour du mangeur suit le bord de la zone.
+  const regions = interiorRegions(game, player, { passFramed: true });
+  const regionOf = new Map();
+  regions.forEach((region, index) => {
+    for (const [r, c] of region.cells) regionOf.set(`${r},${c}`, index);
+  });
+  const groups = new Map();
+  for (const old of covered) {
+    const hit = old.loop.map((dot) => regionOf.get(`${dot.r},${dot.c}`)).find((index) => index != null);
+    const key = hit ?? `seul-${groups.size}`;
+    if (!groups.has(key)) groups.set(key, { olds: [], region: hit != null ? regions[hit] : null });
+    groups.get(key).olds.push(old);
   }
-  return eaten;
+  const taken = [];
+  for (const { olds, region } of groups.values()) {
+    const own = [];
+    for (const old of olds) {
+      for (const dot of old.loop) own.push([dot.r, dot.c]);
+      for (const kid of old.children || []) own.push([kid.r, kid.c]);
+    }
+    let loop = [];
+    if (region) {
+      // Le plus petit contour fermé de l'anneau qui entoure toutes les maisons prises.
+      const wall = [...ringOf(game, player, region.cells)].map((key) => {
+        const [r, c] = key.split(",").map(Number);
+        return { r, c };
+      });
+      loop = faceLoops(wall).find((face) => olds.every((old) => old.loop.every((dot) => strictlyInside(face, dot.r, dot.c)))) || [];
+    }
+    if (loop.length < 4) loop = loopAround(game, player, own);
+    const children = loop.length >= 4 ? kidsInside(game, player, loop) : [];
+    taken.push({ olds, loop, children });
+  }
+  for (const { olds } of taken) {
+    for (const old of olds) {
+      old.alive = false;
+      game.scores[old.owner] = Math.max(0, game.scores[old.owner] - (old.value || 1));
+      for (const dot of old.loop) game.framed[dot.r][dot.c] = player;
+      for (const kid of old.children) game.framed[kid.r][kid.c] = player;
+    }
+  }
+  return taken;
+}
+
+/** La maison que le mangeur trace autour des maisons prises, si aucune maison neuve ne les entoure déjà. Renvoie les points gagnés. */
+function drawTakenHouses(game, player, taken, fresh) {
+  let gained = 0;
+  for (const { olds, loop, children } of taken) {
+    const value = olds.reduce((sum, old) => sum + (old.value || 1), 0);
+    const wrapped = olds.every((old) => fresh.some((house) => old.loop.every((dot) => strictlyInside(house.loop, dot.r, dot.c))));
+    if (wrapped) continue;
+    gained += value;
+    if (loop.length < 4 || !children.length) continue;
+    const key = houseKey(children);
+    if ((game.houses || []).some((house) => house.alive && house.owner === player && house.key === key)) continue;
+    const cells = [];
+    for (let r = 0; r <= game.rows; r += 1) {
+      for (let c = 0; c <= game.cols; c += 1) {
+        if (strictlyInside(loop, r, c)) cells.push({ r, c });
+      }
+    }
+    game.houses.push({ owner: player, loop, children, key, alive: true, value });
+    sealHouse(game, player, { cells, children });
+  }
+  return gained;
 }
 export function enclosures(game) {
   if (!game?.houses) return [];
@@ -722,8 +779,9 @@ export function applyMove(game, move, options = {}) {
     game.scores[player] += 1;
     sealHouse(game, player, house);
   }
-  const eaten = manual ? 0 : swallowHouses(game, player);
-  if (!houses.length && eaten > 0) game.scores[player] += eaten;
+  const taken = manual ? [] : swallowHouses(game, player);
+  const eaten = taken.length;
+  game.scores[player] += drawTakenHouses(game, player, taken, houses);
   game.movesPlayed += 1;
   const pending = manual && canCatch(game, player);
 
@@ -777,7 +835,7 @@ export function closeByHand(game, loop) {
   });
   game.scores[player] += 1;
   sealHouse(game, player, house);
-  const eaten = swallowHouses(game, player);
+  const eaten = swallowHouses(game, player).length;
   const limit = game.settings.scoreLimit;
   if (limit > 0 && game.scores[player] >= limit) finish(game, player, "score");
   else if (legalMoves(game).length === 0 || game.movesPlayed >= game.totalDots) finishByScore(game);

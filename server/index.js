@@ -60,6 +60,7 @@ import {
   tourneyMatchesToStart,
   tourneyPeople,
   deleteOfficial,
+  deleteFriendTourney,
   officialDueCodes,
   officialTourneys,
   robotOverview,
@@ -932,6 +933,7 @@ const TOURNEY_ERRORS = {
   creator: [403, "Seul le créateur peut lancer le tournoi."],
   missing: [409, "Il faut que toutes les places soient prises."],
   organizer: [409, "Tu organises ce tournoi : tu ne peux pas y jouer."],
+  notCreator: [403, "Seul le créateur peut supprimer ce tournoi."],
   early: [409, `La validation de présence ouvre ${OFFICIAL_OPEN_MINUTES} minutes avant le début.`],
   running: [409, "Ce tournoi est en cours : attends la fin pour le supprimer."],
 };
@@ -1165,6 +1167,34 @@ app.post("/api/tourneys/leave", api(async (req, res) => {
   broadcastTourneyLater(code);
   if (result.cancelled) tourneyCancelAlertLater(code, id);
   res.json({ ok: true, cancelled: result.cancelled === true });
+}));
+
+app.post("/api/tourneys/delete", api(async (req, res) => {
+  const id = await sessionAccount(req, res);
+  if (!id) return;
+  const code = tourneyCode(req.body?.code);
+  const result = code ? await deleteFriendTourney(code, id) : { error: "unknown" };
+  if (result.error) {
+    tourneyError(res, result);
+    return;
+  }
+  // Les inscrits encore sur la page du tournoi sont renvoyés, puis prévenus dans la cloche.
+  const gone = { code, name: result.name, status: "cancelled", official: false, youIn: true, youCreator: false, deleted: true };
+  for (const sock of io.sockets.sockets.values()) {
+    if (result.players.includes(sock.data.account) && sock.data.account !== id) sock.emit("tourney", gone);
+  }
+  for (const playerId of result.players) {
+    if (playerId === id) continue;
+    notifyLater(playerId, {
+      kind: "tournament",
+      ref: `${code}:deleted`,
+      title: `« ${result.name} » est supprimé`,
+      body: "Le créateur a supprimé ce tournoi avant le début.",
+      link: "",
+    });
+  }
+  tourneysChanged();
+  res.json({ ok: true });
 }));
 
 app.post("/api/tourneys/launch", api(async (req, res) => {
@@ -2033,6 +2063,30 @@ function saveOnlineMatch(room) {
   });
 }
 
+const WATCH_LIMIT = 30;
+
+function watchChannel(code) {
+  return `watch:${code}`;
+}
+
+function watchSnapshot(room, event = null) {
+  return {
+    match: room.matchId || "",
+    game: room.game,
+    settings: { p1Color: room.settings.p1Color, p2Color: room.settings.p2Color, p1Name: room.settings.p1Name, p2Name: room.settings.p2Name },
+    seats: room.players.map((player) => (player ? { name: player.name, color: player.color, connected: player.connected } : null)),
+    tournament: room.tournament ? { round: room.tournament.round } : null,
+    event: event && ["move", "timeout", "skip", "golden", "start", "forfeit", "abandon", "time"].includes(event.type) ? event : null,
+    watchers: io.sockets.adapter.rooms.get(watchChannel(room.code))?.size || 0,
+  };
+}
+
+function emitWatch(room, event) {
+  const channel = watchChannel(room.code);
+  if (!io.sockets.adapter.rooms.get(channel)?.size) return;
+  io.to(channel).emit("watch-state", watchSnapshot(room, event));
+}
+
 function emitState(room, event = null) {
   room.touched = Date.now();
   startTourneyGame(room);
@@ -2042,10 +2096,18 @@ function emitState(room, event = null) {
     saveLearnMatch(room);
   }
   const paired = pairState(room);
+  if (paired === "playing" && room.game) {
+    const score = room.game.scores.slice(0, 2).join("-");
+    if (room.findScore !== score) {
+      room.findScore = score;
+      broadcastFindSoon();
+    }
+  }
   if (room.listed !== paired) {
     room.listed = paired;
     setImmediate(broadcastFind);
   }
+  emitWatch(room, event);
   const sent = new Set();
   const send = (sock, seat) => {
     if (!sock || sent.has(sock.id)) return;
@@ -2103,7 +2165,7 @@ function rememberPresence(socket, payload) {
   const current = presence.get(socket.id);
   const photo = PHOTO_URL.test(payload.photo) ? payload.photo : "";
   const busy = typeof payload.busy === "boolean" ? payload.busy : current?.busy === true;
-  const activity = payload.activity === "robot" || payload.activity === "duo" ? payload.activity : "";
+  const activity = ["robot", "duo", "local"].includes(payload.activity) ? payload.activity : "";
   const next = {
     token: presenceToken(current),
     id: playerKey(socket, payload.playerId),
@@ -2196,11 +2258,15 @@ function findPeople(except) {
       const room = seatedRoom(item.socketId);
       const paired = pairState(room);
       if (paired && !room.matchId) room.matchId = randomBytes(8).toString("hex");
-      const activity = paired || phase === "playing" || phase === "waiting"
+      // « lobby » : seul dans sa salle en ligne, en attente d'un adversaire.
+      const activity = paired || phase === "playing"
         ? "duo"
-        : phase === "finished"
-          ? ""
-          : (item.activity === "robot" || item.activity === "duo" ? item.activity : "");
+        : phase === "waiting"
+          ? "lobby"
+          : phase === "finished"
+            ? ""
+            : (["robot", "duo", "local"].includes(item.activity) ? item.activity : "");
+      const seat = paired ? room.players.findIndex((player) => player?.socketId === item.socketId) : -1;
       return {
         token: item.token,
         name: item.name,
@@ -2209,10 +2275,22 @@ function findPeople(except) {
         activity,
         match: paired ? room.matchId : "",
         matchState: paired,
+        seat,
+        scores: paired && room.game ? [Number(room.game.scores[0]) || 0, Number(room.game.scores[1]) || 0] : null,
       };
     })
     .sort((a, b) => Number(a.busy) - Number(b.busy) || a.name.localeCompare(b.name, "fr"))
     .slice(0, 40);
+}
+
+let findTimer = null;
+
+function broadcastFindSoon() {
+  if (findTimer) return;
+  findTimer = setTimeout(() => {
+    findTimer = null;
+    broadcastFind();
+  }, 1000);
 }
 
 function broadcastFind() {
@@ -2237,6 +2315,8 @@ function socketAlive(socketId) {
 function dropRoom(room) {
   for (const index of [0, 1]) clearForfeit(room, index);
   io.to(room.code).emit("closed");
+  io.to(watchChannel(room.code)).emit("watch-end", { match: room.matchId || "" });
+  io.in(watchChannel(room.code)).socketsLeave(watchChannel(room.code));
   rooms.delete(room.code);
 }
 
@@ -2663,6 +2743,28 @@ socket.on("move", (move, ack) => {
     if (queue.size >= QUEUE_LIMIT && !queue.has(socket.id)) return;
     queue.set(socket.id, mine);
     broadcastFind();
+  });
+
+  socket.on("watch", (payload = {}, ack) => {
+    payload = asObject(payload);
+    if (limited(`${socket.id}:watch`, 20, 60_000)) return ack?.({ ok: false, error: "Trop d'essais. Patiente un peu." });
+    const match = String(payload.match || "");
+    const room = match ? [...rooms.values()].find((item) => item.matchId === match) : null;
+    if (!room || pairState(room) !== "playing") return ack?.({ ok: false, error: "Ce match n’est plus en cours." });
+    if (liveRoom(socket)) return ack?.({ ok: false, error: "Quitte d’abord ta partie pour regarder un match." });
+    if (room.players.some((player) => player?.socketId === socket.id)) return ack?.({ ok: false, error: "Tu joues déjà ce match." });
+    const channel = watchChannel(room.code);
+    if ((io.sockets.adapter.rooms.get(channel)?.size || 0) >= WATCH_LIMIT) return ack?.({ ok: false, error: "Trop de spectateurs sur ce match." });
+    if (socket.data.watching && socket.data.watching !== room.code) socket.leave(watchChannel(socket.data.watching));
+    socket.data.watching = room.code;
+    socket.join(channel);
+    ack?.({ ok: true, state: watchSnapshot(room) });
+  });
+
+  socket.on("unwatch", () => {
+    if (!socket.data.watching) return;
+    socket.leave(watchChannel(socket.data.watching));
+    socket.data.watching = "";
   });
 
   socket.on("queue-leave", () => {

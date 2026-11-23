@@ -1896,6 +1896,8 @@ body[data-page="modes"] .tourney-room-launch.btn.primary { background: #f2f4f7; 
 .tourney-seat .face { width: 30px; height: 30px; flex: 0 0 30px; }
 .tourney-seat .face svg { width: 15px; height: 15px; }
 .tourney-seat-name { min-width: 0; flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.9rem; }
+.tourney-room-seats .tourney-seat { flex-wrap: wrap; row-gap: 4px; }
+.tourney-room-seats .tourney-seat-name { flex: 1 1 4.5rem; }
 .tourney-seat.is-free { border-style: dashed; color: #9aa8ba; }
 .tourney-seat.is-free .face { opacity: 0.45; }
 .tourney-tag {
@@ -2071,6 +2073,7 @@ body[data-page="modes"] .tb-match .tourney-play.btn.primary { margin-top: 4px; p
 body[data-page="modes"] .tourney-play.btn.primary { margin-top: 4px; width: 100%; background: #f2f4f7; color: #0e1616; border: 0; padding: 8px 12px; }
 .tourney-room-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 4px; }
 .tourney-room-actions.is-single { grid-template-columns: 1fr; }
+body[data-page="modes"] .tourney-room-actions .btn.is-danger { border-color: rgba(255, 140, 140, 0.45); color: #ffb4b4; }
 body[data-page="modes"] .tourney-room-actions .btn { border: 1px solid #2a3a3a; background: #1c2a29; color: #f4f6f8; padding: 9px 12px; }
 .tourney-room-launch { width: 100%; }
 .tourney-room-launch:disabled { opacity: 0.45; cursor: not-allowed; }
@@ -2437,6 +2440,12 @@ button.challenge-card:focus-visible { border-color: #f2f4f7; }
   white-space: nowrap;
 }
 .find-vs { font-size: 0.68rem; opacity: 0.6; flex: 0 0 auto; }
+.find-match.is-live { cursor: pointer; }
+.find-match.is-live:hover, .find-match.is-live:focus-visible { border-color: rgba(231, 197, 106, 0.85); outline: none; }
+.find-watch { display: block; margin-top: 4px; font-size: 0.66rem; font-weight: 700; color: #e7c56a; text-align: center; }
+.find-watch::before { content: "● "; color: #e23d3d; }
+.reactions[hidden] { display: none; }
+.find-match-foot .find-score { flex-basis: 100%; font-size: 0.95rem; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: 0.04em; }
 .find-match-foot { display: flex; flex-wrap: wrap; justify-content: center; gap: 0 6px; margin: 0; font-size: 0.68rem; line-height: 1.25; text-align: center; }
 @media (max-width: 480px) {
   .find-duo { gap: 2px; }

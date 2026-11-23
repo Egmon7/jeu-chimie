@@ -6,7 +6,7 @@
   "description": "Egmon Dots — points et carrés, sur papier quadrillé",
   "scripts": {
     "start": "node server/index.js",
-    "test": "node tests/engine.test.js && node tests/ai.test.js"
+    "test": "node tests/engine.test.js && node tests/chains.test.js && node tests/ai.test.js"
   },
   "dependencies": {
     "express": "^4.21.2",
