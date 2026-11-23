@@ -2044,6 +2044,10 @@ body[data-page="modes"] .tourney-room-launch.btn.primary { background: #f2f4f7; 
 .tb-player.is-winner { color: #8fd18f; font-weight: 700; }
 .tb-vs { font-size: 0.66rem; color: #9aa8ba; }
 .tb-state { font-size: 0.66rem; color: #9aa8ba; }
+.tb-countdown { font-size: 0.7rem; color: #e7c56a; }
+.tb-countdown b { font-variant-numeric: tabular-nums; }
+#tourney-room-status strong[data-countdown],
+#lobby-status strong[data-countdown] { color: #e7c56a; font-variant-numeric: tabular-nums; }
 body[data-page="modes"] .tb-match .tourney-play.btn.primary { margin-top: 4px; padding: 6px 4px; font-size: 0.8rem; }
 @media (max-width: 360px) {
   .tourney-bracket { gap: 8px; }

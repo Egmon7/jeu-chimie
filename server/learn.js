@@ -1,7 +1,23 @@
 import { createGame, applyMove } from "../public/js/engine.js";
 
-/** Comptes suivis pour la collecte (par nom de profil, pas le surnom de table). */
-export const LEARN_NAMES = ["ntotimbe", "h2o", "beni mbuyi", "joel mifuba"];
+/** Comptes suivis pour la collecte : nom affiché à l'admin et clé sans accents ni majuscules. */
+export const LEARN_PEOPLE = [
+  { key: "ntotimbe", label: "Ntotimbe" },
+  { key: "h20", label: "H20" },
+  { key: "beni mbuyi", label: "Béni Mbuyi" },
+  { key: "joel mifuba", label: "Joel mifuba" },
+];
+export const LEARN_NAMES = LEARN_PEOPLE.map((person) => person.key);
+
+/** « Béni  Mbuyi » → « beni mbuyi » : même règle que la recherche en base. */
+export function learnNameKey(name) {
+  return String(name || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim()
+    .replace(/\s+/g, " ");
+}
 
 export function packGrid(grid) {
   return grid.map((row) => row.map((cell) => (cell == null ? "-" : String(cell))).join("")).join("/");

@@ -1020,6 +1020,7 @@ function startMatch(settings, mode) {
   app.handCloses = 0;
   app.traceFaults = 0;
   app.freshChallenges = [];
+  app.learnSteps = mode === "solo" ? [] : null;
   show("screen-game");
   paintMatch();
   showModeReminder();
@@ -1593,6 +1594,10 @@ function playLocal(move, fromTimeout) {
   const manual = human && app.game.settings.closeMode === "hand";
   const result = applyMove(app.game, move, { autoClose: !manual });
   if (!result.ok) return;
+  if (Array.isArray(app.learnSteps)) {
+    if (manual) app.learnSteps = null;
+    else app.learnSteps.push(`${result.player}${move.r.toString(36)}${move.c.toString(36)}`);
+  }
   app.inputLock = true;
   app.board.animate(move, result);
   if (fromTimeout) toast("Temps écoulé : un point a été posé.");
@@ -1744,6 +1749,30 @@ async function pullHistory() {
   }
 }
 
+function sendLearnSolo(game, entry) {
+  const steps = app.learnSteps;
+  app.learnSteps = null;
+  if (!Array.isArray(steps) || !steps.length || !isConnected()) return;
+  fetch("/api/learn/solo", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    keepalive: true,
+    body: JSON.stringify({
+      rows: game.rows,
+      cols: game.cols,
+      starter: game.starter,
+      extraTurn: game.settings?.extraTurn !== false,
+      scoreLimit: Number(game.settings?.scoreLimit) || 0,
+      difficulty: entry.difficulty,
+      moves: steps.join(""),
+      scores: game.scores.slice(0, 2),
+      winner: game.winner,
+      reason: game.reason,
+      durationMs: entry.durationMs,
+    }),
+  }).catch(() => {});
+}
+
 function recordGame() {
   if (app.recorded || !app.game) return;
   app.recorded = true;
@@ -1770,6 +1799,7 @@ function recordGame() {
   pushHistory(entry);
   app.freshChallenges = CHALLENGES.filter((item) => earnedChallengeIds().has(item.id) && !before.has(item.id));
   syncGame(entry);
+  if (app.mode === "solo") sendLearnSolo(game, entry);
   reportChallenges(app.freshChallenges);
   if (game.winner === "draw") app.sounds.tap();
   else if (userSeat == null || game.winner === userSeat) app.sounds.win();
@@ -3068,10 +3098,12 @@ function renderTourneyLobby(msg) {
     const seat = seats[index] || {};
     return `<p><strong>${esc(seat.name || "Joueur")}</strong><span>${seat.connected ? "Là" : "Pas encore là"}</span></p>`;
   }).join("");
-  const minutes = Math.max(1, Math.ceil((Number(msg.tournament.showUpBy) - Date.now()) / 60_000));
-  $("lobby-status").textContent = foe.connected
-    ? "La partie commence…"
-    : `En attente de ${foe.name || "ton adversaire"}. S’il n’arrive pas d’ici ${minutes} min, tu gagnes par forfait.`;
+  if (foe.connected) {
+    $("lobby-status").textContent = "La partie commence…";
+  } else {
+    $("lobby-status").textContent = `En attente de ${foe.name || "ton adversaire"}. On l’a prévenu. S’il n’arrive pas d’ici `;
+    $("lobby-status").insertAdjacentHTML("beforeend", `<strong data-countdown="${Number(msg.tournament.showUpBy)}">${countdownText(msg.tournament.showUpBy)}</strong>, tu gagnes par forfait.`);
+  }
 }
 
 async function backToTourney() {
@@ -3087,10 +3119,27 @@ async function backToTourney() {
   else openHub("tourney-4");
 }
 
+function countdownText(deadline) {
+  const left = Math.max(0, Math.ceil((Number(deadline) - Date.now()) / 1000));
+  return `${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")}`;
+}
+
+function paintCountdowns() {
+  document.querySelectorAll("[data-countdown]").forEach((node) => {
+    node.textContent = countdownText(node.dataset.countdown);
+  });
+}
+
+window.setInterval(paintCountdowns, 1000);
+
 async function playTourneyMatch(room) {
   if (!room) return;
   const res = await joinRoom(room, app.prefs.p1Color);
-  if (!res?.ok) loadMyTourney();
+  if (res?.ok) return;
+  // La salle a pu changer (redémarrage du serveur) : on reprend l'état et on réessaie une fois.
+  await loadMyTourney();
+  const fresh = app.tourney?.matches?.find((match) => match.room)?.room;
+  if (fresh && fresh !== room) await joinRoom(fresh, app.prefs.p1Color);
 }
 
 function renderLobby(msg) {
@@ -3616,15 +3665,10 @@ function renderAdminLearn(learn) {
   if (help) {
     help.textContent = state === "echec"
       ? (model.lastError || "Un passage a échoué. Relance l’analyse ou regarde l’historique.")
-      : "Suivi pour Ntotimbe, H2O, Beni mbuyi et Joel. Facile et Moyen ne changent pas. Le candidat ne peut s’activer que sur Très difficile / Expert.";
+      : "Suivi pour Ntotimbe, H20, Béni Mbuyi et Joel mifuba : leurs duels en ligne et leurs parties contre le robot. Facile et Moyen ne changent pas.";
   }
-  const wanted = ["Ntotimbe", "H2O", "Beni mbuyi", "Joel mifuba"];
-  const found = new Map((learn?.watch || []).map((row) => [String(row.name || "").trim().toLowerCase(), row]));
   if (watchBox) {
-    watchBox.innerHTML = wanted.map((name) => {
-      const hit = found.get(name.toLowerCase());
-      return `<span class="${hit ? "" : "is-missing"}">${esc(name)}${hit ? "" : " · absent"}</span>`;
-    }).join("");
+    watchBox.innerHTML = (learn?.watch || []).map((row) => `<span class="${row.found ? "" : "is-missing"}">${esc(row.label)}${row.found ? "" : " · compte introuvable"}</span>`).join("");
   }
   const sitsBox = $("admin-learn-sits");
   if (sitsBox) {
@@ -4093,7 +4137,10 @@ function bracketCard(match, title) {
   const who = (player) => (player ? `${esc(player.name)}${player.you ? " (toi)" : ""}` : "À venir");
   const won = (player) => (player && match.winner === player.key ? " is-winner" : "");
   const state = match.status === "done" ? "Terminé" : match.status === "playing" ? "En cours" : "À venir";
-  const play = match.room ? `<button type="button" class="btn primary tourney-play" data-room="${esc(match.room)}">Jouer</button>` : "";
+  const left = match.room && match.showUpBy
+    ? `<span class="tb-countdown">Pour arriver : <b data-countdown="${Number(match.showUpBy)}">${countdownText(match.showUpBy)}</b></span>`
+    : "";
+  const play = match.room ? `<button type="button" class="btn primary tourney-play" data-room="${esc(match.room)}">Jouer</button>${left}` : "";
   return `<div class="tb-match is-${esc(match.status)}${match.mine ? " is-mine" : ""}">
     <span class="tb-title">${title}</span>
     <span class="tb-player${won(match.p1)}">${who(match.p1)}</span>
@@ -4306,6 +4353,15 @@ async function openAdminBracket(code) {
   $("admin-bracket-dialog").hidden = false;
 }
 
+/** Sur la page du tournoi, quand ton match est prêt, tu y entres tout seul (une fois par match). */
+function autoEnterTourneyMatch(match) {
+  if (!match?.room || app.autoEnteredRoom === match.room) return;
+  if (!panelShown("tourney-room") || !$("screen-game").hidden || !$("screen-lobby").hidden) return;
+  app.autoEnteredRoom = match.room;
+  toast("Ton match est prêt : on y va !");
+  playTourneyMatch(match.room);
+}
+
 function renderTourneyRoom(state) {
   if (!state) return;
   app.roomCode = state.code;
@@ -4318,13 +4374,17 @@ function renderTourneyRoom(state) {
   $("tourney-room-code").textContent = state.code;
   let status;
   if (finished) status = state.winner ? `Tournoi terminé : ${state.winner.name}${state.winner.you ? " (toi)" : ""} gagne !` : "Tournoi terminé.";
-  else if (myMatch) status = "Ton match est prêt : clique sur « Jouer ». Tu as 2 minutes.";
+  else if (myMatch) status = "Ton match est prêt : clique sur « Jouer ».";
   else if (running) status = "Tirage au sort fait. Les matchs sont en cours.";
   else if (missing > 0) status = `En attente de ${missing} joueur${missing > 1 ? "s" : ""} · ${state.players.length}/${state.size}${state.official ? ". L’organisateur démarre le tournoi." : ""}`;
   else if (state.official) status = "Complet : reste près de ton écran, l’organisateur va démarrer le tournoi.";
   else status = state.youCreator ? "Complet : tu peux lancer le tirage au sort." : "Complet : le créateur va lancer le tirage au sort.";
   if (state.official && state.startsAt && !running) status = `Début prévu ${officialWhen(state.startsAt)}. ${status}`;
   $("tourney-room-status").textContent = status;
+  if (myMatch?.showUpBy && !finished) {
+    $("tourney-room-status").insertAdjacentHTML("beforeend", ` Il te reste <strong data-countdown="${Number(myMatch.showUpBy)}">${countdownText(myMatch.showUpBy)}</strong>.`);
+  }
+  autoEnterTourneyMatch(myMatch);
   const seats = $("tourney-room-seats");
   seats.hidden = running;
   if (!running) {
@@ -4676,6 +4736,7 @@ function renderBellList() {
     list.innerHTML = `<p class="empty">Rien pour l’instant. Tes défis réussis et tes matchs en ligne arriveront ici.</p>`;
     return;
   }
+  window.requestAnimationFrame(fitBellList);
   list.innerHTML = bell.items.map((note) => `<button type="button" class="bell-item${note.read ? "" : " is-new"}" data-link="${esc(note.link)}"><span class="bell-icon" aria-hidden="true">${NOTE_ICON[note.kind] || "•"}</span><span class="bell-copy"><strong>${esc(note.title)}</strong>${note.body ? `<span>${esc(note.body)}</span>` : ""}<em>${esc(noteWhen(note.at))}</em></span></button>`).join("");
 }
 
@@ -4690,10 +4751,25 @@ async function markBellRead() {
   } catch {}
 }
 
+function fitBellList() {
+  const list = $("bell-list");
+  if (!list || $("bell-dialog").hidden) return;
+  const items = list.querySelectorAll(".bell-item");
+  if (items.length <= 3) {
+    list.style.maxHeight = "";
+    return;
+  }
+  const top = items[0].getBoundingClientRect().top;
+  const bottom = items[2].getBoundingClientRect().bottom;
+  list.style.maxHeight = `${Math.ceil(bottom - top) + 2}px`;
+}
+
 function openBell() {
   if (!isConnected()) return;
   renderBellList();
   $("bell-dialog").hidden = false;
+  $("bell-list").scrollTop = 0;
+  fitBellList();
   markBellRead();
   paintPushToggle();
 }
@@ -5924,7 +6000,6 @@ function bind() {
     else goHome();
   });
   $("admin-learn-analyze")?.addEventListener("click", () => postLearnAction("analyze"));
-  $("admin-learn-revert")?.addEventListener("click", () => postLearnAction("revert"));
   $("admin-player-search").addEventListener("input", () => renderAdminPlayers(adminData?.players || []));
   $("admin-bracket-close").addEventListener("click", () => {
     $("admin-bracket-dialog").hidden = true;

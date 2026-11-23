@@ -4,6 +4,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import pg from "pg";
 import { buildLearnReport } from "./learnReport.js";
+import { LEARN_PEOPLE, learnNameKey } from "./learn.js";
 
 const envFile = path.join(path.dirname(fileURLToPath(import.meta.url)), "../.env");
 if (fs.existsSync(envFile)) {
@@ -316,6 +317,9 @@ async function migrate(owner) {
       END LOOP;
     END $$;
   `);
+  await owner.query("ALTER TABLE learn_matches ALTER COLUMN player1_id DROP NOT NULL");
+  await owner.query("ALTER TABLE learn_matches ADD COLUMN IF NOT EXISTS opponent text NOT NULL DEFAULT 'online'");
+  await owner.query("ALTER TABLE learn_matches ADD COLUMN IF NOT EXISTS difficulty text");
   await owner.query("ALTER TABLE learn_moves ALTER COLUMN before_board DROP NOT NULL");
   await owner.query("ALTER TABLE learn_moves ALTER COLUMN after_board DROP NOT NULL");
   await owner.query(`
@@ -858,6 +862,9 @@ export async function cancelStaleTourneys() {
 
 export const OFFICIAL_OPEN_MINUTES = 10;
 
+/** Temps laissé à chaque joueur pour arriver à son match de tournoi (4 min 30). */
+export const TOURNEY_SHOW_UP_MS = Number(process.env.TOURNEY_SHOW_UP_MS) || 270_000;
+
 function opensAt(startsAt) {
   return startsAt ? new Date(startsAt).getTime() - OFFICIAL_OPEN_MINUTES * 60_000 : 0;
 }
@@ -1168,7 +1175,7 @@ export async function tourneyState(code, viewerId) {
     [tourney.id],
   );
   const { rows: matches } = await pool.query(
-    `SELECT round, slot, p1, p2, status, winner, scores, reason, room_code FROM tournament_matches
+    `SELECT round, slot, p1, p2, status, winner, scores, reason, room_code, started_at FROM tournament_matches
      WHERE tournament_id = $1 ORDER BY CASE round WHEN 'quarter' THEN 0 WHEN 'semi' THEN 1 ELSE 2 END, slot`,
     [tourney.id],
   );
@@ -1207,6 +1214,7 @@ export async function tourneyState(code, viewerId) {
       reason: row.reason,
       mine: row.p1 === viewerId || row.p2 === viewerId,
       room: row.status === "playing" && (row.p1 === viewerId || row.p2 === viewerId) ? row.room_code || "" : "",
+      showUpBy: row.status === "playing" && row.started_at ? new Date(row.started_at).getTime() + TOURNEY_SHOW_UP_MS : 0,
     })),
     winner: tourney.winner_id ? view(tourney.winner_id) : null,
   };
@@ -1816,18 +1824,20 @@ async function gamesTogether(viewerId, targetId) {
 }
 
 /** Un compte par nom suivi (celui avec mot de passe en priorité). */
+const NAME_KEY_SQL = "regexp_replace(translate(lower(trim(name)), 'àáâãäåçèéêëìíîïñòóôõöùúûüýÿ', 'aaaaaaceeeeiiiinooooouuuuyy'), '[[:space:]]+', ' ', 'g')";
+
 export async function pinnedLearnWatch(names) {
-  const wanted = [...new Set((names || []).map((name) => String(name || "").trim().toLowerCase()).filter(Boolean))];
+  const wanted = [...new Set((names || []).map((name) => learnNameKey(name)).filter(Boolean))];
   if (!wanted.length || !pool) return [];
   const { rows: metaRows } = await pool.query("SELECT watch FROM learn_meta WHERE id = 1");
   const pinned = metaRows[0]?.watch && typeof metaRows[0].watch === "object" ? { ...metaRows[0].watch } : {};
   const missing = wanted.filter((name) => !isUuid(pinned[name]));
   if (missing.length) {
     const { rows } = await pool.query(
-      `SELECT DISTINCT ON (lower(trim(name))) lower(trim(name)) AS key, id::text AS id
+      `SELECT DISTINCT ON (${NAME_KEY_SQL}) ${NAME_KEY_SQL} AS key, id::text AS id
        FROM profiles
-       WHERE lower(trim(name)) = ANY($1::text[]) AND password_hash <> ''
-       ORDER BY lower(trim(name)), created_at ASC NULLS LAST, updated_at ASC`,
+       WHERE ${NAME_KEY_SQL} = ANY($1::text[]) AND password_hash <> ''
+       ORDER BY ${NAME_KEY_SQL}, created_at ASC NULLS LAST, updated_at ASC`,
       [missing],
     );
     let changed = false;
@@ -1837,12 +1847,18 @@ export async function pinnedLearnWatch(names) {
         changed = true;
       }
     }
-    if (changed) await pool.query("UPDATE learn_meta SET watch = $1::text::jsonb, updated_at = now() WHERE id = 1", [JSON.stringify(pinned)]);
+    if (changed) {
+      const kept = Object.fromEntries(wanted.filter((name) => isUuid(pinned[name])).map((name) => [name, pinned[name]]));
+      await pool.query("UPDATE learn_meta SET watch = $1::text::jsonb, updated_at = now() WHERE id = 1", [JSON.stringify(kept)]);
+    }
   }
   const ids = wanted.map((name) => pinned[name]).filter((id) => isUuid(id));
   if (!ids.length) return [];
   const { rows: alive } = await pool.query("SELECT id::text AS id, name FROM profiles WHERE id = ANY($1::uuid[])", [ids]);
-  return alive.map((row) => ({ id: row.id, name: row.name }));
+  const byId = new Map(alive.map((row) => [row.id, row.name]));
+  return wanted
+    .filter((key) => byId.has(pinned[key]))
+    .map((key) => ({ key, id: pinned[key], name: byId.get(pinned[key]) }));
 }
 
 export async function findLearnWatchIds(names) {
@@ -1857,10 +1873,12 @@ export async function insertLearnMatch(entry) {
     const inserted = await client.query(
       `INSERT INTO learn_matches (
          id, fingerprint, room_code, player0_id, player1_id, player0_name, player1_name,
-         started_at, ended_at, duration_ms, rows, cols, starter, scores, winner, reason, settings, move_count
+         started_at, ended_at, duration_ms, rows, cols, starter, scores, winner, reason, settings, move_count,
+         opponent, difficulty
        ) VALUES (
          $1, $2, $3, $4, $5, $6, $7,
-         to_timestamp($8 / 1000.0), to_timestamp($9 / 1000.0), $10, $11, $12, $13, $14::text::jsonb, $15, $16, $17::text::jsonb, $18
+         to_timestamp($8 / 1000.0), to_timestamp($9 / 1000.0), $10, $11, $12, $13, $14::text::jsonb, $15, $16, $17::text::jsonb, $18,
+         $19, $20
        )
        ON CONFLICT (fingerprint) DO NOTHING
        RETURNING id`,
@@ -1869,7 +1887,7 @@ export async function insertLearnMatch(entry) {
         String(entry.fingerprint).slice(0, 200),
         String(entry.roomCode || "").slice(0, 24),
         entry.player0Id,
-        entry.player1Id,
+        entry.player1Id || null,
         String(entry.player0Name || "Joueur 1").slice(0, 40),
         String(entry.player1Name || "Joueur 2").slice(0, 40),
         Number(entry.startedAt) || Date.now(),
@@ -1883,6 +1901,8 @@ export async function insertLearnMatch(entry) {
         entry.reason ? String(entry.reason).slice(0, 24) : null,
         jsonBody(entry.settings || {}),
         Number(entry.moveCount) || 0,
+        entry.opponent === "robot" ? "robot" : "online",
+        entry.difficulty ? String(entry.difficulty).slice(0, 12) : null,
       ],
     );
     if (!inserted.rowCount) {
@@ -2074,7 +2094,7 @@ export async function learnOverview() {
        ORDER BY ended_at DESC
        LIMIT 12`,
     ),
-    pinnedLearnWatch(["ntotimbe", "h2o", "beni mbuyi", "joel mifuba"]).then((rows) => ({ rows })),
+    pinnedLearnWatch(LEARN_PEOPLE.map((person) => person.key)).then((rows) => ({ rows })),
     situationOverview(),
     getLearnMeta(),
     listLearnRuns(10),
@@ -2103,7 +2123,10 @@ export async function learnOverview() {
       durationMs: item.duration_ms,
       size: `${item.rows}×${item.cols}`,
     })),
-    watch: watch.rows.map((item) => ({ id: item.id, name: item.name })),
+    watch: LEARN_PEOPLE.map((person) => {
+      const hit = watch.rows.find((item) => item.key === person.key);
+      return { key: person.key, label: person.label, found: Boolean(hit), name: hit?.name || "" };
+    }),
     situations,
     model: {
       ...meta,

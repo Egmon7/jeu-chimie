@@ -1,6 +1,6 @@
 import express from "express";
 import { createServer } from "http";
-import { randomBytes, randomInt, randomUUID, scrypt, timingSafeEqual } from "crypto";
+import { createHash, randomBytes, randomInt, randomUUID, scrypt, timingSafeEqual } from "crypto";
 import { promisify } from "util";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -64,6 +64,7 @@ import {
   officialTourneys,
   robotOverview,
   OFFICIAL_OPEN_MINUTES,
+  TOURNEY_SHOW_UP_MS,
   markMatchPlaying,
   finishMatch,
   resetPlayingMatches,
@@ -740,6 +741,82 @@ app.get("/api/admin/learn/:id", api(async (req, res) => {
     replay = { ok: false, error: error.message };
   }
   res.json({ match, replay });
+}));
+
+const LEARN_LEVELS = new Set(["easy", "medium", "hard", "veryhard", "expert"]);
+
+/** Fin d'une partie contre le robot : toujours la même réponse vide, aucun signal au joueur. */
+app.post("/api/learn/solo", api(async (req, res) => {
+  res.status(204).end();
+  if (!dbReady()) return;
+  const id = await sessionPlayer(readCookie(req, "egmon_session"));
+  if (!id || limited(`${id}:learn-solo`, 40, 60 * 60 * 1000)) return;
+  if (!(await learnWatchIds()).has(id)) return;
+  const body = asObject(req.body);
+  const rows = Number(body.rows);
+  const cols = Number(body.cols);
+  const level = String(body.difficulty || "");
+  // Chaque coup tient en 3 caractères : joueur (0/1), ligne et colonne en base 36.
+  const packed = typeof body.moves === "string" && /^([01][0-9a-z]{2})+$/.test(body.moves) ? body.moves : "";
+  const moves = [];
+  for (let i = 0; i < packed.length; i += 3) {
+    moves.push({ seat: Number(packed[i]), r: parseInt(packed[i + 1], 36), c: parseInt(packed[i + 2], 36) });
+  }
+  const scores = Array.isArray(body.scores) ? body.scores.map(Number) : [];
+  if (!Number.isInteger(rows) || !Number.isInteger(cols) || rows < 2 || cols < 2 || rows > 32 || cols > 32) return;
+  if (!LEARN_LEVELS.has(level) || moves.length < 4 || moves.length > (rows + 1) * (cols + 1) || scores.length !== 2) return;
+  const steps = [];
+  for (const [step, move] of moves.entries()) {
+    const r = Number(move?.r);
+    const c = Number(move?.c);
+    const seat = Number(move?.seat);
+    if (!Number.isInteger(r) || !Number.isInteger(c) || r < 0 || c < 0 || r > rows || c > cols || (seat !== 0 && seat !== 1)) return;
+    steps.push({ step, seat, r, c, after: null, at: Date.now() });
+  }
+  const settings = normalizeSettings({
+    rows,
+    cols,
+    extraTurn: body.extraTurn !== false,
+    scoreLimit: Number(body.scoreLimit) || 0,
+    difficulty: level,
+  });
+  const starter = Number(body.starter) === 1 ? 1 : 0;
+  const winner = body.winner === 0 || body.winner === 1 ? String(body.winner) : "draw";
+  const endedAt = Date.now();
+  const durationMs = Math.min(Math.max(0, Math.round(Number(body.durationMs) || 0)), 6 * 60 * 60 * 1000);
+  const replay = await runLearnJob("replay", { settings, starter, moves: steps, winner }).catch(() => null);
+  if (!replay?.ok || replay.scores[0] !== scores[0] || replay.scores[1] !== scores[1]) return;
+  const early = ["abandon", "robot", "time"].includes(String(body.reason || ""));
+  if (replay.status !== "finished" && !early) return;
+  const name = (await readProfile(id))?.name || "Joueur";
+  const label = { easy: "Facile", medium: "Moyen", hard: "Difficile", veryhard: "Très difficile", expert: "Expert" }[level];
+  const result = await insertLearnMatch({
+    id: randomUUID(),
+    fingerprint: `${id}|robot:${level}|${rows}x${cols}|${createHash("sha256").update(packed).digest("hex").slice(0, 32)}`,
+    roomCode: "",
+    player0Id: id,
+    player1Id: null,
+    player0Name: cleanName(name, "Joueur"),
+    player1Name: `Robot · ${label}`,
+    startedAt: endedAt - durationMs,
+    endedAt,
+    durationMs: Math.max(1, durationMs),
+    rows,
+    cols,
+    starter,
+    scores,
+    winner,
+    reason: body.reason ? String(body.reason).slice(0, 24) : null,
+    settings,
+    moveCount: steps.length,
+    moves: steps,
+    opponent: "robot",
+    difficulty: level,
+  }).catch((error) => {
+    console.error("Learn robot:", error.message);
+    return null;
+  });
+  if (result?.ok && !result.duplicate) startLearnAnalysis(5);
 }));
 
 app.get("/api/games/:id", api(async (req, res) => {
@@ -1458,16 +1535,21 @@ function matchNote(seat, names, scores, winner, reason) {
   };
 }
 
-const TOURNEY_SHOW_UP_MS = Number(process.env.TOURNEY_SHOW_UP_MS) || 2 * 60 * 1000;
 const TOURNEY_RULES = {
   quarter: { timeMode: "global", timeLimit: 600, turnSeconds: 20, suddenDeath: true, scoreLimit: 0 },
   semi: { timeMode: "global", timeLimit: 600, turnSeconds: 20, suddenDeath: true, scoreLimit: 0 },
   final: { timeMode: "none", scoreLimit: 10, turnSeconds: 20 },
 };
 
-const SHOW_UP_TEXT = TOURNEY_SHOW_UP_MS >= 60_000
-  ? `${Math.round(TOURNEY_SHOW_UP_MS / 60_000)} min`
-  : `${Math.round(TOURNEY_SHOW_UP_MS / 1000)} s`;
+function durationText(ms) {
+  const total = Math.max(0, Math.round(ms / 1000));
+  const minutes = Math.floor(total / 60);
+  const seconds = total % 60;
+  if (!minutes) return `${seconds} s`;
+  return seconds ? `${minutes} min ${String(seconds).padStart(2, "0")}` : `${minutes} min`;
+}
+
+const SHOW_UP_TEXT = durationText(TOURNEY_SHOW_UP_MS);
 
 async function tourneyAlert(playerId, note, push = false) {
   const link = `tournoi:${note.code}`;
@@ -1623,7 +1705,15 @@ async function startTourneyMatches(code) {
       forfeitAt: [null, null],
       touched: Date.now(),
       opened: Date.now(),
-      tournament: { code, matchId: match.id, round: match.round, showUpBy: Date.now() + TOURNEY_SHOW_UP_MS, done: false },
+      tournament: {
+        code,
+        matchId: match.id,
+        round: match.round,
+        showUpBy: Date.now() + TOURNEY_SHOW_UP_MS,
+        arrived: [false, false],
+        waitingSent: false,
+        done: false,
+      },
     });
     tourneyMatchAlertLater(code, match);
   }
@@ -1677,7 +1767,36 @@ function concludeTourneyMatch(room) {
 
 function checkTourneyShowUp(room, now) {
   if (!room.tournament || room.game || now < room.tournament.showUpBy) return;
-  const present = [0, 1].filter((seat) => room.players[seat]?.connected && socketAlive(room.players[seat].socketId));
+  const arrived = room.tournament.arrived || [false, false];
+  const present = [0, 1].filter((seat) => arrived[seat]
+    || (room.players[seat]?.connected && socketAlive(room.players[seat].socketId)));
+  if (present.length === 2) {
+    // Les deux sont venus : la partie commence ; un joueur coupé a le délai habituel pour revenir.
+    room.game = createGame(room.settings, 0);
+    room.startedAt = now;
+    room.saved = false;
+    room.saving = false;
+    armLearn(room);
+    if (!room.forfeitAt) room.forfeitAt = [null, null];
+    for (const seat of [0, 1]) {
+      const player = room.players[seat];
+      if (player?.connected && socketAlive(player.socketId)) continue;
+      if (player) player.connected = false;
+      const socketId = player?.socketId || "";
+      clearForfeit(room, seat);
+      room.forfeitAt[seat] = now + PLAY_GRACE_MS;
+      room.forfeit[seat] = setTimeout(() => {
+        const holder = room.players[seat];
+        if (!holder || holder.connected || holder.socketId !== socketId) return;
+        if (room.game?.status === "playing") {
+          abandon(room.game, seat);
+          emitState(room, { type: "forfeit" });
+        }
+      }, PLAY_GRACE_MS);
+    }
+    emitState(room, { type: "start" });
+    return;
+  }
   room.game = createGame(room.settings, 0);
   room.game.status = "finished";
   room.game.reason = present.length === 1 ? "forfeit" : "absence";
@@ -2288,7 +2407,13 @@ io.on("connection", (socket) => {
     if (existing >= 0) {
       const holder = room.players[existing];
       if (holder.connected && holder.socketId !== socket.id) {
-        return ack?.({ ok: false, error: "Ce joueur est déjà dans la salle." });
+        const sameAccount = Boolean(socket.data.account) && socket.data.account === key;
+        if (!sameAccount) return ack?.({ ok: false, error: "Ce joueur est déjà dans la salle." });
+        const previous = io.sockets.sockets.get(holder.socketId);
+        if (previous) {
+          previous.leave(room.code);
+          previous.data.roomCode = "";
+        }
       }
       const live = liveRoom(socket);
       if (live && live.room.code !== room.code) return ack?.({ ok: false, error: "Quitte d’abord la salle en cours." });
@@ -2650,7 +2775,7 @@ socket.on("move", (move, ack) => {
       if (!player || player.socketId !== socket.id) return;
       player.connected = false;
       room.ready[seat] = false;
-      if (seat === 1) {
+      if (seat === 1 && !room.tournament) {
         room.players[1] = null;
         room.accepted = false;
       }
@@ -2667,6 +2792,30 @@ function attach(socket, room, seat, id) {
   socket.join(room.code);
   socket.data.roomCode = room.code;
   socket.data.playerId = id;
+  if (room.tournament && !room.game) noteTourneyArrival(room, seat);
+}
+
+/** Un joueur est arrivé à son match : on le retient, et on prévient l'autre s'il n'est pas encore là. */
+function noteTourneyArrival(room, seat) {
+  const t = room.tournament;
+  if (!t.arrived) t.arrived = [false, false];
+  t.arrived[seat] = true;
+  const other = 1 - seat;
+  if (t.arrived[other] || t.waitingSent) return;
+  t.waitingSent = true;
+  const otherId = room.players[other]?.id;
+  const left = Math.max(0, t.showUpBy - Date.now());
+  const round = { quarter: "quart de finale", semi: "demi-finale", final: "finale" }[t.round] || "match";
+  tourneyAlertsLater(async () => {
+    const people = await tourneyPeople(t.code);
+    if (!people || !isUuid(otherId)) return;
+    await tourneyAlert(otherId, {
+      code: t.code,
+      ref: `${t.code}:${t.matchId}:waiting`,
+      title: `${room.players[seat]?.name || "Ton adversaire"} t’attend`,
+      body: `Ta ${round} de « ${people.name} » : rejoins-le vite, il te reste environ ${durationText(left)}.`,
+    }, true);
+  });
 }
 
 setInterval(() => {
