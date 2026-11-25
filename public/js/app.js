@@ -1,5 +1,6 @@
 import { chooseMove } from "./ai.js";
 import { Sounds } from "./audio.js";
+import { ONLINE_SUCCESS, defisNow, msUntilRenew } from "./defis.js";
 import {
   abandon,
   applyMove,
@@ -63,12 +64,13 @@ const REASON = {
   robot: "Le robot abandonne.",
 };
 
+/** Écart à partir duquel le robot abandonne, seulement dans une partie illimitée (sans objectif de maisons). */
 const ROBOT_GAP = {
-  easy: [6, 10],
-  medium: [7, 12],
-  hard: [8, 15],
-  veryhard: [10, 18],
-  expert: [12, 22],
+  easy: 10,
+  medium: 12,
+  hard: 15,
+  veryhard: 18,
+  expert: 22,
 };
 
 const app = {
@@ -695,13 +697,102 @@ function challengeBonus(games = loadHistory()) {
   return CHALLENGES.reduce((sum, item) => sum + (earned.has(item.id) ? item.xp : 0), 0);
 }
 
+const DEFI_TABS = ["day", "week", "success"];
+
+function renewText(ms) {
+  const minutes = Math.max(1, Math.ceil(ms / 60000));
+  const days = Math.floor(minutes / 1440);
+  const hours = Math.floor((minutes % 1440) / 60);
+  const mins = minutes % 60;
+  if (days > 0) return `${days} j ${hours} h`;
+  if (hours > 0) return `${hours} h ${String(mins).padStart(2, "0")}`;
+  return `${mins} min`;
+}
+
+function defiCard(item) {
+  const pct = Math.round((item.value / item.goal) * 100);
+  const tag = item.anti ? `<b class="defi-tag">Jusqu’au bout</b>` : "";
+  const gain = item.xpGiven == null ? "" : item.xpGiven >= item.xp ? ` · +${item.xpGiven} XP` : ` · +${item.xpGiven} XP (plafond)`;
+  const state = item.done ? `<em class="defi-done">✓ Réussi${gain}</em>` : `<em>${item.value} / ${item.goal}</em>`;
+  return `<article class="defi-card${item.done ? " is-done" : ""}${item.anti ? " is-anti" : ""}">
+    <header><strong>${esc(item.name)}</strong><span>+${item.xp} XP</span></header>
+    ${tag}<p>${esc(item.text)}</p>
+    <div class="defi-bar" role="progressbar" aria-valuemin="0" aria-valuemax="${item.goal}" aria-valuenow="${item.value}"><i style="width:${pct}%"></i></div>
+    ${state}
+  </article>`;
+}
+
+/** Les défis vus par le serveur (connecté), sinon calculés sur cet appareil. */
+function currentDefis(kind) {
+  const server = app.defiServer;
+  const period = kind === "week" ? "week" : "day";
+  const local = defisNow(period, loadHistory());
+  if (server?.[period]?.period === local.period) return { ...server[period], renewMs: msUntilRenew(period) };
+  return local;
+}
+
+async function loadDefis() {
+  if (!isConnected()) {
+    app.defiServer = null;
+    return;
+  }
+  const data = await sendJson("/api/defis", "GET").catch(() => null);
+  if (!data?.day) return;
+  app.defiServer = data;
+  const panel = document.querySelector("[data-hub-panel=challenges]");
+  if (panel && !panel.hidden) renderChallenges();
+  else paintDefiDot();
+}
+
+function paintDefiDot() {
+  const day = currentDefis("day");
+  const left = day.items.some((item) => !item.done);
+  document.querySelectorAll("[data-defi-dot]").forEach((dot) => { dot.hidden = !left; });
+  return day;
+}
+
 function renderChallenges() {
   const box = $("challenge-list");
-  if (!box) return;
-  box.innerHTML = CHALLENGES.map((item) => {
-    const extra = item.id === "streak" ? ` ${streakLine(3)}` : item.id === "week" ? ` ${streakLine(7)}` : "";
-    return `<button type="button" class="challenge-card" data-challenge="${esc(item.id)}"><strong>${esc(item.name)}</strong><span>+${item.xp} XP</span><p>${esc(item.text)}${esc(extra)}</p><em>Jouez une partie</em></button>`;
-  }).join("");
+  const list = $("defi-list");
+  if (!box || !list) return;
+  const tab = DEFI_TABS.includes(app.defiTab) ? app.defiTab : "day";
+  const games = loadHistory();
+  const day = paintDefiDot();
+  const week = currentDefis("week");
+  const earned = earnedChallengeIds(games);
+  const doneOf = (set) => set.items.filter((item) => item.done).length;
+  $("defi-count-day").textContent = ` ${doneOf(day)}/${day.items.length}`;
+  $("defi-count-week").textContent = ` ${doneOf(week)}/${week.items.length}`;
+  const online = Array.isArray(app.defiServer?.success) ? app.defiServer.success : ONLINE_SUCCESS.map((item) => ({ ...item, done: false }));
+  const onlineDone = online.filter((item) => item.done).length;
+  $("defi-count-success").textContent = ` ${earned.size + onlineDone}/${CHALLENGES.length + online.length}`;
+  document.querySelectorAll("[data-defi-tab]").forEach((button) => {
+    button.setAttribute("aria-selected", String(button.dataset.defiTab === tab));
+  });
+  const lead = $("defi-lead");
+  if (tab === "success") {
+    lead.textContent = "Chaque succès se gagne une seule fois et ajoute ses points à l’XP. Touchez un succès du robot pour le tenter ; les succès en ligne se gagnent au classement et en tournoi.";
+    list.hidden = true;
+    box.hidden = false;
+    box.innerHTML = CHALLENGES.map((item) => {
+      const extra = item.id === "streak" ? ` ${streakLine(3)}` : item.id === "week" ? ` ${streakLine(7)}` : "";
+      const done = earned.has(item.id);
+      return `<button type="button" class="challenge-card${done ? " is-done" : ""}" data-challenge="${esc(item.id)}"><strong>${esc(item.name)}</strong><span>+${item.xp} XP</span><p>${esc(item.text)}${esc(extra)}</p><em>${done ? "✓ Gagné" : "Jouez une partie"}</em></button>`;
+    }).join("") + online.map((item) => {
+      const foot = item.done ? "✓ Gagné" : isConnected() ? "En ligne et en tournoi" : "Connecte-toi pour le gagner";
+      return `<div class="challenge-card is-online${item.done ? " is-done" : ""}"><strong>${esc(item.name)}</strong><span>+${item.xp} XP</span><p>${esc(item.text)}</p><em>${foot}</em></div>`;
+    }).join("");
+  } else {
+    const set = tab === "week" ? week : day;
+    const server = app.defiServer;
+    const xpLine = !isConnected()
+      ? " Connecte-toi pour gagner l’XP des défis."
+      : server ? ` XP de défis aujourd’hui : ${server.todayXp} / ${server.cap}.` : "";
+    lead.textContent = `${tab === "week" ? "Nouveaux défis lundi" : "Nouveaux défis"} dans ${renewText(set.renewMs)}. Contre le robot ou en ligne, la progression avance toute seule.${xpLine}`;
+    box.hidden = true;
+    list.hidden = false;
+    list.innerHTML = set.items.map(defiCard).join("");
+  }
   const status = $("challenge-status");
   if (status) status.textContent = "";
 }
@@ -916,34 +1007,59 @@ async function loadRanking() {
   }
 }
 
+/** Début des règles d'XP 2, donné par le serveur (avant : anciennes règles pour tout). */
+function xpSince() {
+  try {
+    const value = Number(localStorage.getItem("egmon-xp-since"));
+    return Number.isFinite(value) && value > 0 ? value : Infinity;
+  } catch {
+    return Infinity;
+  }
+}
+
+function rememberXpSince(value) {
+  if (!Number.isFinite(value) || value <= 0) return;
+  try {
+    localStorage.setItem("egmon-xp-since", String(value));
+  } catch {
+    /* pas grave : le serveur donne l'XP exacte */
+  }
+}
+
+const SOLO_WIN_XP = { easy: 10, medium: 20, hard: 30, veryhard: 40, expert: 50 };
+
+/** Même calcul que le serveur (server/db.js, SCORED_GAMES), pour afficher tout de suite. */
 function progressFromHistory(games) {
   const perHouse = { easy: 7, medium: 8, hard: 9, veryhard: 10, expert: 10 };
   const stats = { xp: 0, houses: 0, best: 0, games: 0, wins: 0, expertWins: 0 };
-  for (const game of games || []) {
-    if (game.mode !== "solo" || Number(game.userSeat) !== 0) continue;
-    const houses = Number(Array.isArray(game.scores) ? game.scores[0] : game.scores?.[0]);
-    if (!Number.isFinite(houses)) continue;
-    const per = perHouse[game.difficulty] || 8;
-    const win = String(game.winner) === "0" ? 15 : 0;
-    stats.xp += 15 + houses * per + win;
-    stats.houses += houses;
-    stats.best = Math.max(stats.best, houses);
-    stats.games += 1;
-    if (win) stats.wins += 1;
-    if (win && game.difficulty === "expert") stats.expertWins += 1;
-  }
-  for (const game of games || []) {
-    if (game.mode !== "online") continue;
+  const since = xpSince();
+  const rivalWins = new Map();
+  const ordered = [...(games || [])].sort((x, y) => (Number(x.at) || 0) - (Number(y.at) || 0));
+  for (const game of ordered) {
+    const solo = game.mode === "solo" && Number(game.userSeat) === 0;
     const seat = Number(game.userSeat);
-    if (seat !== 0 && seat !== 1) continue;
+    if (!solo && !(game.mode === "online" && (seat === 0 || seat === 1))) continue;
     const houses = Number(Array.isArray(game.scores) ? game.scores[seat] : game.scores?.[seat]);
     if (!Number.isFinite(houses)) continue;
-    const win = String(game.winner) === String(seat) ? 15 : 0;
-    stats.xp += 15 + houses * 9 + win;
+    const won = String(game.winner) === String(seat);
+    const fresh = (Number(game.at) || 0) >= since;
+    const quit = game.reason === "abandon" && !won && (String(game.winner) === "0" || String(game.winner) === "1");
+    let xp = fresh && quit ? 0 : 15;
+    xp += houses * (solo ? perHouse[game.difficulty] || 8 : fresh ? 12 : 9);
+    if (won && !fresh) xp += 15;
+    else if (won && solo) xp += SOLO_WIN_XP[game.difficulty] || 20;
+    else if (won) {
+      const key = game.opponentId ? `${game.opponentId}:${parisKey(new Date(game.at))}` : "";
+      const rank = key ? (rivalWins.get(key) || 0) + 1 : 1;
+      if (key) rivalWins.set(key, rank);
+      xp += rank > 5 ? 0 : 50;
+    }
+    stats.xp += xp;
     stats.houses += houses;
     stats.best = Math.max(stats.best, houses);
     stats.games += 1;
-    if (win) stats.wins += 1;
+    if (won) stats.wins += 1;
+    if (won && solo && game.difficulty === "expert") stats.expertWins += 1;
   }
   stats.xp += challengeBonus(games);
   return stats;
@@ -953,6 +1069,7 @@ function loadProgress() {
   const local = progressFromHistory(loadHistory());
   renderProgress([{ ...local, you: true, name: loadProfile().name || "Toi" }]);
   sendJson(`/api/progress?player=${encodeURIComponent(playerId())}`, "GET").then((row) => {
+    if (row) rememberXpSince(Number(row.xpSince));
     if (!$("screen-progress").hidden && row && typeof row.xp === "number") {
       renderProgress([{
         ...local,
@@ -1654,10 +1771,10 @@ function afterMove() {
 function robotBehind() {
   const game = app.game;
   if (!game || game.status !== "playing") return false;
+  // Avec un objectif (ex. premier à 10), le robot n’abandonne jamais : la partie va jusqu’au bout.
+  if (Number(game.settings?.scoreLimit) > 0) return false;
   const level = ROBOT_GAP[game.settings?.difficulty] ? game.settings.difficulty : "medium";
-  const openSheet = !(Number(game.settings?.scoreLimit) > 0);
-  const need = ROBOT_GAP[level][openSheet ? 1 : 0];
-  return game.scores[0] - game.scores[1] >= need;
+  return game.scores[0] - game.scores[1] >= ROBOT_GAP[level];
 }
 
 function queueAi() {
@@ -1753,6 +1870,7 @@ async function pullHistory() {
       return true;
     }
     replaceHistory(games);
+    paintDefiDot();
     if (!$("screen-history").hidden) renderHistory();
     const panel = document.querySelector("[data-hub-panel=challenges]");
     if (panel && !panel.hidden) renderChallenges();
@@ -1814,6 +1932,8 @@ function recordGame() {
   syncGame(entry);
   if (app.mode === "solo") sendLearnSolo(game, entry);
   reportChallenges(app.freshChallenges);
+  paintDefiDot();
+  if (app.mode === "solo") window.setTimeout(loadDefis, 1500);
   if (game.winner === "draw") app.sounds.tap();
   else if (userSeat == null || game.winner === userSeat) app.sounds.win();
   else app.sounds.lose();
@@ -2820,7 +2940,10 @@ function ensureSocket() {
   if (!window.io) return null;
   if (app.socket) return app.socket;
   app.socket = window.io({ autoConnect: false });
-  app.socket.on("notify", receiveNote);
+  app.socket.on("notify", (note) => {
+    receiveNote(note);
+    if (note?.kind === "challenge" || note?.kind === "match") loadDefis();
+  });
   app.socket.on("tourney", receiveTourney);
   app.socket.on("watch-state", onWatchState);
   app.socket.on("learn-changed", () => {
@@ -4157,7 +4280,7 @@ function soon() {
 
 const HUB_TITLES = {
   play: "Jouer une partie",
-  challenges: "Défis",
+  challenges: "Mes défis",
   competitions: "Compétitions",
   "tourney-create": "Créer ou rejoindre un tournoi",
   "tourney-4": "Tournoi à 4",
@@ -4845,6 +4968,7 @@ function openHub(name) {
   $("modes-title").textContent = HUB_TITLES[next] || "Commencez";
   if (next === "challenges") {
     renderChallenges();
+    loadDefis();
     const status = $("challenge-status");
     const panel = document.querySelector("[data-hub-panel=challenges]");
     const wait = window.setTimeout(() => {
@@ -5954,6 +6078,19 @@ function bind() {
     if (history.state?.page === "find") history.back();
     else show("screen-modes", "replace");
   });
+  document.querySelectorAll("[data-defi-tab]").forEach((button) => {
+    button.addEventListener("click", () => {
+      app.defiTab = button.dataset.defiTab;
+      renderChallenges();
+    });
+  });
+  paintDefiDot();
+  loadDefis();
+  window.setInterval(() => {
+    const panel = document.querySelector("[data-hub-panel=challenges]");
+    if (panel && !panel.hidden && !$("screen-modes").hidden) renderChallenges();
+    else paintDefiDot();
+  }, 60000);
   $("challenge-list").addEventListener("click", (event) => {
     const card = event.target.closest("[data-challenge]");
     if (!card) return;

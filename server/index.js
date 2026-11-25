@@ -24,7 +24,16 @@ import {
   LEARN_CHECKPOINT,
 } from "./learn.js";
 import { runLearnJob } from "./learnJobs.js";
+import { ONLINE_SUCCESS, defisNow } from "../public/js/defis.js";
 import {
+  DEFI_DAY_CAP,
+  generalRanks,
+  saveOnceReward,
+  successState,
+  defiRewardsFor,
+  defiXpToday,
+  recentGames,
+  saveDefiReward,
   clearGames,
   closeOtherSessions,
   closeSession,
@@ -894,6 +903,7 @@ app.post("/api/games/:id", api(async (req, res) => {
   }
   if (entry.at < Date.now() - 48 * 60 * 60 * 1000 && await hasGames(id)) entry.at = Date.now();
   await insertGame(id, entry);
+  checkDefisLater(id);
   res.json({ ok: true });
 }));
 
@@ -1277,6 +1287,79 @@ app.post("/api/notifications/challenge", api(async (req, res) => {
     link: "challenges",
   });
   res.json({ ok: true });
+}));
+
+/* ---------- Défis du jour et de la semaine ---------- */
+
+/** Succès en ligne (classement, tournois) : gagnés une seule fois, hors plafond du jour. */
+async function checkSuccess(playerId) {
+  const state = await successState(playerId);
+  for (const item of ONLINE_SUCCESS) {
+    if (state.earned.has(item.id) || !item.test(state)) continue;
+    const xp = await saveOnceReward(playerId, item.id, item.xp);
+    if (xp === null) continue;
+    state.earned.add(item.id);
+    await notify(playerId, {
+      kind: "challenge",
+      ref: item.id,
+      title: `Succès gagné : ${item.name}`,
+      body: `${item.text} +${xp} XP ajoutés à ta progression.`,
+      link: "challenges",
+    });
+  }
+  return state;
+}
+
+/** Coche les défis réussis depuis la dernière partie, donne l'XP (avec le plafond du jour) et prévient dans la cloche. */
+async function checkDefis(playerId) {
+  if (!isUuid(playerId) || !dbReady()) return;
+  await checkSuccess(playerId);
+  const games = await recentGames(playerId);
+  for (const kind of ["day", "week"]) {
+    const set = defisNow(kind, games);
+    const given = await defiRewardsFor(playerId, [set.period]);
+    for (const item of set.items) {
+      if (!item.done || given.has(`${item.id}:${set.period}`)) continue;
+      const xp = await saveDefiReward(playerId, item.id, set.period, item.xp);
+      if (xp === null) continue;
+      const body = xp >= item.xp
+        ? `+${xp} XP ajoutés à ta progression.`
+        : xp > 0
+          ? `+${xp} XP : le plafond de ${DEFI_DAY_CAP} XP de défis par jour est atteint.`
+          : `Défi coché. Le plafond de ${DEFI_DAY_CAP} XP de défis par jour est déjà atteint.`;
+      await notify(playerId, {
+        kind: "challenge",
+        ref: `${item.id}:${set.period}`,
+        title: `Défi ${kind === "week" ? "de la semaine" : "du jour"} réussi : ${item.name}`,
+        body,
+        link: "challenges",
+      });
+    }
+  }
+}
+
+function checkDefisLater(playerId) {
+  checkDefis(playerId).catch((error) => console.error("Défis:", error.message));
+}
+
+/** Les défis en cours, la progression et l'XP déjà donnée, calculées par le serveur. */
+app.get("/api/defis", api(async (req, res) => {
+  const id = await sessionAccount(req, res);
+  if (!id) return;
+  const state = await checkSuccess(id);
+  const games = await recentGames(id);
+  const day = defisNow("day", games);
+  const week = defisNow("week", games);
+  const given = await defiRewardsFor(id, [day.period, week.period]);
+  const pack = (set) => ({
+    ...set,
+    items: set.items.map((item) => {
+      const key = `${item.id}:${set.period}`;
+      return { ...item, xpGiven: given.has(key) ? given.get(key) : null };
+    }),
+  });
+  const success = ONLINE_SUCCESS.map(({ id: key, name, text, xp }) => ({ id: key, name, text, xp, done: state.earned.has(key) }));
+  res.json({ day: pack(day), week: pack(week), success, todayXp: await defiXpToday(id), cap: DEFI_DAY_CAP });
 }));
 
 app.delete("/api/games/:id", api(async (req, res) => {
@@ -1850,6 +1933,11 @@ function concludeTourneyMatch(room) {
   }).then(async (result) => {
     if (!result) return;
     tourneyResultAlertLater(result);
+    if (result.next === "done") {
+      for (const pid of [result.winner, result.runnerUp]) {
+        if (isUuid(pid)) checkSuccess(pid).catch((error) => console.error("Succès:", error.message));
+      }
+    }
     if (result.next === "start") await startTourneyMatches(result.code);
     else broadcastTourneyLater(result.code);
   }).catch((error) => console.error("Match de tournoi:", error.message));
@@ -2090,9 +2178,13 @@ function saveOnlineMatch(room) {
   const winner = game.winner === 0 || game.winner === 1 || game.winner === "0" || game.winner === "1"
     ? Number(game.winner)
     : "draw";
-  Promise.all([0, 1].map((seat) => {
+  const ids = [0, 1].map((seat) => (isUuid(room.players[seat]?.id) ? room.players[seat].id : null));
+  generalRanks(ids.filter(Boolean)).catch(() => new Map()).then((ranks) => Promise.all([0, 1].map((seat) => {
     const player = room.players[seat];
     if (!isUuid(player?.id)) return null;
+    const opponentId = ids[1 - seat];
+    const mine = ranks.get(player.id) || 0;
+    const theirs = opponentId ? ranks.get(opponentId) || 0 : 0;
     return insertGame(player.id, {
       id: randomUUID(),
       at,
@@ -2107,14 +2199,18 @@ function saveOnlineMatch(room) {
       durationMs: Number.isInteger(duration) ? duration : null,
       behind: false,
       clean: false,
+      opponentId,
+      opponentHigher: theirs > 0 && mine > 0 && theirs < mine,
+      tourney: Boolean(room.tournament),
     });
-  })).then(() => {
+  }))).then(() => {
     room.saved = true;
     for (const seat of [0, 1]) {
       const player = room.players[seat];
       if (!isUuid(player?.id)) continue;
       notifyLater(player.id, matchNote(seat, names, scores, winner, game.reason));
       if (winner === seat) celebrateStreak(player.id);
+      checkDefisLater(player.id);
     }
   }).catch((error) => {
     console.error("Partie en ligne non enregistrée:", error.message);

@@ -117,6 +117,10 @@ async function migrate(owner) {
   `);
   await owner.query("ALTER TABLE games ADD COLUMN IF NOT EXISTS duration_ms integer");
   await owner.query("ALTER TABLE games ADD COLUMN IF NOT EXISTS behind boolean NOT NULL DEFAULT false");
+  await owner.query("ALTER TABLE games ADD COLUMN IF NOT EXISTS opponent_id uuid");
+  await owner.query("ALTER TABLE games ADD COLUMN IF NOT EXISTS opponent_higher boolean NOT NULL DEFAULT false");
+  await owner.query("ALTER TABLE games ADD COLUMN IF NOT EXISTS tourney boolean NOT NULL DEFAULT false");
+  await owner.query("ALTER TABLE profiles ADD COLUMN IF NOT EXISTS best_rank int");
   await owner.query("ALTER TABLE games ADD COLUMN IF NOT EXISTS clean boolean NOT NULL DEFAULT false");
   await owner.query("ALTER TABLE profiles ADD COLUMN IF NOT EXISTS password_hash text NOT NULL DEFAULT ''");
   await owner.query("ALTER TABLE profiles ADD COLUMN IF NOT EXISTS created_at timestamptz");
@@ -166,6 +170,19 @@ async function migrate(owner) {
     )
   `);
   await owner.query("CREATE INDEX IF NOT EXISTS visits_day ON visits (day)");
+  await owner.query("CREATE TABLE IF NOT EXISTS xp_rules (version int PRIMARY KEY, since timestamptz NOT NULL DEFAULT now())");
+  await owner.query("INSERT INTO xp_rules (version) VALUES (2) ON CONFLICT (version) DO NOTHING");
+  await owner.query(`
+    CREATE TABLE IF NOT EXISTS defi_rewards (
+      player_id uuid NOT NULL REFERENCES profiles (id) ON DELETE CASCADE,
+      defi_id text NOT NULL CHECK (char_length(defi_id) <= 40),
+      period date NOT NULL,
+      xp int NOT NULL DEFAULT 0 CHECK (xp >= 0),
+      earned_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (player_id, defi_id, period)
+    )
+  `);
+  await owner.query("ALTER TABLE defi_rewards ADD COLUMN IF NOT EXISTS once boolean NOT NULL DEFAULT false");
   await owner.query(`
     CREATE TABLE IF NOT EXISTS notifications (
       id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -616,8 +633,8 @@ export async function insertGame(playerId, entry) {
     ? String(Number(entry.winner))
     : "draw";
   await pool.query(
-    `INSERT INTO games (id, player_id, played_at, mode, sheet, names, scores, winner, user_seat, reason, difficulty, duration_ms, behind, clean)
-     VALUES ($1, $2, to_timestamp($3 / 1000.0), $4, $5, $6::text::jsonb, $7::text::jsonb, $8, $9, $10, $11, $12, $13, $14)
+    `INSERT INTO games (id, player_id, played_at, mode, sheet, names, scores, winner, user_seat, reason, difficulty, duration_ms, behind, clean, opponent_id, opponent_higher, tourney)
+     VALUES ($1, $2, to_timestamp($3 / 1000.0), $4, $5, $6::text::jsonb, $7::text::jsonb, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
      ON CONFLICT (id) DO NOTHING`,
     [
       entry.id,
@@ -634,6 +651,9 @@ export async function insertGame(playerId, entry) {
       Number.isInteger(entry.durationMs) ? entry.durationMs : null,
       entry.behind === true,
       entry.clean === true,
+      isUuid(entry.opponentId) ? entry.opponentId : null,
+      entry.opponentHigher === true,
+      entry.tourney === true,
     ],
   );
   forgetRanking();
@@ -669,11 +689,15 @@ export async function gameStats(playerId) {
 
 export async function listGames(playerId) {
   const { rows } = await pool.query(
-    `SELECT id, played_at, mode, sheet, names, scores, winner, user_seat, reason, difficulty, duration_ms, behind, clean
+    `SELECT id, played_at, mode, sheet, names, scores, winner, user_seat, reason, difficulty, duration_ms, behind, clean, opponent_id, opponent_higher, tourney
      FROM games WHERE player_id = $1 ORDER BY played_at DESC LIMIT 40`,
     [playerId],
   );
-  return rows.map((row) => ({
+  return rows.map(gameOut);
+}
+
+function gameOut(row) {
+  return ({
     id: row.id,
     at: new Date(row.played_at).getTime(),
     mode: row.mode,
@@ -687,7 +711,141 @@ export async function listGames(playerId) {
     durationMs: Number(row.duration_ms) || 0,
     behind: row.behind === true,
     clean: row.clean === true,
-  }));
+    opponentId: row.opponent_id || null,
+    opponentHigher: row.opponent_higher === true,
+    tourney: row.tourney === true,
+  });
+}
+/* ---------- Défis du jour et de la semaine ---------- */
+
+/** XP au plus par jour (heure de Paris) venant des défis du jour et de la semaine. */
+export const DEFI_DAY_CAP = 150;
+
+/** Les parties des 8 derniers jours : assez pour la semaine en cours. */
+export async function recentGames(playerId) {
+  const { rows } = await pool.query(
+    `SELECT id, played_at, mode, sheet, names, scores, winner, user_seat, reason, difficulty, duration_ms, behind, clean, opponent_id, opponent_higher, tourney
+     FROM games WHERE player_id = $1 AND played_at > now() - interval '8 days' ORDER BY played_at DESC LIMIT 500`,
+    [playerId],
+  );
+  return rows.map(gameOut);
+}
+
+/** Les défis déjà récompensés pour ces périodes, sous la forme « id:période » → XP donnée. */
+export async function defiRewardsFor(playerId, periods) {
+  const { rows } = await pool.query(
+    `SELECT defi_id, period::text AS period, xp FROM defi_rewards WHERE player_id = $1 AND period = ANY($2::date[])`,
+    [playerId, periods],
+  );
+  return new Map(rows.map((row) => [`${row.defi_id}:${row.period}`, Number(row.xp) || 0]));
+}
+
+/** XP venant des défis aujourd'hui (heure de Paris). */
+export async function defiXpToday(playerId) {
+  const { rows } = await pool.query(
+    `SELECT COALESCE(SUM(xp), 0)::int AS xp FROM defi_rewards
+     WHERE player_id = $1 AND NOT once AND (earned_at AT TIME ZONE 'Europe/Paris')::date = (now() AT TIME ZONE 'Europe/Paris')::date`,
+    [playerId],
+  );
+  return Number(rows[0]?.xp) || 0;
+}
+
+/**
+ * Marque un défi réussi : une seule fois par défi et par période.
+ * L'XP est réduite pour ne pas dépasser le plafond du jour.
+ * Renvoie l'XP donnée, ou null si le défi était déjà marqué.
+ */
+export async function saveDefiReward(playerId, defiId, period, xp) {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [`defi:${playerId}`]);
+    const { rows } = await client.query(
+      `WITH spent AS (
+         SELECT COALESCE(SUM(xp), 0)::int AS xp FROM defi_rewards
+         WHERE player_id = $1 AND NOT once AND (earned_at AT TIME ZONE 'Europe/Paris')::date = (now() AT TIME ZONE 'Europe/Paris')::date
+       )
+       INSERT INTO defi_rewards (player_id, defi_id, period, xp)
+       SELECT $1, $2, $3::date, GREATEST(0, LEAST($4::int, $5::int - spent.xp)) FROM spent
+       ON CONFLICT (player_id, defi_id, period) DO NOTHING
+       RETURNING xp`,
+      [playerId, defiId, period, Math.max(0, Math.trunc(Number(xp) || 0)), DEFI_DAY_CAP],
+    );
+    await client.query("COMMIT");
+    if (!rows[0]) return null;
+    forgetRanking();
+    return Number(rows[0].xp) || 0;
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+/** Période fixe des succès (gagnés une seule fois), hors plafond du jour. */
+const ONCE_PERIOD = "2000-01-01";
+
+export async function saveOnceReward(playerId, successId, xp) {
+  const { rows } = await pool.query(
+    `INSERT INTO defi_rewards (player_id, defi_id, period, xp, once) VALUES ($1, $2, $3::date, $4, true)
+     ON CONFLICT (player_id, defi_id, period) DO NOTHING RETURNING xp`,
+    [playerId, successId, ONCE_PERIOD, Math.max(0, Math.trunc(Number(xp) || 0))],
+  );
+  if (!rows[0]) return null;
+  forgetRanking();
+  return Number(rows[0].xp) || 0;
+}
+
+/** Ce qu'il faut pour les succès en ligne : meilleur rang, tournois joués, finales, titres à 8. */
+export async function successState(playerId) {
+  const { rows } = await pool.query(
+    `SELECT
+       (SELECT best_rank FROM profiles WHERE id = $1) AS best_rank,
+       (SELECT COUNT(*)::int FROM tournament_players tp JOIN tournaments t ON t.id = tp.tournament_id
+         WHERE tp.player_id = $1 AND t.status IN ('running', 'finished')) AS tourneys,
+       (SELECT COUNT(*)::int FROM tournaments WHERE status = 'finished' AND (winner_id = $1 OR runner_up_id = $1)) AS finals,
+       (SELECT COUNT(*)::int FROM tournaments WHERE status = 'finished' AND winner_id = $1 AND size = 8) AS champion8,
+       (SELECT array_agg(defi_id) FROM defi_rewards WHERE player_id = $1 AND once) AS earned`,
+    [playerId],
+  );
+  const row = rows[0] || {};
+  return {
+    bestRank: Number(row.best_rank) || 0,
+    tourneys: Number(row.tourneys) || 0,
+    finals: Number(row.finals) || 0,
+    champion8: Number(row.champion8) || 0,
+    earned: new Set(row.earned || []),
+  };
+}
+
+/** Rang au classement général de ces joueurs, maintenant (0 si inconnu). */
+export async function generalRanks(ids) {
+  const rows = await rankRows("general");
+  const out = new Map();
+  for (const row of rows) if (ids.includes(row.owner)) out.set(row.owner, Number(row.rank) || 0);
+  return out;
+}
+
+/** Il faut assez de joueurs actifs pour qu'un Top 10 ou un Top 3 veuille dire quelque chose. */
+const TOP_MIN_PLAYERS = 11;
+
+async function noteBestRanks(rows) {
+  const active = rows.filter((row) => Number(row.games) > 0 && Number(row.xp) > 0);
+  if (active.length < TOP_MIN_PLAYERS) return;
+  const top = active.filter((row) => Number(row.rank) <= 10);
+  if (!top.length) return;
+  await pool.query(
+    `UPDATE profiles p SET best_rank = v.r
+     FROM (SELECT unnest($1::uuid[]) AS id, unnest($2::int[]) AS r) v
+     WHERE p.id = v.id AND (p.best_rank IS NULL OR p.best_rank > v.r)`,
+    [top.map((row) => row.owner), top.map((row) => Number(row.rank))],
+  );
+}
+
+async function defiXp(playerId) {
+  const { rows } = await pool.query("SELECT COALESCE(SUM(xp), 0)::int AS xp FROM defi_rewards WHERE player_id = $1", [playerId]);
+  return Number(rows[0]?.xp) || 0;
 }
 
 const NOTE_KEEP = 100;
@@ -1249,6 +1407,7 @@ export async function hasGames(playerId) {
 
 export async function clearGames(playerId) {
   await pool.query("DELETE FROM games WHERE player_id = $1", [playerId]);
+  await pool.query("DELETE FROM defi_rewards WHERE player_id = $1", [playerId]);
   forgetRanking();
 }
 
@@ -1445,118 +1604,106 @@ export async function insertMessage({ name, body }) {
   );
 }
 
-export async function progressOf(playerId) {
-  const { rows } = await pool.query(
-    `WITH per_game AS (
-       SELECT
-         (CASE
-            WHEN jsonb_typeof(g.scores) = 'array' THEN g.scores ->> g.user_seat
-            ELSE g.scores ->> g.user_seat::text
-          END)::int AS houses,
-         CASE g.difficulty
-           WHEN 'easy' THEN 7 WHEN 'medium' THEN 8 WHEN 'hard' THEN 9
-           WHEN 'veryhard' THEN 10 WHEN 'expert' THEN 10 ELSE 8
-         END AS per_house,
-         CASE WHEN g.winner = g.user_seat::text THEN 15 ELSE 0 END AS win_bonus,
-         g.duration_ms,
-         g.clean,
-         g.behind,
-         g.difficulty,
-         CASE
-           WHEN jsonb_typeof(g.scores) = 'array' AND (g.scores ->> 1) ~ '^[0-9]+$' THEN (g.scores ->> 1)::int
-           WHEN (g.scores ->> '1') ~ '^[0-9]+$' THEN (g.scores ->> '1')::int
-           ELSE NULL
-         END AS opp
-       FROM games g
-       WHERE g.player_id = $1
-         AND g.mode = 'solo'
-         AND g.user_seat = 0
-         AND (CASE
-            WHEN jsonb_typeof(g.scores) = 'array' THEN g.scores ->> g.user_seat
-            ELSE g.scores ->> g.user_seat::text
-          END) ~ '^[0-9]+$'
-     )
-     SELECT COALESCE(p.name, '') AS name,
-       (COALESCE(SUM(15 + houses * per_house + win_bonus), 0)
-        + COALESCE((SELECT
-            (CASE WHEN bool_or(duration_ms BETWEEN 1000 AND 480000) THEN 40 ELSE 0 END)
-            + (CASE WHEN bool_or(clean) THEN 50 ELSE 0 END)
-            + (CASE WHEN bool_or(win_bonus > 0 AND houses >= 10) THEN 45 ELSE 0 END)
-            + (CASE WHEN bool_or(behind AND win_bonus > 0) THEN 60 ELSE 0 END)
-            + (CASE WHEN bool_or(difficulty = 'expert') THEN 35 ELSE 0 END)
-            + (CASE WHEN bool_or(win_bonus > 0 AND opp = 0 AND houses > 0) THEN 55 ELSE 0 END)
-          FROM per_game), 0)
-        + COALESCE((
-          WITH days AS (
-            SELECT DISTINCT (played_at AT TIME ZONE 'Europe/Paris')::date AS day
-            FROM games
-            WHERE player_id = $1 AND mode = 'solo' AND user_seat = 0
-          ),
-          islands AS (
-            SELECT day - (ROW_NUMBER() OVER (ORDER BY day))::int AS grp FROM days
-          ),
-          runs AS (SELECT COUNT(*)::int AS len FROM islands GROUP BY grp)
-          SELECT COALESCE(MAX(CASE WHEN len >= 3 THEN 30 ELSE 0 END), 0)
-               + COALESCE(MAX(CASE WHEN len >= 7 THEN 40 ELSE 0 END), 0)
-          FROM runs
-        ), 0))::int AS xp,
-       COALESCE(SUM(houses), 0)::int AS houses,
-       COALESCE(MAX(houses), 0)::int AS best,
-       COUNT(houses)::int AS games,
-       COALESCE(SUM(CASE WHEN win_bonus > 0 THEN 1 ELSE 0 END), 0)::int AS wins,
-       COALESCE(SUM(CASE WHEN win_bonus > 0 AND difficulty = 'expert' THEN 1 ELSE 0 END), 0)::int AS expert_wins
-     FROM (SELECT $1::uuid AS id) me
-     LEFT JOIN profiles p ON p.id = me.id
-     LEFT JOIN per_game ON true
-     GROUP BY p.name`,
-    [playerId],
-  );
-  const row = rows[0] || {};
-  const online = await onlineTotals(playerId);
-  return {
-    name: row.name || "",
-    xp: (Number(row.xp) || 0) + online.xp,
-    houses: (Number(row.houses) || 0) + online.houses,
-    best: Math.max(Number(row.best) || 0, online.best),
-    games: (Number(row.games) || 0) + online.games,
-    wins: (Number(row.wins) || 0) + online.wins,
-    expertWins: Number(row.expert_wins) || 0,
-  };
+/** Au-delà, une victoire en ligne contre le même adversaire le même jour ne donne plus son bonus. */
+const SAME_RIVAL_WINS = 5;
+
+/**
+ * XP de chaque partie (robot côté joueur, ou en ligne).
+ * Règles 2, pour les parties jouées depuis leur mise en ligne (table xp_rules) :
+ * - la victoire compte toujours, quelle que soit sa durée ou sa façon (score, temps, abandon de l'autre) :
+ *   robot Facile +10, Moyen +20, Difficile +30, Très difficile +40, Expert +50 ; en ligne +50,
+ *   sauf au-delà de 5 victoires le même jour contre le même adversaire (maisons seulement) ;
+ * - pas de participation (+15) pour celui qui abandonne ;
+ * - en ligne, 12 XP par maison au lieu de 9.
+ * Les parties plus anciennes gardent les règles d'avant : personne ne perd son XP.
+ */
+const SCORED_GAMES = (filter) => `
+  SELECT s.*,
+    (CASE WHEN s.new_rules AND s.quit THEN 0 ELSE 15 END)
+    + s.houses * (CASE
+        WHEN s.mode = 'online' THEN (CASE WHEN s.new_rules THEN 12 ELSE 9 END)
+        ELSE (CASE s.difficulty WHEN 'easy' THEN 7 WHEN 'medium' THEN 8 WHEN 'hard' THEN 9 WHEN 'veryhard' THEN 10 WHEN 'expert' THEN 10 ELSE 8 END)
+      END)
+    + (CASE
+        WHEN NOT s.won THEN 0
+        WHEN NOT s.new_rules THEN 15
+        WHEN s.mode = 'online' THEN (CASE WHEN s.opponent_id IS NOT NULL AND s.win_rank > ${SAME_RIVAL_WINS} THEN 0 ELSE 50 END)
+        ELSE (CASE s.difficulty WHEN 'easy' THEN 10 WHEN 'medium' THEN 20 WHEN 'hard' THEN 30 WHEN 'veryhard' THEN 40 WHEN 'expert' THEN 50 ELSE 20 END)
+      END) AS xp
+  FROM (
+    SELECT b.*,
+      ROW_NUMBER() OVER (
+        PARTITION BY b.player_id, b.opponent_id, b.won, (b.played_at AT TIME ZONE 'Europe/Paris')::date
+        ORDER BY b.played_at, b.id
+      ) AS win_rank
+    FROM (
+      SELECT g.id, g.player_id, g.mode, g.difficulty, g.duration_ms, g.clean, g.behind, g.played_at, g.opponent_id,
+        (CASE WHEN jsonb_typeof(g.scores) = 'array' THEN g.scores ->> g.user_seat ELSE g.scores ->> g.user_seat::text END)::int AS houses,
+        CASE
+          WHEN jsonb_typeof(g.scores) = 'array' AND (g.scores ->> (1 - g.user_seat)) ~ '^[0-9]+$' THEN (g.scores ->> (1 - g.user_seat))::int
+          WHEN (g.scores ->> (1 - g.user_seat)::text) ~ '^[0-9]+$' THEN (g.scores ->> (1 - g.user_seat)::text)::int
+          ELSE NULL
+        END AS opp,
+        COALESCE(g.winner = g.user_seat::text, false) AS won,
+        COALESCE(g.reason = 'abandon' AND g.winner IN ('0', '1') AND g.winner <> g.user_seat::text, false) AS quit,
+        COALESCE(g.played_at >= (SELECT since FROM xp_rules WHERE version = 2), false) AS new_rules
+      FROM games g
+      WHERE g.user_seat IN (0, 1)
+        AND ((g.mode = 'solo' AND g.user_seat = 0) OR g.mode = 'online')
+        AND (CASE WHEN jsonb_typeof(g.scores) = 'array' THEN g.scores ->> g.user_seat ELSE g.scores ->> g.user_seat::text END) ~ '^[0-9]+$'
+        ${filter}
+    ) b
+  ) s`;
+
+/** Bonus des succès contre le robot (une seule fois chacun), calculés sur les parties contre le robot. */
+const SOLO_FLAGS_SQL = `
+  (CASE WHEN bool_or(duration_ms BETWEEN 1000 AND 480000) THEN 40 ELSE 0 END)
+  + (CASE WHEN bool_or(clean) THEN 50 ELSE 0 END)
+  + (CASE WHEN bool_or(won AND houses >= 10) THEN 45 ELSE 0 END)
+  + (CASE WHEN bool_or(behind AND won) THEN 60 ELSE 0 END)
+  + (CASE WHEN bool_or(difficulty = 'expert') THEN 35 ELSE 0 END)
+  + (CASE WHEN bool_or(won AND opp = 0 AND houses > 0) THEN 55 ELSE 0 END)`;
+
+/** Début des règles d'XP 2 (heure de leur mise en ligne), en millisecondes. */
+export async function xpRulesSince() {
+  const { rows } = await pool.query("SELECT since FROM xp_rules WHERE version = 2");
+  return rows[0] ? new Date(rows[0].since).getTime() : null;
 }
 
-async function onlineTotals(playerId) {
+export async function progressOf(playerId) {
   const { rows } = await pool.query(
-    `SELECT
-       COALESCE(SUM(15 + houses * 9 + win_bonus), 0)::int AS xp,
-       COALESCE(SUM(houses), 0)::int AS houses,
-       COALESCE(MAX(houses), 0)::int AS best,
-       COUNT(houses)::int AS games,
-       COALESCE(SUM(CASE WHEN win_bonus > 0 THEN 1 ELSE 0 END), 0)::int AS wins
-     FROM (
-       SELECT
-         (CASE
-            WHEN jsonb_typeof(scores) = 'array' THEN scores ->> user_seat
-            ELSE scores ->> user_seat::text
-          END)::int AS houses,
-         CASE WHEN winner = user_seat::text THEN 15 ELSE 0 END AS win_bonus
+    `WITH sg AS (${SCORED_GAMES("AND g.player_id = $1")}),
+     solo AS (SELECT * FROM sg WHERE mode = 'solo'),
+     days AS (
+       SELECT DISTINCT (played_at AT TIME ZONE 'Europe/Paris')::date AS day
        FROM games
-       WHERE player_id = $1
-         AND mode = 'online'
-         AND user_seat IN (0, 1)
-         AND (CASE
-            WHEN jsonb_typeof(scores) = 'array' THEN scores ->> user_seat
-            ELSE scores ->> user_seat::text
-          END) ~ '^[0-9]+$'
-     ) played`,
+       WHERE player_id = $1 AND mode = 'solo' AND user_seat = 0
+     ),
+     islands AS (SELECT day - (ROW_NUMBER() OVER (ORDER BY day))::int AS grp FROM days),
+     runs AS (SELECT COUNT(*)::int AS len FROM islands GROUP BY grp)
+     SELECT COALESCE(p.name, '') AS name,
+       (COALESCE((SELECT SUM(xp) FROM sg), 0)
+        + COALESCE((SELECT ${SOLO_FLAGS_SQL} FROM solo), 0)
+        + COALESCE((SELECT MAX(CASE WHEN len >= 3 THEN 30 ELSE 0 END) + MAX(CASE WHEN len >= 7 THEN 40 ELSE 0 END) FROM runs), 0))::int AS xp,
+       (SELECT COALESCE(SUM(houses), 0) FROM sg)::int AS houses,
+       (SELECT COALESCE(MAX(houses), 0) FROM sg)::int AS best,
+       (SELECT COUNT(*) FROM sg)::int AS games,
+       (SELECT COUNT(*) FILTER (WHERE won) FROM sg)::int AS wins,
+       (SELECT COUNT(*) FILTER (WHERE won AND difficulty = 'expert') FROM solo)::int AS expert_wins
+     FROM (SELECT $1::uuid AS id) me
+     LEFT JOIN profiles p ON p.id = me.id`,
     [playerId],
   );
   const row = rows[0] || {};
   return {
-    xp: (Number(row.xp) || 0) + (await tourneyXp(playerId)),
+    name: row.name || "",
+    xp: (Number(row.xp) || 0) + (await tourneyXp(playerId)) + (await defiXp(playerId)),
     houses: Number(row.houses) || 0,
     best: Number(row.best) || 0,
     games: Number(row.games) || 0,
     wins: Number(row.wins) || 0,
+    expertWins: Number(row.expert_wins) || 0,
+    xpSince: await xpRulesSince(),
   };
 }
 
@@ -1601,7 +1748,10 @@ export function forgetRanking() {
 function rankRows(board) {
   const hit = rankCache.get(board);
   if (hit && Date.now() - hit.at < RANK_TTL_MS) return hit.rows;
-  const rows = (board === "online" ? onlineRankRows() : generalRankRows()).catch((error) => {
+  const rows = (board === "online" ? onlineRankRows() : generalRankRows().then((list) => {
+    noteBestRanks(list).catch((error) => console.error("Meilleur rang:", error.message));
+    return list;
+  })).catch((error) => {
     rankCache.delete(board);
     throw error;
   });
@@ -1614,49 +1764,33 @@ export async function ranking(playerId, board = "general") {
   return rows.map(({ owner, ...row }) => ({ ...row, you: Boolean(playerId) && owner === playerId }));
 }
 
+const TOURNEY_XP_SQL = `
+  SELECT player_id, SUM(xp)::int AS xp
+  FROM (
+    SELECT winner_id AS player_id, ${TOURNEY_WIN_XP} AS xp FROM tournaments WHERE status = 'finished' AND winner_id IS NOT NULL
+    UNION ALL
+    SELECT runner_up_id, ${TOURNEY_RUNNER_UP_XP} FROM tournaments WHERE status = 'finished' AND runner_up_id IS NOT NULL
+  ) won
+  GROUP BY player_id`;
+
+const TOTALS_SQL = `
+  SELECT player_id,
+    SUM(xp)::int AS xp,
+    SUM(houses)::int AS houses,
+    MAX(houses)::int AS best,
+    COUNT(*)::int AS games,
+    COUNT(*) FILTER (WHERE won)::int AS wins,
+    COUNT(*) FILTER (WHERE won AND mode = 'solo' AND difficulty = 'expert')::int AS expert_wins
+  FROM sg
+  GROUP BY player_id`;
+
 async function generalRankRows() {
   const { rows } = await pool.query(
-    `WITH per_game AS (
-       SELECT g.player_id,
-         (CASE
-            WHEN jsonb_typeof(g.scores) = 'array' THEN g.scores ->> g.user_seat
-            ELSE g.scores ->> g.user_seat::text
-          END)::int AS houses,
-         CASE g.difficulty
-           WHEN 'easy' THEN 7
-           WHEN 'medium' THEN 8
-           WHEN 'hard' THEN 9
-           WHEN 'veryhard' THEN 10
-           WHEN 'expert' THEN 10
-           ELSE 8
-         END AS per_house,
-         CASE WHEN g.winner = g.user_seat::text THEN 15 ELSE 0 END AS win_bonus,
-         g.duration_ms,
-         g.clean,
-         g.behind,
-         g.difficulty,
-         CASE
-           WHEN jsonb_typeof(g.scores) = 'array' AND (g.scores ->> 1) ~ '^[0-9]+$' THEN (g.scores ->> 1)::int
-           WHEN (g.scores ->> '1') ~ '^[0-9]+$' THEN (g.scores ->> '1')::int
-           ELSE NULL
-         END AS opp
-       FROM games g
-       WHERE g.mode = 'solo'
-         AND g.user_seat = 0
-         AND (CASE
-            WHEN jsonb_typeof(g.scores) = 'array' THEN g.scores ->> g.user_seat
-            ELSE g.scores ->> g.user_seat::text
-          END) ~ '^[0-9]+$'
-     ),
+    `WITH sg AS (${SCORED_GAMES("")}),
+     totals AS (${TOTALS_SQL}),
      flag_xp AS (
-       SELECT player_id,
-         ((CASE WHEN bool_or(duration_ms BETWEEN 1000 AND 480000) THEN 40 ELSE 0 END)
-          + (CASE WHEN bool_or(clean) THEN 50 ELSE 0 END)
-          + (CASE WHEN bool_or(win_bonus > 0 AND houses >= 10) THEN 45 ELSE 0 END)
-          + (CASE WHEN bool_or(behind AND win_bonus > 0) THEN 60 ELSE 0 END)
-          + (CASE WHEN bool_or(difficulty = 'expert') THEN 35 ELSE 0 END)
-          + (CASE WHEN bool_or(win_bonus > 0 AND opp = 0 AND houses > 0) THEN 55 ELSE 0 END))::int AS xp
-       FROM per_game
+       SELECT player_id, (${SOLO_FLAGS_SQL})::int AS xp
+       FROM sg WHERE mode = 'solo'
        GROUP BY player_id
      ),
      days AS (
@@ -1676,59 +1810,24 @@ async function generalRankRows() {
        FROM (SELECT player_id, COUNT(*)::int AS len FROM islands GROUP BY player_id, grp) runs
        GROUP BY player_id
      ),
-     online_games AS (
-       SELECT g.player_id,
-         (CASE
-            WHEN jsonb_typeof(g.scores) = 'array' THEN g.scores ->> g.user_seat
-            ELSE g.scores ->> g.user_seat::text
-          END)::int AS houses,
-         CASE WHEN g.winner = g.user_seat::text THEN 15 ELSE 0 END AS win_bonus
-       FROM games g
-       WHERE g.mode = 'online'
-         AND g.user_seat IN (0, 1)
-         AND (CASE
-            WHEN jsonb_typeof(g.scores) = 'array' THEN g.scores ->> g.user_seat
-            ELSE g.scores ->> g.user_seat::text
-          END) ~ '^[0-9]+$'
-     ),
-     online_xp AS (
-       SELECT player_id,
-         COALESCE(SUM(15 + houses * 9 + win_bonus), 0)::int AS xp,
-         COALESCE(SUM(houses), 0)::int AS houses,
-         COALESCE(MAX(houses), 0)::int AS best,
-         COUNT(*)::int AS games,
-         COALESCE(SUM(CASE WHEN win_bonus > 0 THEN 1 ELSE 0 END), 0)::int AS wins
-       FROM online_games
-       GROUP BY player_id
-     ),
-     tourney_xp AS (
-       SELECT player_id, SUM(xp)::int AS xp
-       FROM (
-         SELECT winner_id AS player_id, ${TOURNEY_WIN_XP} AS xp FROM tournaments WHERE status = 'finished' AND winner_id IS NOT NULL
-         UNION ALL
-         SELECT runner_up_id, ${TOURNEY_RUNNER_UP_XP} FROM tournaments WHERE status = 'finished' AND runner_up_id IS NOT NULL
-       ) won
-       GROUP BY player_id
+     tourney_xp AS (${TOURNEY_XP_SQL}),
+     defi_xp AS (
+       SELECT player_id, SUM(xp)::int AS xp FROM defi_rewards GROUP BY player_id
      ),
      scored AS (
        SELECT p.id, p.public_id, p.name, p.icon, COALESCE(p.photo, '') AS photo,
-         (COALESCE(SUM(15 + pg.houses * pg.per_house + pg.win_bonus), 0)
-          + COALESCE(MAX(flag_xp.xp), 0)
-          + COALESCE(MAX(streak_xp.xp), 0)
-          + COALESCE(MAX(ox.xp), 0)
-          + COALESCE(MAX(tx.xp), 0))::int AS xp,
-         (COALESCE(SUM(pg.houses), 0) + COALESCE(MAX(ox.houses), 0))::int AS houses,
-         GREATEST(COALESCE(MAX(pg.houses), 0), COALESCE(MAX(ox.best), 0))::int AS best,
-         (COUNT(pg.player_id) + COALESCE(MAX(ox.games), 0))::int AS games,
-         (COALESCE(SUM(CASE WHEN pg.win_bonus > 0 THEN 1 ELSE 0 END), 0) + COALESCE(MAX(ox.wins), 0))::int AS wins,
-         COALESCE(SUM(CASE WHEN pg.win_bonus > 0 AND pg.difficulty = 'expert' THEN 1 ELSE 0 END), 0)::int AS expert_wins
+         (COALESCE(t.xp, 0) + COALESCE(f.xp, 0) + COALESCE(st.xp, 0) + COALESCE(tx.xp, 0) + COALESCE(dx.xp, 0))::int AS xp,
+         COALESCE(t.houses, 0)::int AS houses,
+         COALESCE(t.best, 0)::int AS best,
+         COALESCE(t.games, 0)::int AS games,
+         COALESCE(t.wins, 0)::int AS wins,
+         COALESCE(t.expert_wins, 0)::int AS expert_wins
        FROM profiles p
-       LEFT JOIN per_game pg ON pg.player_id = p.id
-       LEFT JOIN flag_xp ON flag_xp.player_id = p.id
-       LEFT JOIN streak_xp ON streak_xp.player_id = p.id
-       LEFT JOIN online_xp ox ON ox.player_id = p.id
+       LEFT JOIN totals t ON t.player_id = p.id
+       LEFT JOIN flag_xp f ON f.player_id = p.id
+       LEFT JOIN streak_xp st ON st.player_id = p.id
        LEFT JOIN tourney_xp tx ON tx.player_id = p.id
-       GROUP BY p.id
+       LEFT JOIN defi_xp dx ON dx.player_id = p.id
      ),
      ranked AS (
        SELECT *, ROW_NUMBER() OVER (ORDER BY xp DESC, best DESC, games DESC, name) AS rank,
@@ -1744,43 +1843,21 @@ async function generalRankRows() {
 
 async function onlineRankRows() {
   const { rows } = await pool.query(
-    `WITH per_game AS (
-       SELECT g.player_id,
-         (CASE
-            WHEN jsonb_typeof(g.scores) = 'array' THEN g.scores ->> g.user_seat
-            ELSE g.scores ->> g.user_seat::text
-          END)::int AS houses,
-         CASE WHEN g.winner = g.user_seat::text THEN 15 ELSE 0 END AS win_bonus
-       FROM games g
-       WHERE g.mode = 'online'
-         AND g.user_seat IN (0, 1)
-         AND (CASE
-            WHEN jsonb_typeof(g.scores) = 'array' THEN g.scores ->> g.user_seat
-            ELSE g.scores ->> g.user_seat::text
-          END) ~ '^[0-9]+$'
-     ),
-     tourney_xp AS (
-       SELECT player_id, SUM(xp)::int AS xp
-       FROM (
-         SELECT winner_id AS player_id, ${TOURNEY_WIN_XP} AS xp FROM tournaments WHERE status = 'finished' AND winner_id IS NOT NULL
-         UNION ALL
-         SELECT runner_up_id, ${TOURNEY_RUNNER_UP_XP} FROM tournaments WHERE status = 'finished' AND runner_up_id IS NOT NULL
-       ) won
-       GROUP BY player_id
-     ),
+    `WITH sg AS (${SCORED_GAMES("AND g.mode = 'online'")}),
+     totals AS (${TOTALS_SQL}),
+     tourney_xp AS (${TOURNEY_XP_SQL}),
      scored AS (
        SELECT p.id, p.public_id, p.name, p.icon, COALESCE(p.photo, '') AS photo,
-         (COALESCE(SUM(15 + houses * 9 + win_bonus), 0) + COALESCE(MAX(tx.xp), 0))::int AS xp,
-         COALESCE(SUM(houses), 0)::int AS houses,
-         COALESCE(MAX(houses), 0)::int AS best,
-         COUNT(pg.player_id)::int AS games,
-         COALESCE(SUM(CASE WHEN win_bonus > 0 THEN 1 ELSE 0 END), 0)::int AS wins,
+         (COALESCE(t.xp, 0) + COALESCE(tx.xp, 0))::int AS xp,
+         COALESCE(t.houses, 0)::int AS houses,
+         COALESCE(t.best, 0)::int AS best,
+         COALESCE(t.games, 0)::int AS games,
+         COALESCE(t.wins, 0)::int AS wins,
          0::int AS expert_wins
        FROM profiles p
-       LEFT JOIN per_game pg ON pg.player_id = p.id
+       LEFT JOIN totals t ON t.player_id = p.id
        LEFT JOIN tourney_xp tx ON tx.player_id = p.id
-       WHERE pg.player_id IS NOT NULL OR tx.player_id IS NOT NULL
-       GROUP BY p.id
+       WHERE t.player_id IS NOT NULL OR tx.player_id IS NOT NULL
      ),
      ranked AS (
        SELECT *, ROW_NUMBER() OVER (ORDER BY xp DESC, best DESC, games DESC, name) AS rank,

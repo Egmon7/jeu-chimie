@@ -91,8 +91,9 @@
             <img class="mode-icon" src="img/hub/icons3.png" alt="">
             <span class="mode-copy">
               <strong>Défis</strong>
-              <span>Points, séries et parties contre le robot.</span>
+              <span>Défis du jour, de la semaine et succès.</span>
             </span>
+            <span class="mode-dot" data-defi-dot hidden aria-label="Défis du jour à faire"></span>
           </button>
           <button type="button" class="mode" data-open-hub="profiles">
             <img class="mode-icon" src="img/hub/icons4.png" alt="">
@@ -133,9 +134,15 @@
           </button>
         </div>
         <div class="mode-list" data-hub-panel="challenges" hidden>
-          <p class="challenge-lead">Chaque défi réussi une fois ajoute ses points à l’XP, contre le robot.</p>
+          <div class="defi-tabs" role="tablist" aria-label="Mes défis">
+            <button type="button" role="tab" data-defi-tab="day" aria-selected="true">Jour<span class="defi-tab-count" id="defi-count-day"></span></button>
+            <button type="button" role="tab" data-defi-tab="week" aria-selected="false">Semaine<span class="defi-tab-count" id="defi-count-week"></span></button>
+            <button type="button" role="tab" data-defi-tab="success" aria-selected="false">Succès<span class="defi-tab-count" id="defi-count-success"></span></button>
+          </div>
+          <p id="defi-lead" class="challenge-lead"></p>
           <p id="challenge-status" class="challenge-status" aria-live="polite"></p>
-          <div id="challenge-list" class="challenge-list"></div>
+          <div id="defi-list" class="defi-list"></div>
+          <div id="challenge-list" class="challenge-list" hidden></div>
         </div>
         <div class="mode-list" data-hub-panel="competitions" hidden>
           <button type="button" class="mode" data-open-hub="tourney-create">
