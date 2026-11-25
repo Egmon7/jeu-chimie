@@ -9,7 +9,7 @@ const text = buildLearnReport({
   watch: [{ name: "Ntotimbe" }],
   situations: {
     total: 5,
-    byKind: { chain_short: 2, double_cross: 1 },
+    byKind: { encircle: 2, blocked: 1 },
     byOutcome: { win: 3, loss: 2, draw: 0 },
   },
   model: { activeVersion: "v1", candidateVersion: null },
@@ -18,4 +18,5 @@ assert.match(text, /Parties gardées : 2/);
 assert.match(text, /Situations retenues : 5/);
 assert.match(text, /Ntotimbe/);
 assert.match(text, /Pas encore de robot candidat/);
+assert.match(text, /2 encerclements réussis, 1 encerclements bloqués/);
 console.log("learnReport ok");

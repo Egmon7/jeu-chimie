@@ -1,56 +1,81 @@
 import assert from "assert/strict";
-import { createGame, applyMove } from "../public/js/engine.js";
-import { boardSnap } from "../server/learn.js";
-import { analyzeLearnMatch, patternsFromTimeline, summarizeSituations } from "../server/learnAnalyze.js";
+import { analyzeLearnMatch, summarizeSituations } from "../server/learnAnalyze.js";
 
 assert.deepEqual(analyzeLearnMatch(null), []);
 assert.deepEqual(analyzeLearnMatch({ moves: [] }), []);
 
 const settings = { rows: 6, cols: 6, extraTurn: true, timeMode: "none", scoreLimit: 0 };
-const game = createGame(settings);
-game.dots[2][2] = 1;
-game.dots[1][2] = 0;
-game.dots[2][1] = 0;
-game.dots[2][3] = 0;
-game.current = 0;
-const before = boardSnap(game);
-const result = applyMove(game, { r: 3, c: 2 });
-assert.equal(result.ok && result.completed, 1);
-const moves = [{ step: 0, seat: 0, r: 3, c: 2, before, after: boardSnap(game) }];
-
-const found = analyzeLearnMatch({
+const match = (moves, winner) => ({
   rows: 6,
   cols: 6,
   starter: 0,
-  winner: "0",
+  winner,
   settings,
-  moves,
+  moves: moves.map(([seat, r, c], step) => ({ step, seat, r, c })),
 });
-assert.ok(found.some((row) => row.kind === "chain_short"));
-assert.ok(found.filter((row) => row.kind.startsWith("chain")).every((row) => row.outcome === "win"));
+const kindsOf = (found, kind) => found.filter((row) => row.kind === kind);
 
-const doubles = patternsFromTimeline([
-  { step: 0, seat: 0, gained: 0 },
-  { step: 1, seat: 1, gained: 1 },
-  { step: 2, seat: 0, gained: 1 },
-  { step: 3, seat: 0, gained: 1 },
-], "0");
-assert.ok(doubles.some((row) => row.kind === "double_cross" && row.outcome === "win"));
+// 1) Le joueur 1 pose son point au milieu de trois points du joueur 0 (maison laissée),
+//    puis le joueur 0 ferme la maison (encerclement réussi, première maison).
+{
+  const found = analyzeLearnMatch(match([
+    [0, 1, 2], [1, 5, 5],
+    [0, 2, 1], [1, 5, 4],
+    [0, 2, 3], [1, 2, 2],
+    [0, 3, 2],
+  ], "0"));
+  const encircle = kindsOf(found, "encircle");
+  assert.equal(encircle.length, 1, "un encerclement réussi");
+  assert.equal(encircle[0].seat, 0);
+  assert.equal(encircle[0].outcome, "win");
+  const first = kindsOf(found, "first_house");
+  assert.equal(first.length, 1, "une seule première maison");
+  assert.equal(first[0].step, 6);
+  const left = kindsOf(found, "left_open");
+  assert.equal(left.length, 1, "le joueur 1 a laissé la maison");
+  assert.equal(left[0].seat, 1);
+  assert.equal(left[0].step, 5);
+  assert.equal(left[0].outcome, "loss");
+  assert.equal(kindsOf(found, "missed").length, 0, "pas d’occasion manquée : la maison a été prise");
+}
 
-const sacrifice = patternsFromTimeline([
-  { step: 0, seat: 0, gained: 0 },
-  { step: 1, seat: 1, gained: 2 },
-  { step: 2, seat: 0, gained: 3 },
-], "1");
-assert.ok(sacrifice.some((row) => row.kind === "sacrifice" && row.outcome === "loss"));
+// 2) Le joueur 0 pouvait fermer mais joue ailleurs (occasion manquée),
+//    puis le joueur 1 prend le point qui fermait (encerclement bloqué).
+{
+  const found = analyzeLearnMatch(match([
+    [0, 1, 2], [1, 5, 5],
+    [0, 2, 1], [1, 5, 4],
+    [0, 2, 3], [1, 2, 2],
+    [0, 0, 6], [1, 3, 2],
+  ], "1"));
+  const missed = kindsOf(found, "missed");
+  assert.equal(missed.length, 1, "une occasion manquée");
+  assert.equal(missed[0].seat, 0);
+  assert.equal(missed[0].step, 6);
+  const blocked = kindsOf(found, "blocked");
+  assert.equal(blocked.length, 1, "un encerclement bloqué");
+  assert.equal(blocked[0].seat, 1);
+  assert.equal(blocked[0].step, 7);
+  assert.equal(blocked[0].outcome, "win");
+  assert.equal(kindsOf(found, "encircle").length, 0, "aucune maison fermée");
+  assert.equal(kindsOf(found, "left_open").length, 0, "rien de laissé : l’autre n’a pas fermé");
+}
 
-assert.equal(patternsFromTimeline([
-  { step: 0, seat: 0, gained: 0 },
-  { step: 1, seat: 1, gained: 0 },
-], "0").length, 0, "rien inventé sans captures dans les coups");
+// 3) Rien d'inventé : des coups sans encerclement ne donnent aucune situation.
+{
+  const found = analyzeLearnMatch(match([[0, 0, 0], [1, 6, 6], [0, 0, 6], [1, 6, 0]], "draw"));
+  assert.equal(found.length, 0, "aucune situation sans rien d’encerclé");
+}
 
-const summary = summarizeSituations(found);
-assert.equal(summary.total, found.length);
-assert.ok(summary.byOutcome.win >= 1);
+// 4) Résumé.
+{
+  const found = analyzeLearnMatch(match([
+    [0, 1, 2], [1, 5, 5], [0, 2, 1], [1, 5, 4], [0, 2, 3], [1, 2, 2], [0, 3, 2],
+  ], "0"));
+  const summary = summarizeSituations(found);
+  assert.equal(summary.total, found.length);
+  assert.ok(summary.byOutcome.win >= 2);
+  assert.ok(summary.byKind.encircle === 1 && summary.byKind.first_house === 1);
+}
 
 console.log("learnAnalyze ok");

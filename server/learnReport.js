@@ -1,11 +1,12 @@
 /** Rapport écrit uniquement à partir des chiffres réellement en base. */
 
 const KIND_LABEL = {
-  chain_short: "chaînes courtes",
-  chain_long: "chaînes longues",
-  endgame: "fins de partie",
-  sacrifice: "sacrifices utiles",
-  double_cross: "double-cross",
+  first_house: "premières maisons",
+  encircle: "encerclements réussis",
+  eat: "maisons mangées",
+  blocked: "encerclements bloqués",
+  missed: "occasions manquées",
+  left_open: "maisons laissées",
 };
 
 const STATUS_LABEL = {

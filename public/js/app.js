@@ -3779,11 +3779,12 @@ function renderAdminRobot(robot, learn) {
 
 
 const LEARN_KINDS = [
-  ["chain_short", "Chaînes courtes", "Un joueur ferme 1 ou 2 maisons d’affilée."],
-  ["chain_long", "Chaînes longues", "Un joueur ferme 3 maisons ou plus d’affilée."],
-  ["endgame", "Fins de partie", "Les derniers coups, quand la feuille est presque pleine."],
-  ["sacrifice", "Sacrifices", "Laisser une maison à l’autre pour en gagner plus ensuite."],
-  ["double_cross", "Double-cross", "Céder 1 maison pour en reprendre plusieurs juste après."],
+  ["first_house", "Première maison", "Qui ferme la première maison de la partie."],
+  ["encircle", "Encerclements réussis", "Une maison fermée autour des points de l’autre."],
+  ["eat", "Maisons mangées", "Une maison de l’autre entourée et prise."],
+  ["blocked", "Encerclements bloqués", "Le point qui allait fermer une maison est pris par l’autre juste avant."],
+  ["missed", "Occasions manquées", "Une maison pouvait être fermée, le joueur a joué ailleurs."],
+  ["left_open", "Maisons laissées", "Après ce coup, l’autre peut fermer une maison, et il le fait tout de suite."],
 ];
 
 function plural(n, one, many) {
@@ -3831,6 +3832,24 @@ function renderAdminLearn(learn) {
   ].map(([value, label]) => `<p><strong>${Number(value) || 0}</strong><span>${label}</span></p>`).join("")
     + `<p><strong class="learn-last">${esc(last)}</strong><span>Dernière partie</span></p>`;
 
+  // 3 bis) Comment finissent les parties.
+  const ends = learn.ends;
+  if (ends && ends.total) {
+    const pct = (n) => `${Math.round((n / ends.total) * 100)} %`;
+    $("learn-ends").innerHTML = [
+      [`${ends.abandon}`, `Abandons · ${pct(ends.abandon)}`],
+      [`${ends.time}`, `Temps écoulé · ${pct(ends.time)}`],
+      [`${ends.played_out}`, `Jouées jusqu’au bout · ${pct(ends.played_out)}`],
+      [`${ends.filled} %`, "Feuille jouée en moyenne"],
+    ].map(([value, label]) => `<p><strong>${esc(value)}</strong><span>${esc(label)}</span></p>`).join("");
+    $("learn-quit").textContent = ends.abandon
+      ? `Celui qui abandonne est mené dans ${ends.quit_behind} cas, à égalité dans ${ends.quit_tied} (dont ${ends.quit_zero} à 0 – 0), devant dans ${ends.quit_ahead}. En moyenne : ${ends.moves} coups, ${String(ends.minutes).replace(".", ",")} min, ${String(ends.houses).replace(".", ",")} maisons par partie.`
+      : `En moyenne : ${ends.moves} coups, ${String(ends.minutes).replace(".", ",")} min, ${String(ends.houses).replace(".", ",")} maisons par partie.`;
+  } else {
+    $("learn-ends").innerHTML = "";
+    $("learn-quit").textContent = "Pas encore de partie terminée.";
+  }
+
   // 4) L'évolution jour par jour.
   const days = (learn.daily || []).filter((day) => day.matches > 0);
   const most = Math.max(1, ...days.map((day) => day.matches));
@@ -3840,7 +3859,9 @@ function renderAdminLearn(learn) {
     ? `<p class="learn-sum">Sur 14 jours : ${plural(total14, "partie gardée", "parties gardées")} · ${plural(sits14, "situation repérée", "situations repérées")} · ${plural(days.length, "jour actif", "jours actifs")}</p>` + days.slice().reverse().map((day) => {
       const label = new Date(`${day.day}T12:00:00`).toLocaleDateString("fr-FR", { weekday: "short", day: "numeric", month: "short" });
       const width = Math.round((day.matches / most) * 100);
-      const text = day.matches ? `${plural(day.matches, "partie", "parties")} · ${plural(day.situations, "situation", "situations")}` : "—";
+      const text = day.matches
+        ? `${plural(day.matches, "partie", "parties")} · ${plural(day.situations, "situation", "situations")} · feuille ${day.filled || 0} % · ${plural(day.abandons || 0, "abandon", "abandons")}`
+        : "—";
       return `<div class="admin-week${day.matches ? "" : " is-empty"}"><span class="admin-week-day">${esc(label)}</span><span class="admin-week-bar"><i style="width:${width}%"></i></span><span class="admin-week-text">${esc(text)}</span></div>`;
     }).join("")
     : `<p class="empty">Aucune partie gardée ces 14 derniers jours.</p>`;

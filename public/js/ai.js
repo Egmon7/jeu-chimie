@@ -75,6 +75,11 @@ function winningMoves(game, player) {
   return found;
 }
 
+/** Les coups qui fermeraient une maison pour ce joueur (sert aussi à l’analyse des parties gardées). */
+export function closingMoves(game, player) {
+  return winningMoves(game, player);
+}
+
 function nearestDot(dots, move) {
   let best = 99;
   for (const dot of dots) best = Math.min(best, Math.max(Math.abs(dot.r - move.r), Math.abs(dot.c - move.c)));

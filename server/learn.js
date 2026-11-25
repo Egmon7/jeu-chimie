@@ -51,6 +51,9 @@ export function boardSnap(game) {
   };
 }
 
+/** Version des règles d'analyse : quand elle change, les parties déjà gardées sont relues. */
+export const LEARN_ANALYSIS_VERSION = 2;
+
 /** Une feuille complète tous les CHECKPOINT coups suffit : le reste se reconstruit en rejouant. */
 export const LEARN_CHECKPOINT = 50;
 

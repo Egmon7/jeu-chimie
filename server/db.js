@@ -4,7 +4,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import pg from "pg";
 import { buildLearnReport } from "./learnReport.js";
-import { LEARN_PEOPLE, learnNameKey } from "./learn.js";
+import { LEARN_ANALYSIS_VERSION, LEARN_PEOPLE, learnNameKey } from "./learn.js";
 
 const envFile = path.join(path.dirname(fileURLToPath(import.meta.url)), "../.env");
 if (fs.existsSync(envFile)) {
@@ -318,6 +318,14 @@ async function migrate(owner) {
     END $$;
   `);
   await owner.query("ALTER TABLE learn_matches ALTER COLUMN player1_id DROP NOT NULL");
+  await owner.query("ALTER TABLE learn_matches ADD COLUMN IF NOT EXISTS analysis_version int NOT NULL DEFAULT 0");
+  await owner.query("ALTER TABLE learn_situations DROP CONSTRAINT IF EXISTS learn_situations_kind_check");
+  await owner.query(`
+    ALTER TABLE learn_situations ADD CONSTRAINT learn_situations_kind_check CHECK (kind IN (
+      'first_house', 'encircle', 'eat', 'blocked', 'missed', 'left_open',
+      'chain_short', 'chain_long', 'endgame', 'sacrifice', 'double_cross'
+    ))
+  `);
   await owner.query("ALTER TABLE learn_matches ADD COLUMN IF NOT EXISTS opponent text NOT NULL DEFAULT 'online'");
   await owner.query("ALTER TABLE learn_matches ADD COLUMN IF NOT EXISTS difficulty text");
   await owner.query("ALTER TABLE learn_moves ALTER COLUMN before_board DROP NOT NULL");
@@ -2180,14 +2188,17 @@ export async function learnOverview() {
          SELECT generate_series((now() AT TIME ZONE 'Europe/Paris')::date - 13, (now() AT TIME ZONE 'Europe/Paris')::date, interval '1 day')::date AS day
        ),
        m AS (
-         SELECT (ended_at AT TIME ZONE 'Europe/Paris')::date AS day, COUNT(*)::int AS matches, COALESCE(SUM(move_count), 0)::int AS moves
+         SELECT (ended_at AT TIME ZONE 'Europe/Paris')::date AS day, COUNT(*)::int AS matches, COALESCE(SUM(move_count), 0)::int AS moves,
+           COUNT(*) FILTER (WHERE reason = 'abandon')::int AS abandons,
+           ROUND(AVG(100.0 * move_count / ((rows + 1) * (cols + 1))))::int AS filled
          FROM learn_matches GROUP BY 1
        ),
        s AS (
          SELECT (lm.ended_at AT TIME ZONE 'Europe/Paris')::date AS day, COUNT(*)::int AS situations
          FROM learn_situations ls JOIN learn_matches lm ON lm.id = ls.match_id GROUP BY 1
        )
-       SELECT days.day::text AS day, COALESCE(m.matches, 0) AS matches, COALESCE(m.moves, 0) AS moves, COALESCE(s.situations, 0) AS situations
+       SELECT days.day::text AS day, COALESCE(m.matches, 0) AS matches, COALESCE(m.moves, 0) AS moves, COALESCE(s.situations, 0) AS situations,
+         COALESCE(m.abandons, 0) AS abandons, COALESCE(m.filled, 0) AS filled
        FROM days LEFT JOIN m USING (day) LEFT JOIN s USING (day)
        ORDER BY days.day`,
     ),
@@ -2203,7 +2214,27 @@ export async function learnOverview() {
     ),
     pool.query(`SELECT kind, outcome, COUNT(*)::int AS n FROM learn_situations GROUP BY kind, outcome`),
   ]);
-  overview.daily = daily.rows.map((row) => ({ day: row.day, matches: row.matches, moves: row.moves, situations: row.situations }));
+  overview.daily = daily.rows.map((row) => ({ day: row.day, matches: row.matches, moves: row.moves, situations: row.situations, abandons: row.abandons, filled: row.filled }));
+  const { rows: endRows } = await pool.query(
+    `SELECT
+       COUNT(*)::int AS total,
+       COUNT(*) FILTER (WHERE reason = 'abandon')::int AS abandon,
+       COUNT(*) FILTER (WHERE reason = 'time')::int AS time,
+       COUNT(*) FILTER (WHERE reason IS NULL OR reason NOT IN ('abandon', 'time'))::int AS played_out,
+       COALESCE(ROUND(AVG(100.0 * move_count / ((rows + 1) * (cols + 1)))), 0)::int AS filled,
+       COALESCE(ROUND(AVG(move_count)), 0)::int AS moves,
+       COALESCE(ROUND(AVG(duration_ms) / 60000.0, 1), 0)::float AS minutes,
+       COALESCE(ROUND(AVG((scores ->> 0)::int + (scores ->> 1)::int), 1), 0)::float AS houses,
+       COUNT(*) FILTER (WHERE reason = 'abandon' AND winner IN ('0', '1')
+         AND (scores ->> (1 - winner::int))::int < (scores ->> (winner::int))::int)::int AS quit_behind,
+       COUNT(*) FILTER (WHERE reason = 'abandon' AND winner IN ('0', '1')
+         AND (scores ->> (1 - winner::int))::int = (scores ->> (winner::int))::int)::int AS quit_tied,
+       COUNT(*) FILTER (WHERE reason = 'abandon' AND winner IN ('0', '1')
+         AND (scores ->> (1 - winner::int))::int > (scores ->> (winner::int))::int)::int AS quit_ahead,
+       COUNT(*) FILTER (WHERE reason = 'abandon' AND (scores ->> 0)::int + (scores ->> 1)::int = 0)::int AS quit_zero
+     FROM learn_matches`,
+  );
+  overview.ends = endRows[0] || null;
   const perPlayer = new Map(players.rows.map((row) => [row.id, row]));
   overview.players = overview.watch.map((person) => {
     const pinned = watch.rows.find((row) => row.key === person.key);
@@ -2292,6 +2323,7 @@ export async function replaceLearnSituations(matchId, situations) {
       );
       n += 1;
     }
+    await client.query("UPDATE learn_matches SET analysis_version = $2 WHERE id = $1", [matchId, LEARN_ANALYSIS_VERSION]);
     await client.query("COMMIT");
     return n;
   } catch (error) {
@@ -2305,14 +2337,12 @@ export async function replaceLearnSituations(matchId, situations) {
 export async function listLearnMatchesNeedingAnalysis(limit = 40) {
   if (!pool) return [];
   const { rows } = await pool.query(
-    `SELECT m.id::text AS id
-     FROM learn_matches m
-     LEFT JOIN learn_situations s ON s.match_id = m.id
-     GROUP BY m.id
-     HAVING COUNT(s.id) = 0
-     ORDER BY m.ended_at DESC
+    `SELECT id::text AS id
+     FROM learn_matches
+     WHERE analysis_version < $2
+     ORDER BY ended_at DESC
      LIMIT $1`,
-    [Math.max(1, Math.min(200, Number(limit) || 40))],
+    [Math.max(1, Math.min(200, Number(limit) || 40)), LEARN_ANALYSIS_VERSION],
   );
   return rows.map((row) => row.id);
 }
