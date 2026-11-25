@@ -844,23 +844,19 @@
           <div id="admin-robot-weeks" class="admin-robot-weeks"></div>
           <h2>Robot qui apprend</h2>
           <div class="admin-learn" id="admin-learn">
-            <p class="admin-learn-state"><b id="admin-learn-status">…</b><span id="admin-learn-meta">Version en jeu : robot actuel (v1)</span></p>
-            <ol class="admin-learn-steps">
-              <li id="admin-learn-step-collect">Collecte des coups</li>
-              <li id="admin-learn-step-analyse">Analyse des situations</li>
-              <li id="admin-learn-step-train">Entraînement d’un candidat</li>
-              <li id="admin-learn-step-valid">Comparaison avec l’ancien robot</li>
-              <li id="admin-learn-step-done">Ta décision : activer ou non</li>
-            </ol>
-            <p class="admin-help" id="admin-learn-help">Les duels en ligne et les parties contre le robot de Ntotimbe, H20, Béni Mbuyi et Joel mifuba sont gardés coup par coup, sans rien montrer pendant le match. Facile et Moyen ne changent pas.</p>
-            <div id="admin-learn-watch" class="admin-learn-watch"></div>
-            <div id="admin-learn-sits" class="admin-learn-sits" hidden></div>
-            <p class="admin-learn-report" id="admin-learn-report"></p>
-            <div class="admin-learn-actions" id="admin-learn-actions">
-              <button type="button" class="btn" id="admin-learn-analyze">Lire les situations</button>
-            </div>
-            <div id="admin-learn-runs" class="admin-learn-runs"></div>
+            <p class="learn-headline" id="learn-headline">…</p>
+            <ol class="learn-steps" id="learn-steps"></ol>
+            <div class="stats learn-tiles" id="learn-tiles"></div>
+            <h3 class="learn-title">Évolution sur 14 jours</h3>
+            <p class="admin-help">Chaque ligne : les parties gardées ce jour-là et les situations que le robot y a repérées.</p>
+            <div class="learn-days" id="learn-days"></div>
+            <h3 class="learn-title">Les joueurs suivis</h3>
+            <div class="learn-players" id="learn-players"></div>
+            <h3 class="learn-title">Ce que le robot a repéré</h3>
+            <div class="learn-kinds" id="learn-kinds"></div>
+            <h3 class="learn-title">Dernières parties gardées</h3>
             <div id="admin-learn-list" class="admin-learn-list"></div>
+            <p class="admin-help">Tout se met à jour tout seul. Le robot qui joue ne change pas tant que tu n’as rien activé, et Facile et Moyen ne changent jamais.</p>
           </div>
         </div>
         <div class="form-actions">

@@ -182,7 +182,7 @@ async function migrate(owner) {
   await owner.query("ALTER TABLE notifications DROP CONSTRAINT IF EXISTS notifications_kind_check");
   await owner.query(`
     ALTER TABLE notifications ADD CONSTRAINT notifications_kind_check
-    CHECK (kind IN ('welcome', 'challenge', 'invite', 'streak', 'message', 'tournament', 'match'))
+    CHECK (kind IN ('welcome', 'challenge', 'invite', 'streak', 'message', 'tournament', 'match', 'robot'))
   `);
   await owner.query("CREATE INDEX IF NOT EXISTS notifications_player ON notifications (player_id, created_at DESC)");
   await owner.query("CREATE UNIQUE INDEX IF NOT EXISTS notifications_once ON notifications (player_id, kind, ref) WHERE ref <> ''");
@@ -2079,6 +2079,32 @@ function deriveLearnStatus(matches, sitTotal, meta) {
   return "pas commencé";
 }
 
+/** Les comptes admin (même règle que la page Admin). */
+export async function findAdminIds(email, name) {
+  if (!pool) return [];
+  const { rows } = await pool.query(
+    "SELECT id::text AS id FROM profiles WHERE lower(trim(email)) = $1 AND lower(trim(name)) = $2",
+    [String(email).toLowerCase(), String(name).toLowerCase()],
+  );
+  return rows.map((row) => row.id);
+}
+
+/** Le point du jour du robot qui apprend (jour de Paris). */
+export async function learnDaySummary() {
+  if (!pool) return null;
+  const { rows } = await pool.query(
+    `WITH today AS (SELECT (now() AT TIME ZONE 'Europe/Paris')::date AS day)
+     SELECT
+       (SELECT COUNT(*)::int FROM learn_matches m, today t WHERE (m.ended_at AT TIME ZONE 'Europe/Paris')::date = t.day) AS matches,
+       (SELECT COUNT(*)::int FROM learn_situations s JOIN learn_matches m ON m.id = s.match_id, today t
+         WHERE (m.ended_at AT TIME ZONE 'Europe/Paris')::date = t.day) AS situations,
+       (SELECT COUNT(*)::int FROM learn_matches) AS total_matches,
+       (SELECT COUNT(*)::int FROM learn_situations) AS total_situations,
+       (SELECT day::text FROM today) AS day`,
+  );
+  return rows[0] || null;
+}
+
 export async function learnOverview() {
   if (!pool) {
     return {
@@ -2148,6 +2174,50 @@ export async function learnOverview() {
     },
     runs,
   };
+  const [daily, players, kindOutcome] = await Promise.all([
+    pool.query(
+      `WITH days AS (
+         SELECT generate_series((now() AT TIME ZONE 'Europe/Paris')::date - 13, (now() AT TIME ZONE 'Europe/Paris')::date, interval '1 day')::date AS day
+       ),
+       m AS (
+         SELECT (ended_at AT TIME ZONE 'Europe/Paris')::date AS day, COUNT(*)::int AS matches, COALESCE(SUM(move_count), 0)::int AS moves
+         FROM learn_matches GROUP BY 1
+       ),
+       s AS (
+         SELECT (lm.ended_at AT TIME ZONE 'Europe/Paris')::date AS day, COUNT(*)::int AS situations
+         FROM learn_situations ls JOIN learn_matches lm ON lm.id = ls.match_id GROUP BY 1
+       )
+       SELECT days.day::text AS day, COALESCE(m.matches, 0) AS matches, COALESCE(m.moves, 0) AS moves, COALESCE(s.situations, 0) AS situations
+       FROM days LEFT JOIN m USING (day) LEFT JOIN s USING (day)
+       ORDER BY days.day`,
+    ),
+    pool.query(
+      `SELECT w.id::text AS id,
+         COUNT(m.id)::int AS matches,
+         COUNT(m.id) FILTER (WHERE m.opponent = 'robot')::int AS robot,
+         COUNT(m.id) FILTER (WHERE (m.player0_id = w.id AND m.winner = '0') OR (m.player1_id = w.id AND m.winner = '1'))::int AS wins
+       FROM unnest($1::uuid[]) AS w(id)
+       LEFT JOIN learn_matches m ON m.player0_id = w.id OR m.player1_id = w.id
+       GROUP BY w.id`,
+      [watch.rows.map((row) => row.id)],
+    ),
+    pool.query(`SELECT kind, outcome, COUNT(*)::int AS n FROM learn_situations GROUP BY kind, outcome`),
+  ]);
+  overview.daily = daily.rows.map((row) => ({ day: row.day, matches: row.matches, moves: row.moves, situations: row.situations }));
+  const perPlayer = new Map(players.rows.map((row) => [row.id, row]));
+  overview.players = overview.watch.map((person) => {
+    const pinned = watch.rows.find((row) => row.key === person.key);
+    const row = pinned ? perPlayer.get(pinned.id) : null;
+    return { label: person.label, found: person.found, matches: row?.matches || 0, robot: row?.robot || 0, wins: row?.wins || 0 };
+  });
+  overview.kinds = {};
+  for (const row of kindOutcome.rows) {
+    const item = overview.kinds[row.kind] || { total: 0, win: 0, loss: 0 };
+    item.total += row.n;
+    if (row.outcome === "win") item.win += row.n;
+    if (row.outcome === "loss") item.loss += row.n;
+    overview.kinds[row.kind] = item;
+  }
   overview.report = buildLearnReport(overview);
   return overview;
 }

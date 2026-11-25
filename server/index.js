@@ -73,6 +73,8 @@ import {
   insertGame,
   insertLearnMatch,
   findLearnWatchIds,
+  findAdminIds,
+  learnDaySummary,
   learnOverview,
   getLearnMatch,
   replaceLearnSituations,
@@ -255,10 +257,56 @@ function setSessionCookie(req, res, token) {
   res.setHeader("Set-Cookie", `egmon_session=${encodeURIComponent(token)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${age}${secure ? "; Secure" : ""}`);
 }
 
+const ADMIN_EMAIL = "egmonegmon340@gmail.com";
+const ADMIN_NAME = "ntotimbe";
+
 function isAdminAccount(profile) {
-  return String(profile?.email || "").trim().toLowerCase() === "egmonegmon340@gmail.com"
-    && String(profile?.name || "").trim().toLowerCase() === "ntotimbe";
+  return String(profile?.email || "").trim().toLowerCase() === ADMIN_EMAIL
+    && String(profile?.name || "").trim().toLowerCase() === ADMIN_NAME;
 }
+
+let adminCache = { at: 0, ids: [] };
+
+async function adminIds() {
+  if (Date.now() - adminCache.at < 10 * 60_000) return adminCache.ids;
+  adminCache = { at: Date.now(), ids: await findAdminIds(ADMIN_EMAIL, ADMIN_NAME) };
+  return adminCache.ids;
+}
+
+/** Prévient seulement les comptes admin (jamais les joueurs) que le suivi du robot a changé. */
+function tellAdminsLearnChanged() {
+  adminIds().then((ids) => {
+    if (!ids.length) return;
+    for (const sock of io.sockets.sockets.values()) {
+      if (ids.includes(sock.data.account)) sock.emit("learn-changed");
+    }
+  }).catch(() => {});
+}
+
+function parisHour() {
+  return Number(new Intl.DateTimeFormat("fr-FR", { timeZone: "Europe/Paris", hour: "numeric", hourCycle: "h23" }).format(new Date()));
+}
+
+const LEARN_SUMMARY_HOUR = Number(process.env.LEARN_SUMMARY_HOUR ?? 20);
+const LEARN_SUMMARY_EVERY_MS = Number(process.env.LEARN_SUMMARY_EVERY_MS) || 15 * 60_000;
+
+/** Chaque soir (à partir de 20 h), le point du jour du robot qui apprend, une seule fois par jour. */
+async function sendLearnDaySummary() {
+  if (!dbReady() || parisHour() < LEARN_SUMMARY_HOUR) return;
+  const day = await learnDaySummary();
+  if (!day || !day.matches) return;
+  const title = "Robot qui apprend : le point du jour";
+  const count = (n, one, many) => `${n} ${n > 1 ? many : one}`;
+  const body = `Aujourd’hui : +${count(day.matches, "partie gardée", "parties gardées")}, +${count(day.situations, "situation", "situations")}. Au total : ${count(day.total_matches, "partie", "parties")}, ${count(day.total_situations, "situation", "situations")}.`;
+  for (const id of await adminIds()) {
+    const saved = await notify(id, { kind: "robot", ref: `learn:${day.day}`, title, body, link: "admin-robot" });
+    if (saved && !accountOnline(id)) await pushTo(id, { title, body, url: "/", tag: "robot-learn" });
+  }
+}
+
+setInterval(() => {
+  sendLearnDaySummary().catch((error) => console.error("Point du robot:", error.message));
+}, LEARN_SUMMARY_EVERY_MS).unref();
 
 async function requireSession(req, res, playerId) {
   const owner = await sessionPlayer(readCookie(req, "egmon_session"));
@@ -610,6 +658,8 @@ app.get("/api/admin", api(async (req, res) => {
     return;
   }
   const overview = await adminOverview();
+  // Les parties pas encore lues le sont en arrière-plan : la page n'attend pas et les matchs ne ralentissent pas.
+  startLearnAnalysis(10);
   res.json({
     ...overview,
     live: liveSnapshot(),
@@ -1519,6 +1569,14 @@ function seatOf(room, playerId) {
   return room.players.findIndex((player) => player && player.id === playerId);
 }
 
+/** Photo d'un joueur : celle de sa présence actuelle, sinon la dernière connue. */
+function seatPhoto(player) {
+  if (!player) return "";
+  const live = presence.get(player.socketId)?.photo;
+  if (live) player.photo = live;
+  return player.photo || "";
+}
+
 function snapshot(room, event = null) {
   return {
     code: room.code,
@@ -1529,6 +1587,7 @@ function snapshot(room, event = null) {
         ? {
           name: player.name,
           color: player.color,
+          photo: seatPhoto(player),
           connected: player.connected,
           present: true,
           forfeitAt: player.connected === false ? (room.forfeitAt?.[index] || null) : null,
@@ -2013,6 +2072,7 @@ async function analyzePendingLearnMatches(limit = 40, { recordRun = false } = {}
     }
     throw error;
   }
+  if (analyzed) tellAdminsLearnChanged();
   return { analyzed, situations };
 }
 
@@ -2075,7 +2135,7 @@ function watchSnapshot(room, event = null) {
     match: room.matchId || "",
     game: room.game,
     settings: { p1Color: room.settings.p1Color, p2Color: room.settings.p2Color, p1Name: room.settings.p1Name, p2Name: room.settings.p2Name },
-    seats: room.players.map((player) => (player ? { name: player.name, color: player.color, connected: player.connected } : null)),
+    seats: room.players.map((player) => (player ? { name: player.name, color: player.color, photo: seatPhoto(player), connected: player.connected } : null)),
     tournament: room.tournament ? { round: room.tournament.round } : null,
     event: event && ["move", "timeout", "skip", "golden", "start", "forfeit", "abandon", "time"].includes(event.type) ? event : null,
     watchers: io.sockets.adapter.rooms.get(watchChannel(room.code))?.size || 0,
@@ -2242,6 +2302,46 @@ function accountBusy(item) {
   return false;
 }
 
+/** Les matchs à deux en cours ou qui vont commencer, construits à partir des salles. */
+function findMatches() {
+  const out = [];
+  for (const room of rooms.values()) {
+    const state = pairState(room);
+    if (!state) continue;
+    const players = room.players;
+    if (!players[0] || !players[1]) continue;
+    // Les deux joueurs sont partis : ce n’est plus un match à montrer.
+    if (!players.some((player) => player.connected && socketAlive(player.socketId))) continue;
+    if (!room.matchId) room.matchId = randomBytes(8).toString("hex");
+    out.push({
+      match: room.matchId,
+      state,
+      live: state === "playing",
+      tournament: room.tournament ? room.tournament.round : "",
+      players: players.map((player) => ({ name: player.name, photo: seatPhoto(player) })),
+      scores: room.game ? [Number(room.game.scores[0]) || 0, Number(room.game.scores[1]) || 0] : null,
+    });
+  }
+  return out
+    .sort((a, b) => Number(b.live) - Number(a.live) || a.players[0].name.localeCompare(b.players[0].name, "fr"))
+    .slice(0, 30);
+}
+
+/** Qui joue déjà dans une salle à deux : on ne le montre pas seul. */
+function pairedPeople() {
+  const ids = new Set();
+  const sockets = new Set();
+  for (const room of rooms.values()) {
+    if (!pairState(room)) continue;
+    for (const player of room.players) {
+      if (!player) continue;
+      if (player.id) ids.add(player.id);
+      if (player.socketId) sockets.add(player.socketId);
+    }
+  }
+  return { ids, sockets };
+}
+
 function findPeople(except) {
   const skipId = except?.id || "";
   const byId = new Map();
@@ -2253,7 +2353,9 @@ function findPeople(except) {
     const current = byId.get(key);
     if (!current || (accountBusy(item) && !accountBusy(current))) byId.set(key, item);
   }
+  const paired = pairedPeople();
   return [...byId.values()]
+    .filter((item) => !paired.sockets.has(item.socketId) && !(item.id && paired.ids.has(item.id)))
     .map((item) => {
       const phase = roomPhase(item.socketId);
       const room = seatedRoom(item.socketId);
@@ -2280,6 +2382,8 @@ function findPeople(except) {
         scores: paired && room.game ? [Number(room.game.scores[0]) || 0, Number(room.game.scores[1]) || 0] : null,
       };
     })
+    // Une case seule : quelqu'un de libre, ou qui joue contre le robot. Le reste n'a pas sa place ici.
+    .filter((person) => person.activity === "robot" || (!person.busy && !person.activity))
     .sort((a, b) => Number(a.busy) - Number(b.busy) || a.name.localeCompare(b.name, "fr"))
     .slice(0, 40);
 }
@@ -2295,9 +2399,10 @@ function broadcastFindSoon() {
 }
 
 function broadcastFind() {
+  const matches = findMatches();
   for (const item of queue.values()) {
     const mine = presence.get(item.socketId) || item;
-    io.to(item.socketId).emit("queue", { people: findPeople(mine) });
+    io.to(item.socketId).emit("queue", { people: findPeople(mine), matches });
   }
 }
 
@@ -2736,7 +2841,7 @@ socket.on("move", (move, ack) => {
     const mine = rememberPresence(socket, payload);
     const live = liveRoom(socket);
     if (live?.room.game) {
-      socket.emit("queue", { people: findPeople(mine) });
+      socket.emit("queue", { people: findPeople(mine), matches: findMatches() });
       return;
     }
     if (live) leaveRoom(socket);

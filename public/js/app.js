@@ -1280,8 +1280,10 @@ function refreshHud() {
     card.style.setProperty("--pen", displayColor(player.color, app.prefs.theme));
     $(`p${index}-name`).textContent = player.name;
     const profile = loadProfile();
-    const showPhoto = player.kind !== "ai" && (app.mode === "online" ? index === app.seat : app.mode === "local" ? player.name === profile.name : index === 0);
-    $(`p${index}-face`).innerHTML = faceMarkup(showPhoto ? profile.photo : "");
+    let photo = "";
+    if (app.mode === "online" || app.mode === "watch") photo = player.photo || (index === app.seat ? profile.photo : "");
+    else if (player.kind !== "ai" && (app.mode === "local" ? player.name === profile.name : index === 0)) photo = profile.photo;
+    $(`p${index}-face`).innerHTML = faceMarkup(photo);
     $(`p${index}-score`).textContent = String(game?.scores[index] ?? 0);
     $(`p${index}-pen`).textContent = COLOR_LABEL[player.color] || "";
     const active = game?.status === "playing" && game.current === index;
@@ -2821,6 +2823,9 @@ function ensureSocket() {
   app.socket.on("notify", receiveNote);
   app.socket.on("tourney", receiveTourney);
   app.socket.on("watch-state", onWatchState);
+  app.socket.on("learn-changed", () => {
+    if (!$("screen-admin").hidden) loadAdmin();
+  });
   app.socket.on("watch-end", (msg) => {
     if (!app.watching || msg?.match !== app.watching) return;
     if (app.game?.status === "finished") return;
@@ -2886,7 +2891,7 @@ function ensureSocket() {
     if (text === "La table n’a pas pu s’ouvrir." || text === "Tu es déjà dans une partie." || text === "Cette personne est occupée.") toast(text);
   });
   app.socket.on("queue", (msg) => {
-    if (!$("screen-find").hidden) renderFind(Array.isArray(msg.people) ? msg.people : []);
+    if (!$("screen-find").hidden) renderFind(Array.isArray(msg.people) ? msg.people : [], Array.isArray(msg.matches) ? msg.matches : []);
   });
   app.socket.on("invite", ({ from, token }) => {
     askDialog({
@@ -3025,6 +3030,7 @@ function onOnlineState(msg) {
     return {
       name: seat.name || (index === 0 ? msg.settings.p1Name : msg.settings.p2Name) || "…",
       color: seat.color || (index === 0 ? msg.settings.p1Color : msg.settings.p2Color),
+      photo: typeof seat.photo === "string" ? seat.photo : "",
       kind: "human",
       connected: seat.connected !== false,
     };
@@ -3265,29 +3271,25 @@ function resumeSavedRoom() {
   return true;
 }
 
-function renderFind(people) {
+function renderFind(people, matches = []) {
   const list = $("find-list");
-  if (!people.length) {
+  if (!people.length && !matches.length) {
     list.innerHTML = `<p class="empty">Personne d’autre n’est connecté pour le moment.</p>`;
     return;
   }
-  const pairs = new Map();
-  for (const person of people) {
-    if (!person.match) continue;
-    if (!pairs.has(person.match)) pairs.set(person.match, []);
-    pairs.get(person.match).push(person);
+  const live = matches.filter((match) => match.live);
+  const waiting = matches.filter((match) => !match.live);
+  const free = people.filter((person) => person.activity !== "robot");
+  const robot = people.filter((person) => person.activity === "robot");
+  const parts = [];
+  if (live.length) {
+    parts.push(`<p class="find-section is-live">En direct maintenant · ${live.length}</p>`, ...live.map(findMatch));
   }
-  const matches = [...pairs.values()].filter((pair) => pair.length === 2);
-  const paired = new Set(matches.flat());
-  const singles = people.filter((person) => !paired.has(person));
-  const isBusy = (person) => person.busy === true || ["duo", "robot", "local", "lobby"].includes(person.activity);
-  const free = singles.filter((person) => !isBusy(person));
-  const busy = singles.filter(isBusy);
-  list.innerHTML = [
-    ...free.map((person) => findCard(person, false)),
-    ...matches.map(findMatch),
-    ...busy.map((person) => findCard(person, true)),
-  ].join("");
+  if (free.length) parts.push(`<p class="find-section">Libres</p>`, ...free.map((person) => findCard(person, false)));
+  if (waiting.length || robot.length) {
+    parts.push(`<p class="find-section">Occupés</p>`, ...waiting.map(findMatch), ...robot.map((person) => findCard(person, true)));
+  }
+  list.innerHTML = parts.join("");
   bindFaceImages(list);
 }
 
@@ -3298,13 +3300,7 @@ const MATCH_STATE = {
 };
 
 function findCard(person, busy) {
-  const state = !busy
-    ? "Libre"
-    : {
-      robot: "Occupé · match robot",
-      local: "Occupé · partie à 2 sur un appareil",
-      lobby: "En attente d’un adversaire",
-    }[person.activity] || "Occupé · match en ligne";
+  const state = busy ? "Joue contre le robot" : "Libre";
   return `<button type="button" class="find-card${busy ? " is-taken" : ""}" data-token="${esc(person.token)}" data-busy="${busy ? "1" : "0"}"${busy ? " disabled" : ""}><span class="face">${faceMarkup(person.photo, true)}</span><span class="find-copy"><strong>${esc(person.name)}</strong><span class="find-state">${state}</span></span></button>`;
 }
 
@@ -3366,6 +3362,7 @@ function onWatchState(msg) {
     return {
       name: seat.name || (index === 0 ? msg.settings?.p1Name : msg.settings?.p2Name) || "…",
       color: seat.color || (index === 0 ? msg.settings?.p1Color : msg.settings?.p2Color) || (index === 0 ? "blue" : "red"),
+      photo: typeof seat.photo === "string" ? seat.photo : "",
       kind: "human",
       connected: seat.connected !== false,
     };
@@ -3430,18 +3427,20 @@ async function leaveWatch() {
   show("screen-find");
 }
 
-function findMatch(pair) {
-  const [a, b] = pair;
+function findMatch(match) {
+  const [a, b] = match.players;
   const player = (person) => `<span class="find-player"><span class="face">${faceMarkup(person.photo, true)}</span><strong title="${esc(person.name)}">${esc(person.name)}</strong></span>`;
-  const state = MATCH_STATE[a.matchState] || MATCH_STATE.playing;
-  const scores = Array.isArray(a.scores) && a.seat >= 0 && b.seat >= 0 ? [a.scores[a.seat], a.scores[b.seat]] : null;
-  const score = scores
-    ? `<strong class="find-score" aria-label="Score ${Number(scores[0]) || 0} à ${Number(scores[1]) || 0}">${Number(scores[0]) || 0} – ${Number(scores[1]) || 0}</strong>`
+  const state = MATCH_STATE[match.state] || MATCH_STATE.playing;
+  const round = { quarter: "Quart de finale", semi: "Demi-finale", final: "Finale" }[match.tournament] || "";
+  const score = Array.isArray(match.scores)
+    ? `<strong class="find-score" aria-label="Score ${Number(match.scores[0]) || 0} à ${Number(match.scores[1]) || 0}">${Number(match.scores[0]) || 0} – ${Number(match.scores[1]) || 0}</strong>`
     : "<strong>1 vs 1</strong>";
-  const live = a.matchState === "playing";
-  const watch = live ? ` data-watch="${esc(a.match)}" data-names="${esc(`${a.name} contre ${b.name}`)}" role="button" tabindex="0"` : ` role="group"`;
-  const eye = live ? `<span class="find-watch">Regarder en direct</span>` : "";
-  return `<div class="find-match${live ? " is-live" : ""}"${watch} aria-label="${esc(`${a.name} contre ${b.name}`)}"><div class="find-duo">${player(a)}<span class="find-vs">vs</span>${player(b)}</div><p class="find-match-foot">${score}<span>${esc(state)}</span></p>${eye}</div>`;
+  const names = `${a.name} contre ${b.name}`;
+  const watch = match.live
+    ? ` data-watch="${esc(match.match)}" data-names="${esc(names)}" role="button" tabindex="0"`
+    : ` role="group"`;
+  const cta = match.live ? `<span class="find-watch">Regarder en direct</span>` : "";
+  return `<div class="find-match${match.live ? " is-live" : ""}"${watch} aria-label="${esc(names)}"><div class="find-duo">${player(a)}<span class="find-vs">vs</span>${player(b)}</div><p class="find-match-foot">${score}<span>${esc(round ? `${round} · ${state}` : state)}</span></p>${cta}</div>`;
 }
 
 function matchActivity() {
@@ -3778,134 +3777,105 @@ function renderAdminRobot(robot, learn) {
   renderAdminLearn(learn);
 }
 
-const LEARN_STATUS_LABEL = {
-  "pas commencé": "Pas commencé",
-  collecte: "Collecte",
-  analyse: "Analyse",
-  entrainement: "Entraînement",
-  validation: "Validation",
-  termine: "Terminé",
-  echec: "Échec",
-  indisponible: "Indisponible",
-};
+
+const LEARN_KINDS = [
+  ["chain_short", "Chaînes courtes", "Un joueur ferme 1 ou 2 maisons d’affilée."],
+  ["chain_long", "Chaînes longues", "Un joueur ferme 3 maisons ou plus d’affilée."],
+  ["endgame", "Fins de partie", "Les derniers coups, quand la feuille est presque pleine."],
+  ["sacrifice", "Sacrifices", "Laisser une maison à l’autre pour en gagner plus ensuite."],
+  ["double_cross", "Double-cross", "Céder 1 maison pour en reprendre plusieurs juste après."],
+];
+
+function plural(n, one, many) {
+  return `${n} ${n > 1 ? many : one}`;
+}
 
 function renderAdminLearn(learn) {
-  const status = $("admin-learn-status");
-  const meta = $("admin-learn-meta");
-  const help = $("admin-learn-help");
-  const watchBox = $("admin-learn-watch");
   const list = $("admin-learn-list");
-  if (!status || !meta || !list) return;
-  const matches = Number(learn?.matches) || 0;
-  const moves = Number(learn?.moves) || 0;
-  const sits = learn?.situations || {};
-  const sitTotal = Number(sits.total) || 0;
-  const model = learn?.model || {};
-  const state = learn?.status || model.status || "pas commencé";
-  const active = model.activeVersion || "v1";
+  if (!list || !learn) return;
+  const matches = Number(learn.matches) || 0;
+  const moves = Number(learn.moves) || 0;
+  const sits = Number(learn.situations?.total) || 0;
+  const model = learn.model || {};
   const candidate = model.candidateVersion || null;
-  const lastRun = model.lastRunAt || learn?.runs?.[0]?.at || learn?.lastAt;
-  status.textContent = LEARN_STATUS_LABEL[state] || state;
-  meta.textContent = [
-    `${matches} partie${matches > 1 ? "s" : ""}`,
-    `${moves} coup${moves > 1 ? "s" : ""}`,
-    `${sitTotal} situation${sitTotal > 1 ? "s" : ""}`,
-    `modèle ${active}${candidate ? ` · candidat ${candidate}` : ""}`,
-    lastRun ? adminDate(lastRun) : "",
-  ].filter(Boolean).join(" · ");
-  const on = {
-    collect: matches > 0 || ["collecte", "analyse", "entrainement", "validation", "termine"].includes(state),
-    analyse: sitTotal > 0 || ["analyse", "entrainement", "validation", "termine"].includes(state),
-    train: ["entrainement", "validation", "termine"].includes(state) || Boolean(candidate),
-    valid: ["validation", "termine"].includes(state),
-    done: state === "termine" || model.veryhardUsesCandidate || model.expertUsesCandidate,
-  };
-  $("admin-learn-step-collect")?.classList.toggle("is-on", on.collect);
-  $("admin-learn-step-analyse")?.classList.toggle("is-on", on.analyse);
-  $("admin-learn-step-train")?.classList.toggle("is-on", on.train);
-  $("admin-learn-step-valid")?.classList.toggle("is-on", on.valid);
-  $("admin-learn-step-done")?.classList.toggle("is-on", on.done);
-  if (help) {
-    help.textContent = state === "echec"
-      ? (model.lastError || "Un passage a échoué. Relance l’analyse ou regarde l’historique.")
-      : "Suivi pour Ntotimbe, H20, Béni Mbuyi et Joel mifuba : leurs duels en ligne et leurs parties contre le robot. Facile et Moyen ne changent pas.";
-  }
-  if (watchBox) {
-    watchBox.innerHTML = (learn?.watch || []).map((row) => `<span class="${row.found ? "" : "is-missing"}">${esc(row.label)}${row.found ? "" : " · compte introuvable"}</span>`).join("");
-  }
-  const sitsBox = $("admin-learn-sits");
-  if (sitsBox) {
-    const kinds = [
-      ["chain_short", "Chaînes courtes"],
-      ["chain_long", "Chaînes longues"],
-      ["endgame", "Fins de partie"],
-      ["sacrifice", "Sacrifices"],
-      ["double_cross", "Double-cross"],
-    ];
-    const byKind = sits.byKind || {};
-    const byOutcome = sits.byOutcome || {};
-    if (sitTotal) {
-      sitsBox.hidden = false;
-      sitsBox.innerHTML = [
-        ...kinds.map(([key, label]) => `<p><strong>${Number(byKind[key]) || 0}</strong><span>${label}</span></p>`),
-        `<p><strong>${Number(byOutcome.win) || 0}</strong><span>Situations gagnantes</span></p>`,
-        `<p><strong>${Number(byOutcome.loss) || 0}</strong><span>Situations perdantes</span></p>`,
-      ].join("");
-    } else {
-      sitsBox.hidden = true;
-      sitsBox.replaceChildren();
-    }
-  }
-  const report = $("admin-learn-report");
-  if (report) report.textContent = learn?.report || "Pas encore de rapport.";
-  const runsBox = $("admin-learn-runs");
-  if (runsBox) {
-    const runs = learn?.runs || [];
-    runsBox.innerHTML = runs.length
-      ? runs.map((run) => {
-        const label = run.status === "echec" ? "Échec" : run.kind;
-        return `<article><strong>${esc(label)} · ${esc(run.modelVersion || "v1")}</strong><span>${esc(adminDate(run.at))} · ${run.matches || 0} parties · ${run.situations || 0} situations</span><span>${esc((run.report || "").slice(0, 180))}</span></article>`;
-      }).join("")
-      : `<p class="empty">Aucun passage enregistré.</p>`;
-  }
-  const recent = learn?.recent || [];
+  const activated = model.veryhardUsesCandidate || model.expertUsesCandidate;
+
+  // 1) La phrase qui dit où on en est.
+  let headline;
+  if (!matches) headline = "Le robot attend les premières parties à observer.";
+  else if (!candidate) headline = `Le robot observe : ${plural(matches, "partie gardée", "parties gardées")}, ${plural(sits, "situation repérée", "situations repérées")}. Il joue encore comme avant (v1) : rien ne change pour les joueurs.`;
+  else if (!activated) headline = `Un nouveau robot (${candidate}) est prêt à être comparé. Le robot qui joue reste le v1.`;
+  else headline = `Le nouveau robot (${candidate}) joue en Très difficile / Expert.`;
+  $("learn-headline").textContent = headline;
+
+  // 2) Les étapes, avec ce qui est fait.
+  const steps = [
+    ["Observer les parties", matches > 0, matches ? plural(matches, "partie gardée", "parties gardées") : "en attente"],
+    ["Repérer les situations", sits > 0, sits ? plural(sits, "situation", "situations") : "en attente"],
+    ["Préparer un nouveau robot", Boolean(candidate), candidate ? `version ${candidate}` : "prochaine étape, pas encore commencée"],
+    ["Le comparer à l’ancien", false, "après la préparation"],
+    ["Ta décision : l’activer ou non", Boolean(activated), activated ? "activé" : "à la fin"],
+  ];
+  const current = steps.findIndex((step) => !step[1]);
+  $("learn-steps").innerHTML = steps.map(([label, done, detail], index) => {
+    const state = done ? "is-done" : index === current ? "is-now" : "";
+    return `<li class="${state}"><span class="learn-step-mark" aria-hidden="true">${done ? "✓" : index + 1}</span><span><strong>${esc(label)}</strong><em>${esc(detail)}</em></span></li>`;
+  }).join("");
+
+  // 3) Les chiffres clés.
+  const last = learn.lastAt ? adminDate(learn.lastAt) : "—";
+  $("learn-tiles").innerHTML = [
+    [matches, "Parties gardées"],
+    [moves, "Coups enregistrés"],
+    [sits, "Situations repérées"],
+  ].map(([value, label]) => `<p><strong>${Number(value) || 0}</strong><span>${label}</span></p>`).join("")
+    + `<p><strong class="learn-last">${esc(last)}</strong><span>Dernière partie</span></p>`;
+
+  // 4) L'évolution jour par jour.
+  const days = (learn.daily || []).filter((day) => day.matches > 0);
+  const most = Math.max(1, ...days.map((day) => day.matches));
+  const total14 = days.reduce((sum, day) => sum + day.matches, 0);
+  const sits14 = days.reduce((sum, day) => sum + day.situations, 0);
+  $("learn-days").innerHTML = days.length
+    ? `<p class="learn-sum">Sur 14 jours : ${plural(total14, "partie gardée", "parties gardées")} · ${plural(sits14, "situation repérée", "situations repérées")} · ${plural(days.length, "jour actif", "jours actifs")}</p>` + days.slice().reverse().map((day) => {
+      const label = new Date(`${day.day}T12:00:00`).toLocaleDateString("fr-FR", { weekday: "short", day: "numeric", month: "short" });
+      const width = Math.round((day.matches / most) * 100);
+      const text = day.matches ? `${plural(day.matches, "partie", "parties")} · ${plural(day.situations, "situation", "situations")}` : "—";
+      return `<div class="admin-week${day.matches ? "" : " is-empty"}"><span class="admin-week-day">${esc(label)}</span><span class="admin-week-bar"><i style="width:${width}%"></i></span><span class="admin-week-text">${esc(text)}</span></div>`;
+    }).join("")
+    : `<p class="empty">Aucune partie gardée ces 14 derniers jours.</p>`;
+
+  // 5) Par joueur suivi.
+  const players = learn.players || [];
+  $("learn-players").innerHTML = players.map((player) => {
+    if (!player.found) return `<article class="learn-player is-missing"><strong>${esc(player.label)}</strong><span>Compte introuvable : rien n’est gardé pour l’instant.</span></article>`;
+    const online = player.matches - player.robot;
+    const detail = player.matches
+      ? `${plural(online, "duel en ligne", "duels en ligne")} · ${plural(player.robot, "partie contre le robot", "parties contre le robot")} · ${plural(player.wins, "gagnée", "gagnées")}`
+      : "Aucune partie gardée pour l’instant.";
+    return `<article class="learn-player"><strong>${esc(player.label)} · ${plural(player.matches, "partie", "parties")}</strong><span>${esc(detail)}</span></article>`;
+  }).join("");
+
+  // 6) Ce que le robot a repéré, en mots simples.
+  const kinds = learn.kinds || {};
+  $("learn-kinds").innerHTML = LEARN_KINDS.map(([key, label, meaning]) => {
+    const item = kinds[key] || { total: 0, win: 0, loss: 0 };
+    const split = item.total ? `${item.win} dans des parties gagnées, ${item.loss} perdues` : "pas encore vu";
+    return `<article class="learn-kind${item.total ? "" : " is-empty"}"><p class="learn-kind-head"><strong>${esc(label)}</strong><b>${item.total}</b></p><span>${esc(meaning)}</span><em>${esc(split)}</em></article>`;
+  }).join("");
+
+  // 7) Les dernières parties gardées.
+  const recent = learn.recent || [];
   list.innerHTML = recent.length
     ? recent.map((item) => {
-      const names = `${item.names?.[0] || "?"} · ${item.names?.[1] || "?"}`;
+      const names = `${item.names?.[0] || "?"} contre ${item.names?.[1] || "?"}`;
       const score = Array.isArray(item.scores) ? `${item.scores[0]} – ${item.scores[1]}` : "—";
       const when = item.at ? adminDate(item.at) : "";
-      return `<article><div><strong>${esc(names)}</strong><span>${esc(item.size || "")} · ${esc(when)}</span></div><div><b>${esc(score)}</b><span>${item.moves || 0} coup${(item.moves || 0) > 1 ? "s" : ""}</span></div></article>`;
+      return `<article class="learn-game"><p class="learn-kind-head"><strong>${esc(names)}</strong><b>${esc(score)}</b></p><span>${esc(when)} · feuille ${esc(item.size || "")} · ${plural(item.moves || 0, "coup", "coups")}</span></article>`;
     }).join("")
-    : `<p class="empty">Aucune partie collectée pour l’instant.</p>`;
+    : `<p class="empty">Aucune partie gardée pour l’instant.</p>`;
 }
 
-async function postLearnAction(action, body = {}) {
-  if (!isConnected()) {
-    toast("Connexion requise.");
-    return;
-  }
-  try {
-    const response = await fetch(action === "analyze" ? "/api/admin/learn/analyze" : "/api/admin/learn/model", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      credentials: "same-origin",
-      body: JSON.stringify(action === "analyze" ? {} : { action, ...body }),
-    });
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      toast(data.error || "Action impossible.");
-      return;
-    }
-    if (data.learn) renderAdminLearn(data.learn);
-    else loadAdmin();
-    if (action === "revert") toast("Robot v1 rétabli.");
-    else if (action === "analyze") toast(data.started === false ? "Une lecture est déjà en cours." : "Lecture lancée en arrière-plan : le suivi se met à jour tout seul.");
-    else toast("Suivi mis à jour.");
-    if (action === "analyze") window.setTimeout(loadAdmin, 8000);
-  } catch {
-    toast("Réseau indisponible.");
-  }
-}
 
 function renderAdmin(data) {
   adminData = data;
@@ -4886,7 +4856,7 @@ function paintUserChip() {
 }
 
 const bell = { items: [], unread: 0 };
-const NOTE_ICON = { welcome: "👋", challenge: "🏅", invite: "✉️", streak: "🔥", message: "💬", tournament: "🏆", match: "🎯" };
+const NOTE_ICON = { welcome: "👋", challenge: "🏅", invite: "✉️", streak: "🔥", message: "💬", tournament: "🏆", match: "🎯", robot: "🤖" };
 
 function paintBell() {
   const button = $("bell");
@@ -4979,6 +4949,12 @@ function closeBell() {
 
 function followNote(link) {
   closeBell();
+  if (link === "admin-robot") {
+    try { sessionStorage.setItem("egmon-admin-panel", "robot"); } catch { /* ignore */ }
+    show("screen-admin");
+    openAdminPanel("robot");
+    return;
+  }
   if (link === "challenges") {
     show("screen-modes");
     openHub("challenges");
@@ -6216,7 +6192,6 @@ function bind() {
     else if (history.state?.page && history.state.page !== "home") history.back();
     else goHome();
   });
-  $("admin-learn-analyze")?.addEventListener("click", () => postLearnAction("analyze"));
   $("admin-player-search").addEventListener("input", () => renderAdminPlayers(adminData?.players || []));
   $("admin-bracket-close").addEventListener("click", () => {
     $("admin-bracket-dialog").hidden = true;
