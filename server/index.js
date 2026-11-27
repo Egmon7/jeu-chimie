@@ -1711,7 +1711,7 @@ function matchNote(seat, names, scores, winner, reason) {
 const TOURNEY_RULES = {
   quarter: { timeMode: "global", timeLimit: 600, turnSeconds: 20, suddenDeath: true, scoreLimit: 0 },
   semi: { timeMode: "global", timeLimit: 600, turnSeconds: 20, suddenDeath: true, scoreLimit: 0 },
-  final: { timeMode: "none", scoreLimit: 10, turnSeconds: 20 },
+  final: { timeMode: "global", timeLimit: 900, turnSeconds: 20, suddenDeath: true, scoreLimit: 0 },
 };
 
 function durationText(ms) {
@@ -1724,10 +1724,10 @@ function durationText(ms) {
 
 const SHOW_UP_TEXT = durationText(TOURNEY_SHOW_UP_MS);
 
-async function tourneyAlert(playerId, note, push = false) {
+async function tourneyAlert(playerId, note, push = false, force = false) {
   const link = `tournoi:${note.code}`;
   const saved = await notify(playerId, { kind: "tournament", ref: note.ref, title: note.title, body: note.body, link });
-  if (!saved || !push || accountOnline(playerId)) return;
+  if (!saved || !push || (!force && accountOnline(playerId))) return;
   await pushTo(playerId, {
     title: note.title,
     body: note.body,
@@ -1804,7 +1804,7 @@ function tourneyMatchAlertLater(code, match) {
         ref: `${code}:${match.round}:start`,
         title,
         body: `Contre ${other}. Viens dans les ${SHOW_UP_TEXT}, sinon c’est perdu par forfait.`,
-      }, true);
+      }, true, true);
     }
   });
 }
@@ -1944,7 +1944,31 @@ function concludeTourneyMatch(room) {
   }).catch((error) => console.error("Match de tournoi:", error.message));
 }
 
+/** Il reste 1 minute pour arriver : rappel (cloche + téléphone) à celui qui n'est pas encore là. */
+function remindTourneyShowUp(room, now) {
+  const t = room.tournament;
+  if (!t || room.game || t.reminded || !t.showUpBy || now < t.showUpBy - 60_000 || now >= t.showUpBy) return;
+  t.reminded = true;
+  const arrived = t.arrived || [false, false];
+  tourneyAlertsLater(async () => {
+    const people = await tourneyPeople(t.code);
+    if (!people) return;
+    const label = { quarter: "ton quart de finale", semi: "ta demi-finale", final: "la finale" }[t.round] || "ton match";
+    for (const seat of [0, 1]) {
+      const player = room.players[seat];
+      if (!player?.id || arrived[seat] || (player.connected && socketAlive(player.socketId))) continue;
+      await tourneyAlert(player.id, {
+        code: t.code,
+        ref: `${t.code}:${t.round}:${t.slot}:rappel`,
+        title: `Plus qu’une minute pour ${label}`,
+        body: `« ${people.name} » : rejoins ton match tout de suite, sinon c’est perdu par forfait.`,
+      }, true, true);
+    }
+  });
+}
+
 function checkTourneyShowUp(room, now) {
+  remindTourneyShowUp(room, now);
   if (!room.tournament || room.game || now < room.tournament.showUpBy) return;
   const arrived = room.tournament.arrived || [false, false];
   const present = [0, 1].filter((seat) => arrived[seat]
@@ -2705,7 +2729,8 @@ io.on("connection", (socket) => {
     reapRooms();
     if (rooms.size >= ROOM_LIMIT) return ack?.({ ok: false, error: "Le serveur est plein." });
     if (createBlocked(socket)) return ack?.({ ok: false, error: "Trop de salles créées." });
-    const settings = normalizeSettings({ ...payload.settings, p1Name: payload.name });
+    // Règle unique : si tu encercles, tu rejoues.
+    const settings = normalizeSettings({ ...payload.settings, extraTurn: true, p1Name: payload.name });
     const code = makeRoomCode(rooms);
     const room = {
       code,
@@ -2736,6 +2761,7 @@ io.on("connection", (socket) => {
     socket.data.playerId = room.players[0].id;
     ack?.({ ok: true, code });
     emitState(room, { type: "created" });
+    loadSeatPhoto(room, 0);
     broadcastFind();
     } catch {
       ack?.({ ok: false, error: "La salle n’a pas pu s’ouvrir." });
@@ -2948,8 +2974,35 @@ socket.on("move", (move, ack) => {
   socket.on("present", () => {
     const found = claim(socket);
     if (!found || found.room.game || limited(`${socket.id}:present`, 40, 60_000)) return;
-    found.room.ready[found.seat] = true;
-    emitState(found.room, { type: "present" });
+    const room = found.room;
+    // Invitation : celui qui invite confirme en réglant la partie (« quick-setup »), pas ici.
+    if (room.direct && found.seat === 0) return;
+    // Invitation : l'invité ne confirme qu'une fois les règles proposées.
+    if (room.direct && !room.ready[0]) return;
+    room.ready[found.seat] = true;
+    if (room.direct && room.ready[0] && room.ready[1] && room.players[1]?.connected) {
+      startRoomGame(room);
+      return;
+    }
+    emitState(room, { type: "present" });
+  });
+
+  /** Invitation : celui qui invite choisit le temps et l'objectif, puis attend la confirmation de l'autre. */
+  socket.on("quick-setup", (payload = {}) => {
+    payload = asObject(payload);
+    const found = claim(socket);
+    const room = found?.room;
+    if (!room || !room.direct || found.seat !== 0 || room.game || limited(`${socket.id}:quick`, 20, 60_000)) return;
+    const minutes = [0, 10, 15, 20].includes(Number(payload.minutes)) ? Number(payload.minutes) : 10;
+    const target = [5, 10, 20].includes(Number(payload.target)) ? Number(payload.target) : 10;
+    room.settings = normalizeSettings({
+      ...room.settings,
+      timeMode: minutes ? "global" : "none",
+      timeLimit: minutes ? minutes * 60 : room.settings.timeLimit,
+      scoreLimit: target,
+    });
+    room.ready = [true, false];
+    emitState(room, { type: "proposed" });
   });
 
   socket.on("accept", () => {
@@ -2981,12 +3034,7 @@ socket.on("move", (move, ack) => {
     const seat = found ? found.seat : -1;
     if (!room || seat !== 0 || room.game || limited(`${socket.id}:launch`, 8, 60_000)) return;
     if (!room.players[1]?.connected || !room.ready[0] || !room.ready[1]) return;
-    room.game = createGame(room.settings, 0);
-    room.startedAt = Date.now();
-    room.saved = false;
-    room.saving = false;
-    armLearn(room);
-    emitState(room, { type: "start" });
+    startRoomGame(room);
   });
 
   socket.on("presence", (payload = {}) => {
@@ -3115,12 +3163,13 @@ socket.on("move", (move, ack) => {
       rows: 32,
       cols: 24,
       extraTurn: true,
-      timeMode: "none",
+      timeMode: "global",
+      timeLimit: 600,
       scoreLimit: 10,
       theme: "classic",
       closeMode: "auto",
       p1Color: "blue",
-      p2Color: "black",
+      p2Color: "red",
       p1Name: host.name,
       p2Name: guest.name,
     });
@@ -3196,6 +3245,15 @@ socket.on("move", (move, ack) => {
   });
 });
 
+function startRoomGame(room) {
+  room.game = createGame(room.settings, 0);
+  room.startedAt = Date.now();
+  room.saved = false;
+  room.saving = false;
+  armLearn(room);
+  emitState(room, { type: "start" });
+}
+
 function attach(socket, room, seat, id) {
   clearForfeit(room, seat);
   room.players[seat].socketId = socket.id;
@@ -3205,6 +3263,19 @@ function attach(socket, room, seat, id) {
   socket.data.roomCode = room.code;
   socket.data.playerId = id;
   if (room.tournament && !room.game) noteTourneyArrival(room, seat);
+  loadSeatPhoto(room, seat);
+}
+
+/** Photo du joueur prise sur son compte quand la page ne l'a pas (encore) envoyée : chaque case montre sa photo. */
+function loadSeatPhoto(room, seat) {
+  const player = room.players[seat];
+  if (!player || player.photo || !isUuid(player.id) || !dbReady()) return;
+  readProfile(player.id).then((profile) => {
+    const photo = typeof profile?.photo === "string" && PHOTO_URL.test(profile.photo) ? profile.photo : "";
+    if (!photo || room.players[seat] !== player || player.photo) return;
+    player.photo = photo;
+    if (rooms.get(room.code) === room) emitState(room, { type: "photo" });
+  }).catch(() => {});
 }
 
 /** Un joueur est arrivé à son match : on le retient, et on prévient l'autre s'il n'est pas encore là. */

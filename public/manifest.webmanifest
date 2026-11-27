@@ -1,7 +1,7 @@
 {
   "name": "Jeu - chimie",
   "short_name": "Jeu - chimie",
-  "description": "Une feuille de cahier et deux stylos : fermez les maisons.",
+  "description": "Jeu de pointillés gratuit : encerclez les points de l’adversaire, contre le robot, à deux ou en ligne.",
   "lang": "fr",
   "start_url": "/",
   "scope": "/",

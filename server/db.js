@@ -110,10 +110,12 @@ async function migrate(owner) {
     CHECK (icon IN ('dot', 'house', 'star', 'crown', 'pen', 'book', 'flame', 'gem'))
   `);
   await owner.query("ALTER TABLE profiles ADD COLUMN IF NOT EXISTS photo text NOT NULL DEFAULT ''");
+  // PostgreSQL refuse une répétition au-delà de 255 (l'ancien {1,360}) : la règle échouait et aucune photo
+  // n'était enregistrée. La longueur est donc vérifiée à part.
   await owner.query("ALTER TABLE profiles DROP CONSTRAINT IF EXISTS profiles_photo_check");
   await owner.query(`
     ALTER TABLE profiles ADD CONSTRAINT profiles_photo_check
-    CHECK (photo = '' OR photo ~ '^https://res\\.cloudinary\\.com/ka4h4lpk/image/upload/[A-Za-z0-9_./%-]{1,360}$')
+    CHECK (photo = '' OR (char_length(photo) <= 420 AND photo ~ '^https://res\\.cloudinary\\.com/ka4h4lpk/image/upload/[A-Za-z0-9_./%-]+$'))
   `);
   await owner.query("ALTER TABLE games ADD COLUMN IF NOT EXISTS duration_ms integer");
   await owner.query("ALTER TABLE games ADD COLUMN IF NOT EXISTS behind boolean NOT NULL DEFAULT false");
@@ -1028,8 +1030,8 @@ export async function cancelStaleTourneys() {
 
 export const OFFICIAL_OPEN_MINUTES = 10;
 
-/** Temps laissé à chaque joueur pour arriver à son match de tournoi (4 min 30). */
-export const TOURNEY_SHOW_UP_MS = Number(process.env.TOURNEY_SHOW_UP_MS) || 270_000;
+/** Temps laissé à chaque joueur pour arriver à son match de tournoi (3 min). */
+export const TOURNEY_SHOW_UP_MS = Number(process.env.TOURNEY_SHOW_UP_MS) || 180_000;
 
 function opensAt(startsAt) {
   return startsAt ? new Date(startsAt).getTime() - OFFICIAL_OPEN_MINUTES * 60_000 : 0;

@@ -17,7 +17,15 @@ function write(data) {
 export function loadPrefs() {
   const stored = read().prefs || {};
   const prefs = { ...defaultSettings(), ...stored };
-  if (!stored.scoreChosen && Number(prefs.scoreLimit) === 0) prefs.scoreLimit = 10;
+  // Par défaut : premier à 10 maisons et chrono de 10 minutes (à la fin du temps, le plus de maisons gagne),
+  // tant que le joueur n’a pas choisi lui-même dans le formulaire.
+  if (!stored.scoreChosen) prefs.scoreLimit = 10;
+  if (!stored.timeChosen) {
+    prefs.timeMode = "global";
+    prefs.timeLimit = 600;
+  }
+  // Règle unique : si tu encercles, tu rejoues (l’ancien choix « un point par tour » n’existe plus).
+  prefs.extraTurn = true;
   return prefs;
 }
 

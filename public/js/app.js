@@ -254,9 +254,11 @@ function readSettingsFromForm() {
     settings: normalizeSettings({
       rows,
       cols,
-      extraTurn: readGroup("rule") !== "once",
-      timeMode: readGroup("timeMode"),
-      timeLimit: Number($("timeLimit").value),
+      // Règle unique : si tu encercles (ou manges), tu rejoues.
+      extraTurn: true,
+      // Une seule liste : Illimité, 10, 15 ou 20 min.
+      timeMode: formMinutes() ? "global" : "none",
+      timeLimit: (formMinutes() || 10) * 60,
       scoreLimit,
       p1Color: readGroup("p1Color"),
       p2Color: readGroup("p2Color"),
@@ -281,9 +283,8 @@ function fillForm(prefs) {
     $("rows").value = prefs.rows;
     $("cols").value = prefs.cols;
   }
-  setGroup("rule", prefs.extraTurn === false ? "once" : "extra");
-  setGroup("timeMode", prefs.timeMode || "none");
-  $("timeLimit").value = prefs.timeLimit || 300;
+  const minutes = prefs.timeMode === "global" ? Math.round((Number(prefs.timeLimit) || 600) / 60) : 0;
+  setGroup("minutes", [0, 10, 15, 20].includes(minutes) ? minutes : 10);
   if ([0, 5, 10, 20].includes(Number(prefs.scoreLimit))) setGroup("score", String(prefs.scoreLimit));
   else {
     setGroup("score", "custom");
@@ -350,11 +351,25 @@ function syncScoreCap() {
   });
 }
 
-function markTimePreset() {
-  const seconds = String(Number($("timeLimit").value) || 300);
-  document.querySelectorAll("[data-set-time]").forEach((btn) => {
-    btn.setAttribute("aria-pressed", btn.dataset.setTime === seconds ? "true" : "false");
-  });
+/** Minutes choisies dans le formulaire (0 = illimité). */
+function formMinutes() {
+  return Number(readGroup("minutes")) || 0;
+}
+
+/** En une phrase courte : comment on gagne avec le temps et l’objectif choisis. */
+function paintWinRule() {
+  const note = $("win-rule");
+  if (!note) return;
+  const mode = readGroup("score");
+  const target = mode === "custom" ? Number($("scoreLimit").value) || 0 : Number(mode) || 0;
+  const minutes = formMinutes();
+  note.textContent = target && minutes
+    ? `Premier à ${target} gagne, sinon le plus de maisons après ${minutes} min.`
+    : target
+      ? `Premier à ${target} maisons gagne.`
+      : minutes
+        ? `Le plus de maisons après ${minutes} min gagne.`
+        : "Toute la feuille : le plus de maisons gagne.";
 }
 
 function foldName(value) {
@@ -363,11 +378,9 @@ function foldName(value) {
 
 function syncFormBits() {
   $("custom-size").hidden = readGroup("size") !== "custom";
-  const timeMode = readGroup("timeMode");
-  $("time-box").hidden = timeMode === "none";
-  markTimePreset();
   $("score-custom").hidden = readGroup("score") !== "custom";
   syncScoreCap();
+  paintWinRule();
   document.querySelectorAll("[data-show]").forEach((el) => {
     el.hidden = !el.dataset.show.split(" ").includes(app.formMode);
   });
@@ -571,7 +584,15 @@ const LEVELS = [
   { xp: 18000, name: "Archiviste", icon: "book" },
   { xp: 24000, name: "Maître", icon: "house" },
   { xp: 30000, name: "Couronne", icon: "crown" },
+  { xp: 40000, name: "Professeur", icon: "book" },
+  { xp: 52000, name: "Directeur", icon: "house" },
+  { xp: 65000, name: "Savant", icon: "star" },
+  { xp: 80000, name: "Génie", icon: "flame" },
+  { xp: 100000, name: "Légende", icon: "gem" },
 ];
+
+/** 31108 → « 31 108 ». */
+const xpText = (n) => (Number(n) || 0).toLocaleString("fr-FR");
 
 const RANK_TITLE = {
   1: "Premier de la classe",
@@ -849,8 +870,8 @@ function renderProgress(rows) {
     const floor = level.xp;
     const width = level.next ? Math.max(4, Math.min(100, Math.round((((Number(player.xp) || 0) - floor) / (level.next.xp - floor)) * 100))) : 100;
     const next = level.next
-      ? `${Number(player.xp) || 0} / ${level.next.xp} XP`
-      : `${Number(player.xp) || 0} XP · niveau le plus haut`;
+      ? `${xpText(player.xp)} / ${xpText(level.next.xp)} XP`
+      : `${xpText(player.xp)} XP · niveau le plus haut`;
     youBox.className = "rank-you";
     youBox.innerHTML = `<div class="rank-line"><span class="rank-mark ${level.icon}">${iconMarkup(level.icon)}</span><div><h3>${esc(level.name)}</h3><p class="rank-xp">${esc(player.name)} · record ${Number(player.best) || 0}</p></div></div>
       <div class="xp-track" aria-hidden="true"><i style="width:${width}%"></i></div>
@@ -861,7 +882,7 @@ function renderProgress(rows) {
   const current = known ? levelOf(xp) : null;
   const levels = LEVELS.map((item) => {
     const here = current && item.name === current.name;
-    const label = !known ? `${item.xp} XP` : here ? (current.next ? "En cours" : "Atteint") : xp >= item.xp ? "Atteint" : `${item.xp} XP`;
+    const label = !known ? `${xpText(item.xp)} XP` : here ? (current.next ? "En cours" : "Atteint") : xp >= item.xp ? "Atteint" : `${xpText(item.xp)} XP`;
     return `<li class="${here ? "current" : known && xp >= item.xp ? "reached" : ""}"><strong>${esc(item.name)}</strong><span>${label}</span></li>`;
   }).join("");
   const badges = BADGE_GOALS.map((item) => `<li class="${earned.has(item.name) ? "reached" : ""}"><img src="${item.img}" alt=""><strong>${esc(item.name)}</strong><span>${earned.has(item.name) ? "Atteint" : esc(item.need)}</span></li>`).join("");
@@ -1100,7 +1121,7 @@ function openBadges() {
 
 function remember(settings) {
   const { p1Name, p2Name, ...rest } = settings;
-  app.prefs = { ...app.prefs, ...rest, scoreChosen: true };
+  app.prefs = { ...app.prefs, ...rest, scoreChosen: true, timeChosen: true };
   savePrefs(app.prefs);
   app.sounds.enabled = false;
 }
@@ -1406,6 +1427,12 @@ function refreshHud() {
     $(`p${index}-face`).innerHTML = faceMarkup(photo);
     $(`p${index}-score`).textContent = String(game?.scores[index] ?? 0);
     $(`p${index}-pen`).textContent = COLOR_LABEL[player.color] || "";
+    const dot = $(`p${index}-dot`);
+    if (dot) {
+      const label = COLOR_LABEL[player.color] ? `Stylo ${COLOR_LABEL[player.color].toLowerCase()}` : "Couleur du stylo";
+      dot.setAttribute("aria-label", label);
+      dot.title = label;
+    }
     const active = game?.status === "playing" && game.current === index;
     card.classList.toggle("active", Boolean(active));
     $(`p${index}-turn`).hidden = !active;
@@ -1893,6 +1920,10 @@ async function pullProfile() {
       return;
     }
     if (!profile.name) return;
+    // La photo n'arrivait pas à s'enregistrer sur le serveur : si cet appareil la garde encore, on la renvoie.
+    if (!profile.photo && local.photo) {
+      syncProfile({ name: profile.name, email: profile.email || "", icon: profile.icon || local.icon, photo: local.photo });
+    }
     saveProfile(profile);
     noteAdmin(profile);
     announcePresence();
@@ -3056,6 +3087,7 @@ function ensureSocket() {
     }
     clearTimeout(app.reconnectNote);
     app.selfBackAt = null;
+    presenceSent = "";
     announcePresence();
     loadBell();
     loadMyTourney();
@@ -3192,10 +3224,10 @@ function connectSocket() {
   });
 }
 
-function sendInRoom(event) {
+function sendInRoom(event, payload) {
   const snap = readRoomSnap();
   const code = snap?.code || app.roomCode;
-  const run = () => app.socket.emit(event);
+  const run = () => (payload === undefined ? app.socket.emit(event) : app.socket.emit(event, payload));
   if (!app.socket?.connected || !code) {
     connectSocket().then(() => {
       app.socket.emit("rejoin", { playerId: playerId(), code, tab: tabId() }, (res) => {
@@ -3355,7 +3387,7 @@ function renderTourneyLobby(msg) {
   $("lobby-share").hidden = true;
   $("lobby-present").hidden = true;
   $("lobby-launch").hidden = true;
-  $("lobby-rules").textContent = final ? "Premier à 10 maisons · 20 s par tour" : "10 minutes · 20 s par tour · égalité : la maison suivante décide";
+  $("lobby-rules").textContent = `${final ? "15" : "10"} minutes · 20 s par tour · égalité : la maison suivante décide`;
   $("lobby-seats").innerHTML = [0, 1].map((index) => {
     const seat = seats[index] || {};
     return `<p><strong>${esc(seat.name || "Joueur")}</strong><span>${seat.connected ? "Là" : "Pas encore là"}</span></p>`;
@@ -3413,6 +3445,12 @@ function renderLobby(msg) {
     return;
   }
   $("lobby-present").hidden = false;
+  $("lobby-present").classList.remove("primary");
+  $("lobby-quick").hidden = true;
+  if (msg.direct) {
+    renderQuickLobby(msg);
+    return;
+  }
   $("lobby-code").textContent = msg.code;
   $("lobby-code").hidden = msg.direct === true;
   $("lobby-share").hidden = msg.direct === true || mine !== 0;
@@ -3443,6 +3481,61 @@ function renderLobby(msg) {
   $("lobby-present").textContent = here ? "Ok" : "Je suis là";
   $("lobby-launch").hidden = mine !== 0 || !ready;
   $("lobby-launch").disabled = !ready;
+}
+
+/**
+ * Invitation acceptée : partie rapide. Celui qui invite choisit le temps et l'objectif (couleurs et
+ * encerclement sont choisis par le système), l'autre patiente puis confirme, et la feuille s'ouvre.
+ */
+function quickRuleText(minutes, target) {
+  return minutes
+    ? `Premier à ${target} gagne, sinon le plus de maisons après ${minutes} min.`
+    : `Premier à ${target} maisons gagne.`;
+}
+
+function quickPick(group) {
+  return Number(document.querySelector(`[data-quick="${group}"] [aria-pressed="true"]`)?.dataset.value) || 0;
+}
+
+function paintQuickRule() {
+  $("lobby-quick-rule").textContent = quickRuleText(quickPick("minutes"), quickPick("target") || 10);
+}
+
+function renderQuickLobby(msg) {
+  const mine = msg.you;
+  const seats = msg.seats || [];
+  const host = seats[0]?.name || "L’autre joueur";
+  const guest = seats[1]?.name || "L’autre joueur";
+  const proposed = msg.ready?.[0] === true;
+  const minutes = msg.settings?.timeMode === "global" ? Math.round((Number(msg.settings.timeLimit) || 600) / 60) : 0;
+  const target = Number(msg.settings?.scoreLimit) || 10;
+  document.querySelector("#screen-lobby .eyebrow").textContent = "Partie rapide";
+  $("lobby-code").hidden = true;
+  $("lobby-share").hidden = true;
+  $("lobby-launch").hidden = true;
+  $("lobby-seats").innerHTML = [0, 1].map((index) => {
+    const seat = seats[index] || {};
+    const state = seat.connected === false ? "Déconnecté" : msg.ready?.[index] ? "Ok" : index === 0 ? "Règle la partie" : "Attend";
+    return `<p><strong>${esc(seat.name || "Joueur")}</strong><span>${state}</span></p>`;
+  }).join("");
+  if (mine === 0) {
+    // Celui qui invite : le petit réglage, puis il attend la confirmation.
+    $("lobby-quick").hidden = proposed;
+    $("lobby-present").hidden = true;
+    $("lobby-rules").textContent = proposed ? quickRuleText(minutes, target) : "Choisis vite les règles : les couleurs et l’encerclement sont choisis pour vous.";
+    $("lobby-status").textContent = proposed ? `En attente : ${guest} confirme…` : `${guest} patiente dans la salle d’attente.`;
+    if (!proposed) paintQuickRule();
+    return;
+  }
+  // L'invité : il patiente pendant le réglage, puis confirme.
+  $("lobby-rules").textContent = proposed ? quickRuleText(minutes, target) : "";
+  $("lobby-status").textContent = proposed ? "Les règles sont prêtes. On y va ?" : `${host} règle la partie…`;
+  const here = msg.ready?.[1] === true;
+  $("lobby-present").hidden = !proposed;
+  $("lobby-present").disabled = here;
+  $("lobby-present").setAttribute("aria-pressed", here ? "true" : "false");
+  $("lobby-present").textContent = here ? "Ok" : "C’est parti";
+  $("lobby-present").classList.toggle("primary", proposed && !here);
 }
 
 /** Identifiant de cet onglet : il reste le même si l'onglet se recharge. */
@@ -4811,14 +4904,6 @@ async function openAdminBracket(code) {
 }
 
 /** Sur la page du tournoi, quand ton match est prêt, tu y entres tout seul (une fois par match). */
-function autoEnterTourneyMatch(match) {
-  if (!match?.room || app.autoEnteredRoom === match.room) return;
-  if (!panelShown("tourney-room") || !$("screen-game").hidden || !$("screen-lobby").hidden) return;
-  app.autoEnteredRoom = match.room;
-  toast("Ton match est prêt : on y va !");
-  playTourneyMatch(match.room);
-}
-
 function renderTourneyRoom(state) {
   if (!state) return;
   app.roomCode = state.code;
@@ -4860,7 +4945,6 @@ function renderTourneyRoom(state) {
   launch.disabled = missing > 0;
   if (document.querySelector('[data-hub-panel="tourney-room"]')?.hidden) openHub("tourney-room");
   $("modes-title").textContent = running ? "Le tournoi" : HUB_TITLES["tourney-room"];
-  autoEnterTourneyMatch(myMatch);
 }
 
 function openTourneyRoom(state, from = "") {
@@ -5036,8 +5120,8 @@ function openTourneyNew(size = 4) {
     `Tu reçois un lien à envoyer à ${friends} amis.`,
     `Tu lances quand les ${tourneyNewSize} places sont prises.`,
     tourneyNewSize === 8
-      ? "Quarts et demi-finales de 10 min, finale au premier à 10."
-      : "Demi-finales de 10 min, finale au premier à 10.",
+      ? "Quarts et demi-finales de 10 min, finale de 15 min."
+      : "Demi-finales de 10 min, finale de 15 min.",
   ].map((line) => `<li>${line}</li>`).join("");
   if (!isConnected()) {
     toast("Connecte-toi d’abord pour créer un tournoi.");
@@ -6027,9 +6111,6 @@ function bind() {
       const field = groupBtn.closest("[data-field]");
       field.querySelectorAll("[data-value]").forEach((btn) => btn.setAttribute("aria-pressed", "false"));
       groupBtn.setAttribute("aria-pressed", "true");
-      if (field.dataset.field === "timeMode" && groupBtn.dataset.value === "global" && Number($("timeLimit").value) < 60) {
-        $("timeLimit").value = 300;
-      }
       if (field.dataset.field === "p1Color" || field.dataset.field === "p2Color") {
         syncPenColors(field.dataset.field);
       }
@@ -6039,11 +6120,6 @@ function bind() {
       }
       if (document.getElementById("setup-form") && ! $("screen-setup").hidden) syncFormBits();
       else if (field.dataset.field === "theme" && !$("screen-game").hidden) applyTheme(app.prefs.theme);
-    }
-    const preset = event.target.closest("[data-set-time]");
-    if (preset) {
-      $("timeLimit").value = preset.dataset.setTime;
-      markTimePreset();
     }
     const tableBtn = event.target.closest("[data-table]");
     if (tableBtn && app.seat === 0 && !app.game) {
@@ -6235,6 +6311,15 @@ function bind() {
     leaveOnlineScreen();
   }, true));
   $("lobby-present").addEventListener("click", () => sendInRoom("present"));
+  $("lobby-quick").addEventListener("click", (event) => {
+    const pick = event.target.closest("[data-quick] [data-value]");
+    if (!pick) return;
+    pick.closest("[data-quick]").querySelectorAll("[data-value]").forEach((btn) => btn.setAttribute("aria-pressed", String(btn === pick)));
+    paintQuickRule();
+  });
+  $("lobby-quick-go").addEventListener("click", () => {
+    sendInRoom("quick-setup", { minutes: quickPick("minutes"), target: quickPick("target") || 10 });
+  });
   $("lobby-launch").addEventListener("click", () => sendInRoom("launch"));
   $("chat-open").addEventListener("click", () => toggleChat());
   // Toucher la croix ne retire pas la main au champ avant le clic : le clavier et le panneau partent ensemble.
@@ -6608,6 +6693,7 @@ function bind() {
     openProfile();
   });
   $("bell-close").addEventListener("click", closeBell);
+  $("bell-x").addEventListener("click", closeBell);
   $("watchers-btn").addEventListener("click", openWatchers);
   $("watchers-close").addEventListener("click", () => { $("watchers-dialog").hidden = true; });
   $("bell-read").addEventListener("click", () => {

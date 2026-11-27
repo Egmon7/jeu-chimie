@@ -3,8 +3,27 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Jeu - chimie</title>
-  <meta name="description" content="Le plaisir des heures d'école, sur une feuille quadrillée.">
+  <title>Jeu - chimie · Jeu de pointillés en ligne gratuit</title>
+  <meta name="description" content="Jeu de pointillés gratuit : encerclez les points de l’adversaire sur une feuille quadrillée. Contre le robot, à deux ou en ligne, avec tournois et défis.">
+  <meta name="robots" content="index, follow">
+  <link rel="canonical" href="https://jeu-chimie.prosperegmon.pro/">
+  <!-- Partage (WhatsApp, Facebook, X…) -->
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="Jeu - chimie">
+  <meta property="og:locale" content="fr_FR">
+  <meta property="og:url" content="https://jeu-chimie.prosperegmon.pro/">
+  <meta property="og:title" content="Jeu - chimie · Jeu de pointillés en ligne gratuit">
+  <meta property="og:description" content="Jeu de pointillés gratuit : encerclez les points de l’adversaire sur une feuille quadrillée. Contre le robot, à deux ou en ligne, avec tournois et défis.">
+  <meta property="og:image" content="https://jeu-chimie.prosperegmon.pro/img/logo-jeu.jpg">
+  <meta property="og:image:width" content="1024">
+  <meta property="og:image:height" content="1024">
+  <meta property="og:image:alt" content="Logo de Jeu - chimie">
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="Jeu - chimie · Jeu de pointillés en ligne gratuit">
+  <meta name="twitter:description" content="Jeu de pointillés gratuit : encerclez les points de l’adversaire sur une feuille quadrillée. Contre le robot, à deux ou en ligne, avec tournois et défis.">
+  <meta name="twitter:image" content="https://jeu-chimie.prosperegmon.pro/img/logo-jeu.jpg">
+  <!-- Pour Google : ce qu'est le site (données structurées, non exécutées). -->
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"VideoGame","name":"Jeu - chimie","url":"https://jeu-chimie.prosperegmon.pro/","description":"Jeu de pointillés gratuit : encerclez les points de l’adversaire sur une feuille quadrillée. Contre le robot, à deux ou en ligne, avec tournois et défis.","inLanguage":"fr","genre":["Jeu de réflexion","Jeu de pointillés"],"gamePlatform":"Navigateur web","applicationCategory":"GameApplication","operatingSystem":"Tous (navigateur)","playMode":["SinglePlayer","MultiPlayer"],"image":"https://jeu-chimie.prosperegmon.pro/img/logo-jeu.jpg","author":{"@type":"Person","name":"Prospere Egmon"},"offers":{"@type":"Offer","price":"0","priceCurrency":"EUR"},"sameAs":["https://www.facebook.com/share/197S7paQEW/","https://www.instagram.com/jeuchimie.egmon/","https://www.tiktok.com/@jeu.chimie.egmon"]}</script>
   <style>
     html, body { margin: 0; background: #0e1616; color: #f4f6f8; }
     [hidden] { display: none !important; }
@@ -183,7 +202,8 @@
               <li>Le créateur lance quand toutes les places sont prises, puis tirage au sort.</li>
               <li>À 4 : demi-finales puis finale. À 8 : quarts de finale, demi-finales, puis finale.</li>
               <li>Quarts et demi-finales : 10 minutes. En cas d’égalité, la prochaine maison décide.</li>
-              <li>Finale : sans limite de temps, le premier à 10 maisons gagne.</li>
+              <li>Finale : 15 minutes. En cas d’égalité, la prochaine maison décide.</li>
+              <li>Au lancement, chacun voit l’arbre et touche « Jouer » : 3 minutes pour rejoindre son match.</li>
               <li>20 secondes par tour, sinon le tour passe. Abandon = défaite.</li>
               <li>Vainqueur : +150 XP. Finaliste : +100 XP.</li>
             </ul>
@@ -382,29 +402,12 @@
         </fieldset>
 
         <fieldset>
-          <legend>Règle de tour</legend>
-          <div class="choices" data-field="rule">
-            <button type="button" data-value="extra" aria-pressed="true">Classique<small>Si tu encercles, tu rejoues</small></button>
-            <button type="button" data-value="once">Alternative<small>Un point par tour</small></button>
-          </div>
-        </fieldset>
-
-        <fieldset>
           <legend>Temps du jeu</legend>
-          <div class="choices" data-field="timeMode">
-            <button type="button" data-value="none" aria-pressed="true">Illimité</button>
-            <button type="button" data-value="global">Chrono global</button>
-          </div>
-          <div id="time-box" hidden>
-            <div id="time-presets" class="choices compact">
-              <button type="button" data-set-time="300">5 min</button>
-              <button type="button" data-set-time="600">10 min</button>
-              <button type="button" data-set-time="900">15 min</button>
-              <button type="button" data-set-time="1200">20 min</button>
-            </div>
-            <input id="timeLimit" type="hidden" value="300">
-            <p class="time-note">Le compteur s’affiche en haut. À zéro, la partie s’arrête.</p>
-            <p class="hint">Le compteur reste en haut. À zéro, la partie s’arrête.</p>
+          <div class="choices" data-field="minutes">
+            <button type="button" data-value="0">Illimité</button>
+            <button type="button" data-value="10" aria-pressed="true">10 min</button>
+            <button type="button" data-value="15">15 min</button>
+            <button type="button" data-value="20">20 min</button>
           </div>
         </fieldset>
 
@@ -419,6 +422,7 @@
           </div>
           <label id="score-custom" hidden>Premier à <input id="scoreLimit" type="number" min="1" max="42" value="15"> maisons</label>
           <p class="score-cap" id="score-cap"></p>
+          <p class="win-rule" id="win-rule" aria-live="polite"></p>
         </fieldset>
 
         <div class="split">
@@ -508,6 +512,23 @@
         <p id="lobby-code" class="code">…</p>
         <p id="lobby-status">Reprise de la salle…</p>
         <div id="lobby-seats" class="lobby-seats"></div>
+        <div id="lobby-quick" class="lobby-quick" hidden>
+          <p class="lobby-quick-title">Temps</p>
+          <div class="choices compact" data-quick="minutes">
+            <button type="button" data-value="0">Illimité</button>
+            <button type="button" data-value="10" aria-pressed="true">10 min</button>
+            <button type="button" data-value="15">15 min</button>
+            <button type="button" data-value="20">20 min</button>
+          </div>
+          <p class="lobby-quick-title">Premier à</p>
+          <div class="choices compact" data-quick="target">
+            <button type="button" data-value="5">5</button>
+            <button type="button" data-value="10" aria-pressed="true">10</button>
+            <button type="button" data-value="20">20</button>
+          </div>
+          <p class="win-rule" id="lobby-quick-rule"></p>
+          <button type="button" class="btn primary" id="lobby-quick-go">Lancer</button>
+        </div>
         <div class="lobby-actions" id="lobby-share">
           <button type="button" class="btn slim" id="copy-code">Copier le code</button>
           <button type="button" class="btn slim" id="copy-link">Copier le lien</button>
@@ -527,6 +548,7 @@
           <span class="face" id="p0-face"></span>
           <p class="eyebrow" id="p0-turn" hidden>Joue</p>
           <h2 id="p0-name">Joueur 1</h2>
+          <span class="pen-dot" id="p0-dot" role="img" aria-label="Couleur du stylo"></span>
           <p class="score" id="p0-score">0</p>
           <p class="pen-name" id="p0-pen"></p>
           <p class="turn-time" id="p0-time" hidden></p>
@@ -611,6 +633,7 @@
           <span class="face" id="p1-face"></span>
           <p class="eyebrow" id="p1-turn" hidden>Joue</p>
           <h2 id="p1-name">Joueur 2</h2>
+          <span class="pen-dot" id="p1-dot" role="img" aria-label="Couleur du stylo"></span>
           <p class="score" id="p1-score">0</p>
           <p class="pen-name" id="p1-pen"></p>
           <p class="turn-time" id="p1-time" hidden></p>
@@ -931,6 +954,7 @@
       <div class="bell-head">
         <h2 id="bell-title">Notifications</h2>
         <button type="button" class="auth-link" id="bell-read">Tout marquer lu</button>
+        <button type="button" class="dialog-x" id="bell-x" aria-label="Fermer les notifications">×</button>
       </div>
       <div id="bell-list" class="bell-list"></div>
       <p class="bell-push"><span id="bell-push-state">Alertes téléphone</span><button type="button" class="auth-link" id="bell-push-toggle" hidden></button></p>
@@ -953,7 +977,7 @@
         <li>4 places, dont la tienne.</li>
         <li>Tu reçois un lien à envoyer à 3 amis.</li>
         <li>Tu lances quand les 4 places sont prises.</li>
-        <li>Demi-finales de 10 min, finale au premier à 10.</li>
+        <li>Demi-finales de 10 min, finale de 15 min.</li>
       </ul>
       <div class="form-actions">
         <button type="button" class="btn" id="tourney-new-cancel">Annuler</button>
