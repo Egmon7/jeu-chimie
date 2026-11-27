@@ -2234,8 +2234,32 @@ function watchSnapshot(room, event = null) {
     seats: room.players.map((player) => (player ? { name: player.name, color: player.color, photo: seatPhoto(player), connected: player.connected } : null)),
     tournament: room.tournament ? { round: room.tournament.round } : null,
     event: event && ["move", "timeout", "skip", "golden", "start", "forfeit", "abandon", "time"].includes(event.type) ? event : null,
-    watchers: io.sockets.adapter.rooms.get(watchChannel(room.code))?.size || 0,
+    watchers: watcherList(room).length,
   };
+}
+
+/** Les spectateurs d'une salle, un par compte (deux onglets du même compte comptent une fois). */
+function watcherList(room) {
+  const ids = io.sockets.adapter.rooms.get(watchChannel(room.code));
+  const seen = new Set();
+  const out = [];
+  for (const id of ids || []) {
+    const sock = io.sockets.sockets.get(id);
+    if (!sock) continue;
+    const key = sock.data.account || id;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ name: sock.data.watchName || "Spectateur", photo: sock.data.watchPhoto || "" });
+  }
+  return out.sort((a, b) => a.name.localeCompare(b.name, "fr"));
+}
+
+/** Prévient les joueurs (avec le code de leur salle) et les spectateurs (avec le match) de qui regarde. */
+function emitWatchers(room) {
+  if (!room) return;
+  const list = watcherList(room);
+  io.to(room.code).emit("watchers", { code: room.code, count: list.length, list });
+  io.to(watchChannel(room.code)).emit("watchers", { match: room.matchId || "", count: list.length, list });
 }
 
 function emitWatch(room, event) {
@@ -2416,6 +2440,8 @@ function findMatches() {
       tournament: room.tournament ? room.tournament.round : "",
       players: players.map((player) => ({ name: player.name, photo: seatPhoto(player) })),
       scores: room.game ? [Number(room.game.scores[0]) || 0, Number(room.game.scores[1]) || 0] : null,
+      ids: players.map((player) => player.id),
+      code: room.code,
     });
   }
   return out
@@ -2494,11 +2520,17 @@ function broadcastFindSoon() {
   }, 1000);
 }
 
+/** Les matchs en direct vus par ce joueur : le sien est marqué, les identifiants des autres ne sortent pas. */
+function matchesFor(socketId, list) {
+  const account = io.sockets.sockets.get(socketId)?.data.account || "";
+  return list.map(({ ids, code, ...item }) => (account && ids.includes(account) ? { ...item, mine: true, code } : item));
+}
+
 function broadcastFind() {
   const matches = findMatches();
   for (const item of queue.values()) {
     const mine = presence.get(item.socketId) || item;
-    io.to(item.socketId).emit("queue", { people: findPeople(mine), matches });
+    io.to(item.socketId).emit("queue", { people: findPeople(mine), matches: matchesFor(item.socketId, matches) });
   }
 }
 
@@ -2513,6 +2545,32 @@ function liveRoom(socket) {
 function socketAlive(socketId) {
   return Boolean(socketId && io.sockets.sockets.has(socketId));
 }
+
+/** Identifiant de l'onglet (gardé par l'onglet, même s'il se recharge). */
+function cleanTab(value) {
+  const tab = String(value || "");
+  return /^[A-Za-z0-9-]{8,40}$/.test(tab) ? tab : "";
+}
+
+/** La place est tenue par un autre onglet encore ouvert (et pas par ce même onglet qui se recharge). */
+function heldElsewhere(holder, socket) {
+  if (!holder?.connected || !holder.socketId || holder.socketId === socket.id) return false;
+  const other = io.sockets.sockets.get(holder.socketId);
+  if (!other) return false;
+  return !(socket.data.tab && other.data.tab === socket.data.tab);
+}
+
+/** La place passe à ce nouvel onglet : l'ancien est prévenu et ne la reprend plus tout seul. */
+function moveSeatFrom(room, holder, socket) {
+  if (!holder?.socketId || holder.socketId === socket.id) return;
+  const previous = io.sockets.sockets.get(holder.socketId);
+  if (!previous) return;
+  previous.leave(room.code);
+  previous.data.roomCode = "";
+  previous.emit("seat-moved", { code: room.code });
+}
+
+const ELSEWHERE = "Tu joues déjà ce match dans un autre onglet.";
 
 function dropRoom(room) {
   for (const index of [0, 1]) clearForfeit(room, index);
@@ -2685,17 +2743,17 @@ io.on("connection", (socket) => {
     const prior = liveRoom(socket);
     if (prior && prior.room.code !== room.code && prior.room.game?.status === "finished") leaveRoom(socket);
     const key = playerKey(socket, payload.playerId);
+    socket.data.tab = cleanTab(payload.tab) || socket.data.tab || "";
     const existing = seatOf(room, key);
     if (existing >= 0) {
       const holder = room.players[existing];
       if (holder.connected && holder.socketId !== socket.id) {
         const sameAccount = Boolean(socket.data.account) && socket.data.account === key;
         if (!sameAccount) return ack?.({ ok: false, error: "Ce joueur est déjà dans la salle." });
-        const previous = io.sockets.sockets.get(holder.socketId);
-        if (previous) {
-          previous.leave(room.code);
-          previous.data.roomCode = "";
+        if (heldElsewhere(holder, socket) && payload.takeover !== true) {
+          return ack?.({ ok: false, elsewhere: true, code, error: ELSEWHERE });
         }
+        moveSeatFrom(room, holder, socket);
       }
       const live = liveRoom(socket);
       if (live && live.room.code !== room.code) return ack?.({ ok: false, error: "Quitte d’abord la salle en cours." });
@@ -2736,14 +2794,12 @@ io.on("connection", (socket) => {
     const key = playerKey(socket, payload.playerId);
     const seat = room ? seatOf(room, key) : -1;
     if (!room || seat < 0) return ack?.({ ok: false });
+    socket.data.tab = cleanTab(payload.tab) || socket.data.tab || "";
     const holder = room.players[seat];
-    if (holder.socketId && holder.socketId !== socket.id) {
-      const previous = io.sockets.sockets.get(holder.socketId);
-      if (previous) {
-        previous.data.roomCode = "";
-        previous.leave(room.code);
-      }
+    if (heldElsewhere(holder, socket) && payload.takeover !== true) {
+      return ack?.({ ok: false, elsewhere: true, code: room.code, error: ELSEWHERE });
     }
+    moveSeatFrom(room, holder, socket);
     const live = liveRoom(socket);
     if (live && live.room.code !== room.code) return ack?.({ ok: false });
     queue.delete(socket.id);
@@ -2937,7 +2993,7 @@ socket.on("move", (move, ack) => {
     const mine = rememberPresence(socket, payload);
     const live = liveRoom(socket);
     if (live?.room.game) {
-      socket.emit("queue", { people: findPeople(mine), matches: findMatches() });
+      socket.emit("queue", { people: findPeople(mine), matches: matchesFor(socket.id, findMatches()) });
       return;
     }
     if (live) leaveRoom(socket);
@@ -2963,18 +3019,27 @@ socket.on("move", (move, ack) => {
       const people = await tourneyPeople(code);
       const allowed = people && (people.official || people.creatorId === account || people.players.some((player) => player.id === account));
       if (!allowed) return ack?.({ ok: false, error: "Ce tournoi est réservé à ses joueurs." });
-      if (room?.players.some((player) => player?.id === account)) return ack?.({ ok: false, error: "C’est ton match : clique sur « Jouer »." });
+      if (room?.players.some((player) => player?.id === account)) return ack?.({ ok: false, own: true, code: room.code, error: ELSEWHERE });
     }
     if (!room || pairState(room) !== "playing") return ack?.({ ok: false, error: "Ce match n’est pas en cours pour l’instant." });
     if (!room.matchId) room.matchId = randomBytes(8).toString("hex");
     if (liveRoom(socket)) return ack?.({ ok: false, error: "Quitte d’abord ta partie pour regarder un match." });
-    if (room.players.some((player) => player?.socketId === socket.id)) return ack?.({ ok: false, error: "Tu joues déjà ce match." });
+    const me = socket.data.account || "";
+    if (room.players.some((player) => player && (player.socketId === socket.id || (me && player.id === me)))) {
+      return ack?.({ ok: false, own: true, code: room.code, error: ELSEWHERE });
+    }
     const channel = watchChannel(room.code);
     if ((io.sockets.adapter.rooms.get(channel)?.size || 0) >= WATCH_LIMIT) return ack?.({ ok: false, error: "Trop de spectateurs sur ce match." });
+    const before = socket.data.watching && socket.data.watching !== room.code ? rooms.get(socket.data.watching) : null;
     if (socket.data.watching && socket.data.watching !== room.code) socket.leave(watchChannel(socket.data.watching));
+    if (before) emitWatchers(before);
+    const profile = socket.data.account ? await readProfile(socket.data.account).catch(() => null) : null;
+    socket.data.watchName = cleanName(profile?.name || presence.get(socket.id)?.name, "Spectateur");
+    socket.data.watchPhoto = typeof profile?.photo === "string" && profile.photo.startsWith("https://res.cloudinary.com/ka4h4lpk/") ? profile.photo : "";
     socket.data.watching = room.code;
     socket.join(channel);
     ack?.({ ok: true, state: watchSnapshot(room) });
+    emitWatchers(room);
     } catch {
       ack?.({ ok: false, error: "Impossible d’ouvrir le direct." });
     }
@@ -2982,8 +3047,21 @@ socket.on("move", (move, ack) => {
 
   socket.on("unwatch", () => {
     if (!socket.data.watching) return;
+    const room = rooms.get(socket.data.watching);
     socket.leave(watchChannel(socket.data.watching));
     socket.data.watching = "";
+    emitWatchers(room);
+  });
+
+  /** Qui regarde ce match (pour un joueur de la salle ou un spectateur). */
+  socket.on("watchers", (_payload, ack) => {
+    if (typeof ack !== "function") return;
+    if (limited(`${socket.id}:watchers`, 30, 60_000)) return ack({ ok: false });
+    const live = liveRoom(socket);
+    const room = live?.room || rooms.get(socket.data.watching);
+    if (!room) return ack({ ok: false });
+    const list = watcherList(room);
+    ack({ ok: true, count: list.length, list });
   });
 
   socket.on("queue-leave", () => {
@@ -3067,6 +3145,10 @@ socket.on("move", (move, ack) => {
   socket.on("leave", () => leaveRoom(socket));
 
   socket.on("disconnect", () => {
+    if (socket.data.watching) {
+      const watched = rooms.get(socket.data.watching);
+      setImmediate(() => emitWatchers(watched));
+    }
     presence.delete(socket.id);
     queue.delete(socket.id);
     broadcastFind();

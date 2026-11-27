@@ -1300,7 +1300,7 @@ function revealMove(move) {
   stage.scrollTo({ top: Math.max(0, nextTop), left: Math.max(0, nextLeft), behavior: "smooth" });
 }
 
-function askDialog({ kicker, title, text, confirm, cancel, field, note, onYes }) {
+function askDialog({ kicker, title, text, confirm, cancel, field, note, onYes, onNo }) {
   $("app-dialog-kicker").textContent = kicker || "";
   $("app-dialog-title").textContent = title;
   $("app-dialog-text").textContent = text || "";
@@ -1348,7 +1348,10 @@ function askDialog({ kicker, title, text, confirm, cancel, field, note, onYes })
     no.type = "button";
     no.className = "btn";
     no.textContent = cancel;
-    no.addEventListener("click", () => { $("app-dialog").hidden = true; });
+    no.addEventListener("click", () => {
+      $("app-dialog").hidden = true;
+      onNo?.();
+    });
     box.append(no);
   }
   input.onkeydown = field && !note
@@ -1429,18 +1432,61 @@ function refreshHud() {
   paintChatMate();
   const chatBtn = $("chat-open");
   if (chatBtn) chatBtn.hidden = app.mode === "solo" || watching;
+  paintWatchersBtn();
   if (watching) {
     const eyes = app.watchers > 1 ? ` · ${app.watchers} spectateurs` : "";
     chip.textContent = `En direct · tu regardes${eyes}`;
   }
   const name = app.players[game.current]?.name || "";
-  const mine = app.mode !== "local" && game.current === (app.mode === "online" ? app.seat : 0);
+  const mine = (app.mode === "online" && game.current === app.seat) || (app.mode === "solo" && game.current === 0);
   $("turn-label").textContent = game.status !== "playing"
     ? "Partie terminée"
     : mine
       ? "À vous de jouer"
       : `Au tour de ${name}`;
   updateTimers();
+}
+
+/** Bouton « Spectateurs » : en ligne (joueurs) et en direct (spectateurs), avec le nombre de personnes qui regardent. */
+function paintWatchersBtn() {
+  const button = $("watchers-btn");
+  if (!button) return;
+  const show = (app.mode === "online" && Boolean(app.game)) || app.mode === "watch";
+  button.hidden = !show;
+  if (!show) return;
+  if (app.mode === "online" && app.roomCode && app.watchersAsked !== app.roomCode && app.socket?.connected) {
+    app.watchersAsked = app.roomCode;
+    askWatchers();
+  }
+  const count = Number(app.watchers) || 0;
+  $("watchers-count").textContent = String(count);
+  button.setAttribute("aria-label", count ? `Spectateurs : ${count}` : "Spectateurs : personne");
+}
+
+function askWatchers() {
+  app.socket?.emit("watchers", null, (res) => {
+    if (!res?.ok) return;
+    app.watchers = Number(res.count) || 0;
+    app.watchList = Array.isArray(res.list) ? res.list : [];
+    paintWatchersBtn();
+    if (!$("watchers-dialog").hidden) renderWatchers();
+  });
+}
+
+function renderWatchers() {
+  const list = Array.isArray(app.watchList) ? app.watchList : [];
+  $("watchers-lead").textContent = list.length
+    ? `${list.length} personne${list.length > 1 ? "s regardent" : " regarde"} ce match en direct.`
+    : "";
+  $("watchers-list").innerHTML = list.length
+    ? list.map((person) => `<p><span class="face">${faceMarkup(person.photo, true)}</span><strong title="${esc(person.name)}">${esc(person.name)}</strong></p>`).join("")
+    : `<p class="empty">Personne ne regarde ce match pour l’instant.</p>`;
+}
+
+function openWatchers() {
+  renderWatchers();
+  $("watchers-dialog").hidden = false;
+  askWatchers();
 }
 
 function matchRuleText(game) {
@@ -2647,15 +2693,49 @@ async function toggleVoice() {
   try { rec.start(1000); } catch { rec.start(); }
 }
 
+/** Un champ de saisie a la main : seulement alors le clavier du téléphone peut être ouvert. */
+function typing() {
+  const el = document.activeElement;
+  return Boolean(el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable));
+}
+
+/** Réduit l'écran du jeu à la place laissée par le clavier, et le rend en entier dès que le clavier part. */
+function placeKeyboard() {
+  const viewport = window.visualViewport;
+  if (!viewport) return;
+  const raw = Math.max(0, Math.round(window.innerHeight - viewport.height - viewport.offsetTop));
+  const keyboard = typing() ? raw : 0;
+  document.documentElement.style.setProperty("--keyboard", `${keyboard}px`);
+  document.body.classList.toggle("keyboard", keyboard > 80);
+  if (keyboard > 80) window.scrollTo(0, 0);
+}
+
+/** Après la fermeture du clavier : page en haut et écran du jeu à sa taille normale. */
+function settleAfterKeyboard() {
+  placeKeyboard();
+  window.scrollTo(0, 0);
+  for (const delay of [120, 350, 700]) {
+    window.setTimeout(() => {
+      if (typing()) return;
+      placeKeyboard();
+      window.scrollTo(0, 0);
+    }, delay);
+  }
+}
+
 function toggleChat(open) {
   const panel = $("chat-panel");
   const next = typeof open === "boolean" ? open : panel.hidden;
+  // Lâcher le champ avant de cacher le panneau : le clavier se ferme proprement.
+  if (!next) $("chat-input")?.blur();
   panel.hidden = !next;
   $("chat-open").setAttribute("aria-expanded", next ? "true" : "false");
   if (next) {
     setChatAlert(false);
     paintChatMate();
     $("chat-input").focus();
+  } else {
+    settleAfterKeyboard();
   }
 }
 
@@ -2912,12 +2992,17 @@ function rejoinSavedRoom() {
     if (!rejoinSince) rejoinSince = Date.now();
     const tryRejoin = () => {
       if (app.ignoreOnline || !readRoomSnap()) return;
-      app.socket.emit("rejoin", { playerId: playerId(), code }, (res) => {
+      app.socket.emit("rejoin", { playerId: playerId(), code, tab: tabId() }, (res) => {
         if (res?.ok) {
           rejoinSince = 0;
           return;
         }
         if (app.ignoreOnline) return;
+        if (res?.elsewhere) {
+          rejoinSince = 0;
+          offerPlayHere(code, true);
+          return;
+        }
         if (Date.now() - rejoinSince < 45_000) {
           window.setTimeout(tryRejoin, 2000);
           return;
@@ -3004,6 +3089,21 @@ function ensureSocket() {
     log.scrollTop = log.scrollHeight;
     const last = msg.lines.at(-1);
     if (last && last.seat !== app.seat && $("chat-panel").hidden) noteIncomingChat();
+  });
+  app.socket.on("watchers", (msg) => {
+    const mineRoom = msg?.code && msg.code === app.roomCode && app.mode === "online";
+    const watched = msg?.match && msg.match === app.watching;
+    if (!mineRoom && !watched) return;
+    app.watchers = Number(msg.count) || 0;
+    app.watchList = Array.isArray(msg.list) ? msg.list : [];
+    paintWatchersBtn();
+    if (app.mode === "watch") refreshHud();
+    if (!$("watchers-dialog").hidden) renderWatchers();
+  });
+  app.socket.on("seat-moved", (msg) => {
+    const code = msg?.code || app.roomCode;
+    if (!code || app.roomCode !== code) return;
+    offerPlayHere(code, true);
   });
   app.socket.on("closed", () => {
     if (app.ignoreOnline) return;
@@ -3096,15 +3196,17 @@ function sendInRoom(event) {
   const run = () => app.socket.emit(event);
   if (!app.socket?.connected || !code) {
     connectSocket().then(() => {
-      app.socket.emit("rejoin", { playerId: playerId(), code }, (res) => {
+      app.socket.emit("rejoin", { playerId: playerId(), code, tab: tabId() }, (res) => {
         if (res?.ok) run();
+        else if (res?.elsewhere) offerPlayHere(code, true);
         else toast("La salle n’est plus ouverte.");
       });
     }).catch(() => toast("La connexion a sauté. Réessaie."));
     return;
   }
-  app.socket.emit("rejoin", { playerId: playerId(), code }, (res) => {
+  app.socket.emit("rejoin", { playerId: playerId(), code, tab: tabId() }, (res) => {
     if (res?.ok) run();
+    else if (res?.elsewhere) offerPlayHere(code, true);
     else toast("La salle n’est plus ouverte.");
   });
 }
@@ -3340,6 +3442,63 @@ function renderLobby(msg) {
   $("lobby-launch").disabled = !ready;
 }
 
+/** Identifiant de cet onglet : il reste le même si l'onglet se recharge. */
+function tabId() {
+  try {
+    let id = sessionStorage.getItem("egmon-tab");
+    if (!id) {
+      id = crypto.randomUUID();
+      sessionStorage.setItem("egmon-tab", id);
+    }
+    return id;
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Un compte n'a qu'une place dans un match : s'il se joue dans un autre onglet,
+ * on propose de le jouer ici (l'autre onglet s'arrête), jamais de le regarder en spectateur.
+ */
+function offerPlayHere(code, moved = false) {
+  if (!code) return;
+  askDialog({
+    kicker: "Match en cours",
+    title: moved ? "Ce match continue dans un autre onglet" : "Tu joues déjà ce match dans un autre onglet",
+    text: moved
+      ? "Tu l’as ouvert ailleurs. Tu peux le reprendre ici : l’autre onglet s’arrêtera."
+      : "Tu peux le jouer ici : l’autre onglet s’arrêtera. On ne regarde pas son propre match en spectateur.",
+    confirm: "Jouer ici",
+    cancel: moved ? "Quitter" : "Annuler",
+    onYes: () => playHere(code),
+    onNo: () => {
+      if (moved) leaveOnlineScreen();
+    },
+  });
+}
+
+async function playHere(code) {
+  try {
+    await connectSocket();
+    if (app.watching) {
+      stopWatching();
+      hideOverlay();
+    }
+    app.ignoreOnline = false;
+    const res = await emitAck("join", {
+      playerId: playerId(),
+      name: loadProfile().name || "",
+      code,
+      color: app.prefs.p2Color,
+      tab: tabId(),
+      takeover: true,
+    });
+    if (!res?.ok) toast(res?.error || "La salle n’est plus ouverte.");
+  } catch {
+    toast("Impossible de reprendre le match. Réessaie.");
+  }
+}
+
 function readRoomSnap() {
   try {
     const snap = JSON.parse(sessionStorage.getItem("egmon-room") || "null");
@@ -3427,7 +3586,11 @@ function findCard(person, busy) {
   return `<button type="button" class="find-card${busy ? " is-taken" : ""}" data-token="${esc(person.token)}" data-busy="${busy ? "1" : "0"}"${busy ? " disabled" : ""}><span class="face">${faceMarkup(person.photo, true)}</span><span class="find-copy"><strong>${esc(person.name)}</strong><span class="find-state">${state}</span></span></button>`;
 }
 
-function askWatch(match, names) {
+function askWatch(match, names, own = "") {
+  if (own) {
+    offerPlayHere(own);
+    return;
+  }
   if (!match) return;
   askDialog({
     kicker: "En direct",
@@ -3459,6 +3622,11 @@ async function startWatch(payload, back = { type: "find" }) {
   try {
     await connectSocket();
     const res = await emitAck("watch", payload);
+    if (res?.own && res.code) {
+      if (back.type === "admin") $("admin-bracket-dialog").hidden = true;
+      offerPlayHere(res.code);
+      return;
+    }
     if (!res?.ok) {
       toast(res?.error || "Ce match n’est plus en cours.");
       if (back.type === "admin") openAdminBracket(back.code);
@@ -3559,10 +3727,13 @@ function findMatch(match) {
     ? `<strong class="find-score" aria-label="Score ${Number(match.scores[0]) || 0} à ${Number(match.scores[1]) || 0}">${Number(match.scores[0]) || 0} – ${Number(match.scores[1]) || 0}</strong>`
     : "<strong>1 vs 1</strong>";
   const names = `${a.name} contre ${b.name}`;
-  const watch = match.live
-    ? ` data-watch="${esc(match.match)}" data-names="${esc(names)}" role="button" tabindex="0"`
+  const own = match.mine && match.code ? ` data-own="${esc(match.code)}"` : "";
+  const watch = match.live || own
+    ? ` data-watch="${esc(match.match)}" data-names="${esc(names)}"${own} role="button" tabindex="0"`
     : ` role="group"`;
-  const cta = match.live ? `<span class="find-watch">Regarder en direct</span>` : "";
+  const cta = own
+    ? `<span class="find-watch">Ton match · Jouer ici</span>`
+    : match.live ? `<span class="find-watch">Regarder en direct</span>` : "";
   return `<div class="find-match${match.live ? " is-live" : ""}"${watch} aria-label="${esc(names)}"><div class="find-duo">${player(a)}<span class="find-vs">vs</span>${player(b)}</div><p class="find-match-foot">${score}<span>${esc(round ? `${round} · ${state}` : state)}</span></p>${cta}</div>`;
 }
 
@@ -3688,8 +3859,10 @@ async function joinRoom(code, color) {
       name: $("join-name").value,
       code,
       color,
+      tab: tabId(),
     });
-    if (!res?.ok) toast(res?.error || "Impossible de rejoindre. Réessaie.");
+    if (res?.elsewhere) offerPlayHere(code);
+    else if (!res?.ok) toast(res?.error || "Impossible de rejoindre. Réessaie.");
     return res;
   } catch {
     toast("Impossible de rejoindre. Réessaie.");
@@ -5346,6 +5519,10 @@ async function enterSharedRoom() {
   if ($("join-name")) $("join-name").value = name;
   if ($("join-code")) $("join-code").value = code;
   const res = await joinRoom(code, app.prefs.p2Color);
+  if (res?.elsewhere) {
+    pendingRoom = "";
+    return;
+  }
   if (!res?.ok) {
     const lead = $("online-lead");
     if (lead) {
@@ -6057,6 +6234,8 @@ function bind() {
   $("lobby-present").addEventListener("click", () => sendInRoom("present"));
   $("lobby-launch").addEventListener("click", () => sendInRoom("launch"));
   $("chat-open").addEventListener("click", () => toggleChat());
+  // Toucher la croix ne retire pas la main au champ avant le clic : le clavier et le panneau partent ensemble.
+  $("chat-close").addEventListener("pointerdown", (event) => event.preventDefault());
   $("chat-close").addEventListener("click", () => toggleChat(false));
   $("chat-mate").addEventListener("click", () => openSeatCard(otherSeat()));
   for (const card of document.querySelectorAll(".player")) {
@@ -6100,7 +6279,7 @@ function bind() {
     const live = event.target.closest("[data-watch]");
     if (live && (event.key === "Enter" || event.key === " ")) {
       event.preventDefault();
-      askWatch(live.dataset.watch, live.dataset.names);
+      askWatch(live.dataset.watch, live.dataset.names, live.dataset.own || "");
     }
   });
   $("watch-leave-btn").addEventListener("click", leaveWatch);
@@ -6113,7 +6292,7 @@ function bind() {
   $("find-list").addEventListener("click", (event) => {
     const live = event.target.closest("[data-watch]");
     if (live) {
-      askWatch(live.dataset.watch, live.dataset.names);
+      askWatch(live.dataset.watch, live.dataset.names, live.dataset.own || "");
       return;
     }
     const card = event.target.closest("[data-token]");
@@ -6226,12 +6405,6 @@ function bind() {
   });
   const viewport = window.visualViewport;
   if (viewport) {
-    const placeKeyboard = () => {
-      const keyboard = Math.max(0, Math.round(window.innerHeight - viewport.height - viewport.offsetTop));
-      document.documentElement.style.setProperty("--keyboard", `${keyboard}px`);
-      document.body.classList.toggle("keyboard", keyboard > 80);
-      if (keyboard > 80) window.scrollTo(0, 0);
-    };
     viewport.addEventListener("resize", placeKeyboard);
     viewport.addEventListener("scroll", placeKeyboard);
     placeKeyboard();
@@ -6239,6 +6412,7 @@ function bind() {
   $("chat-input")?.addEventListener("focus", () => {
     requestAnimationFrame(() => window.scrollTo(0, 0));
   });
+  $("chat-input")?.addEventListener("blur", settleAfterKeyboard);
   window.addEventListener("popstate", (event) => {
     const surface = holdSurface();
     if (surface && !allowLeave) {
@@ -6431,6 +6605,8 @@ function bind() {
     openProfile();
   });
   $("bell-close").addEventListener("click", closeBell);
+  $("watchers-btn").addEventListener("click", openWatchers);
+  $("watchers-close").addEventListener("click", () => { $("watchers-dialog").hidden = true; });
   $("bell-read").addEventListener("click", () => {
     markBellRead();
     renderBellList();

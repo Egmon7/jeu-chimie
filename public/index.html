@@ -595,6 +595,12 @@
               </svg>
               <span id="chat-light" class="chat-light" hidden></span>
             </button>
+            <button type="button" class="icon-btn watchers-btn" id="watchers-btn" hidden aria-label="Spectateurs">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 5c-5 0-9 4.2-10 7 1 2.8 5 7 10 7s9-4.2 10-7c-1-2.8-5-7-10-7Zm0 11.2A4.2 4.2 0 1 1 12 7.8a4.2 4.2 0 0 1 0 8.4Zm0-6.4a2.2 2.2 0 1 0 0 4.4 2.2 2.2 0 0 0 0-4.4Z"/>
+              </svg>
+              <span id="watchers-count" class="watchers-count">0</span>
+            </button>
           </div>
           <div class="sheet-zoom">
             <button type="button" class="icon-btn" id="sheet-zoom-out" aria-label="Éloigner la feuille">−</button>
@@ -909,6 +915,17 @@
       <div class="form-actions" id="app-dialog-actions"></div>
     </div>
   </div>
+  <div id="watchers-dialog" class="overlay page-dialog" hidden>
+    <div class="dialog watchers-dialog" role="dialog" aria-modal="true" aria-labelledby="watchers-title">
+      <h2 id="watchers-title">Spectateurs</h2>
+      <p class="admin-help" id="watchers-lead"></p>
+      <div id="watchers-list" class="watchers-list"></div>
+      <div class="form-actions">
+        <button type="button" class="btn primary" id="watchers-close">Fermer</button>
+      </div>
+    </div>
+  </div>
+
   <div id="bell-dialog" class="overlay page-dialog" hidden>
     <div class="dialog bell-dialog" role="dialog" aria-modal="true" aria-labelledby="bell-title">
       <div class="bell-head">

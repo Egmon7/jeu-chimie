@@ -411,7 +411,34 @@ body[data-page="play"] #screen-game {
   left: 8px;
   bottom: 8px;
   z-index: 4;
+  display: flex;
+  gap: 6px;
+  align-items: flex-end;
 }
+.match-chat .icon-btn[hidden] { display: none; }
+.watchers-count {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+  border-radius: 99px;
+  background: #1c2a29;
+  color: #f4f6f8;
+  font-size: 0.72rem;
+  font-weight: 700;
+  line-height: 18px;
+  text-align: center;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.9);
+}
+.overlay.page-dialog .dialog.watchers-dialog { width: min(380px, 100%); text-align: left; }
+.watchers-dialog h2 { margin: 0 0 4px; font-size: 1.2rem; }
+.watchers-list { display: grid; gap: 6px; max-height: min(50vh, 320px); overflow-y: auto; margin: 10px 0 4px; }
+.watchers-list p { display: flex; align-items: center; gap: 10px; margin: 0; padding: 8px 10px; border-radius: 10px; background: #1c2a29; color: #f4f6f8; }
+.watchers-list .face { width: 32px; height: 32px; flex: none; }
+.watchers-list strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.watchers-list .empty { background: transparent; color: #9aa8ba; padding: 4px 0; }
 .match-chat .icon-btn {
   position: relative;
   width: 42px;
