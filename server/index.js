@@ -1665,6 +1665,7 @@ function snapshot(room, event = null) {
     code: room.code,
     settings: room.settings,
     game: room.game,
+    paused: room.game?.status === "playing" ? clockPaused(room) : null,
     seats: room.players.map((player, index) => (
       player
         ? {
@@ -2230,6 +2231,7 @@ function watchSnapshot(room, event = null) {
   return {
     match: room.matchId || "",
     game: room.game,
+    paused: room.game?.status === "playing" ? clockPaused(room) : null,
     settings: { p1Color: room.settings.p1Color, p2Color: room.settings.p2Color, p1Name: room.settings.p1Name, p2Name: room.settings.p2Name },
     seats: room.players.map((player) => (player ? { name: player.name, color: player.color, photo: seatPhoto(player), connected: player.connected } : null)),
     tournament: room.tournament ? { round: room.tournament.round } : null,
@@ -3221,15 +3223,34 @@ function noteTourneyArrival(room, seat) {
   });
 }
 
+/**
+ * Quels chronos sont arrêtés. Partie normale : tout s'arrête si quelqu'un est coupé.
+ * Tournoi : le chrono des 10 minutes s'arrête, mais celui du tour continue,
+ * pour qu'à 0:00 la main passe toujours à l'autre (personne n'est bloqué par la coupure de l'autre).
+ */
+function clockPaused(room) {
+  const both = Boolean(room.players[0]?.connected && room.players[1]?.connected);
+  return { global: !both, turn: !both && !room.tournament };
+}
+
+/** Seulement le chrono du tour (tournoi avec un joueur coupé). */
+function tickTurn(game, dt) {
+  if (!game || game.status !== "playing" || !(dt > 0) || game.turnLimit == null || game.turnRemaining == null) return { timedOut: false };
+  const before = game.turnRemaining;
+  game.turnRemaining = Math.max(0, before - dt);
+  return before > 0 && game.turnRemaining === 0 ? { timedOut: true, kind: "turn" } : { timedOut: false };
+}
+
 setInterval(() => {
   reapRooms();
   const now = Date.now();
   for (const [code, room] of rooms) {
-    const playing = room.game?.status === "playing" && room.players[0]?.connected && room.players[1]?.connected;
+    const paused = room.game?.status === "playing" ? clockPaused(room) : null;
+    const playing = paused && !paused.turn;
     if (playing) {
       const dt = room.clockAt ? Math.max(0, now - room.clockAt) : 200;
       room.clockAt = now;
-      const clock = tick(room.game, dt);
+      const clock = paused.global ? tickTurn(room.game, dt) : tick(room.game, dt);
       if (clock.timedOut && clock.kind === "turn" && room.tournament) {
         skipTurn(room.game);
         emitState(room, { type: "skip" });

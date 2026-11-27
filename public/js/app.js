@@ -1605,6 +1605,8 @@ function remaining(kind) {
   const game = app.game;
   if (!game) return 0;
   if ((app.mode === "online" || app.mode === "watch") && app.clockSync) {
+    // Chrono arrêté par le serveur (joueur coupé) : l'écran l'affiche figé au lieu de décompter dans le vide.
+    if (app.clockSync.paused?.[kind]) return Math.max(0, app.clockSync[kind] ?? 0);
     return Math.max(0, (app.clockSync[kind] ?? 0) - (performance.now() - app.clockSync.at));
   }
   return kind === "global" ? game.globalRemaining ?? 0 : game.turnRemaining ?? 0;
@@ -3275,6 +3277,7 @@ function onOnlineState(msg) {
       global: msg.game.globalRemaining,
       turn: msg.game.turnRemaining,
       at: performance.now(),
+      paused: msg.paused || null,
     };
   }
   const foeSeat = msg.seats?.[1 - app.seat];
@@ -3660,7 +3663,7 @@ function onWatchState(msg) {
   });
   app.game = msg.game;
   app.watchers = Number(msg.watchers) || 0;
-  app.clockSync = { global: msg.game.globalRemaining, turn: msg.game.turnRemaining, at: performance.now() };
+  app.clockSync = { global: msg.game.globalRemaining, turn: msg.game.turnRemaining, at: performance.now(), paused: msg.paused || null };
   if ($("screen-game").hidden) show("screen-game");
   paintMatch();
   const event = msg.event || {};
