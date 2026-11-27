@@ -3,13 +3,33 @@ import { applyMove, cloneGame, dotIsOpen, legalMoves, moveInfo } from "./engine.
 const NEAR = [[-1, -1], [-1, 0], [-1, 1], [0, -1], [0, 1], [1, -1], [1, 0], [1, 1]];
 const ORTHO = [[-1, 0], [1, 0], [0, -1], [0, 1]];
 
-const PROFILE = {
+/** Version du robot qui joue. */
+export const ROBOT_VERSION = "v2";
+
+/** Les réglages du robot v1, gardés pour la comparaison (les anciens niveaux). */
+export const V1_PROFILE = {
   easy: { depth: 1, window: 4, reply: 3, fork: 0, chain: 1, ms: 40, max: 80 },
   medium: { depth: 2, window: 5, reply: 4, fork: 1, chain: 2, ms: 80, max: 180 },
   hard: { depth: 3, window: 7, reply: 5, fork: 2, chain: 4, ms: 140, max: 360 },
   veryhard: { depth: 4, window: 8, reply: 6, fork: 3, chain: 5, ms: 220, max: 560 },
   expert: { depth: 4, window: 8, reply: 6, fork: 4, chain: 6, ms: 320, max: 800 },
 };
+
+/**
+ * Robot v2. Les joueurs battaient l'ancien Difficile 83 % du temps et l'ancien Expert 90 % :
+ * - Facile = l'ancien Difficile, Moyen = l'ancien Expert ;
+ * - Difficile et Expert jouent la v2 (« Très difficile » est retiré), qui applique ce que l'apprentissage a montré :
+ *   ne pas laisser de maison à l'autre (83 parties perdues sur 99 viennent de là) et chercher les doubles
+ *   menaces. Mesuré en Expert sur 12×12 : 13 victoires v2, 6 v1, 5 nuls (24 parties).
+ */
+const PROFILE = {
+  easy: { ...V1_PROFILE.hard },
+  medium: { ...V1_PROFILE.expert, deep: true },
+  hard: { depth: 3, window: 8, reply: 5, fork: 3, chain: 4, ms: 200, max: 500, v2: true },
+  expert: { depth: 4, window: 10, reply: 7, fork: 5, chain: 6, ms: 450, max: 1200, v2: true, deep: true },
+};
+// « Très difficile » est retiré : une ancienne partie à ce niveau joue comme l'Expert.
+PROFILE.veryhard = PROFILE.expert;
 
 function prefer(game, a, b) {
   const salt = game.salt || 0;
@@ -193,7 +213,7 @@ function pendingCount(game, player) {
   return winningMoves(game, player).length;
 }
 
-function positionValue(game, me, fork) {
+function positionValue(game, me, fork, v2 = false) {
   if (game.status !== "playing") {
     if (game.winner === me) return 9000 + game.scores[me] * 10;
     if (game.winner === "draw" || game.winner == null) return 0;
@@ -225,10 +245,10 @@ function positionValue(game, me, fork) {
 function search(game, me, depth, profile, alpha, beta, chainLeft) {
   profile.nodes += 1;
   const stop = depth <= 0 || profile.nodes > profile.max || performance.now() > profile.until;
-  if (game.status !== "playing" || stop) return positionValue(game, me, profile.fork);
+  if (game.status !== "playing" || stop) return positionValue(game, me, profile.fork, profile.v2);
   const player = game.current;
   const moves = consider(game, player, profile.reply);
-  if (!moves.length) return positionValue(game, me, profile.fork);
+  if (!moves.length) return positionValue(game, me, profile.fork, profile.v2);
   let best = player === me ? -Infinity : Infinity;
   for (const move of moves) {
     const copy = cloneGame(game);
@@ -257,7 +277,7 @@ function search(game, me, depth, profile, alpha, beta, chainLeft) {
   return best;
 }
 
-function taste(game, player, move, fork) {
+function taste(game, player, move, fork, v2 = false) {
   const copy = cloneGame(game);
   const result = applyMove(copy, move);
   if (!result.ok) return -99999;
@@ -265,9 +285,18 @@ function taste(game, player, move, fork) {
   const mine = pendingCount(copy, player);
   const opp = pendingCount(copy, 1 - player);
   const gained = (result.completed + result.eaten) * 120;
-  const doors = mine >= 2 ? 90 * fork : mine * 16;
-  const danger = opp >= 2 ? 100 * fork : opp * 40;
+  const doors = mine >= 2 ? (v2 ? 140 : 90) * fork : mine * 16;
+  const danger = opp >= 2 ? (v2 ? 160 : 100) * fork : opp * (v2 ? 90 : 40);
   return gained + doors - danger;
+}
+
+/** v2 : ce coup laisse-t-il à l'autre une maison qu'il ne pouvait pas fermer avant ? */
+function leavesHouse(game, player, move, before) {
+  const copy = cloneGame(game);
+  const result = applyMove(copy, move);
+  if (!result.ok) return true;
+  if (result.completed > 0 || result.eaten > 0 || copy.status !== "playing") return false;
+  return pendingCount(copy, 1 - player) > before;
 }
 
 function bestImmediate(game, player, chain) {
@@ -290,8 +319,14 @@ function bestImmediate(game, player, chain) {
 }
 
 function searchRoot(game, player, profile) {
-  const ranked = consider(game, player, Math.max(profile.window + 4, 10));
-  ranked.sort((a, b) => taste(game, player, b, profile.fork) - taste(game, player, a, profile.fork) || prefer(game, a, b));
+  let ranked = consider(game, player, Math.max(profile.window + 4, 10));
+  if (profile.v2) {
+    // Ne jamais laisser une maison à l'autre quand un autre coup est possible.
+    const before = pendingCount(game, 1 - player);
+    const safe = ranked.filter((move) => !leavesHouse(game, player, move, before));
+    if (safe.length) ranked = safe;
+  }
+  ranked.sort((a, b) => taste(game, player, b, profile.fork, profile.v2) - taste(game, player, a, profile.fork, profile.v2) || prefer(game, a, b));
   const window = ranked.slice(0, profile.window);
   let best = window[0];
   let bestValue = -Infinity;
@@ -319,22 +354,31 @@ function searchRoot(game, player, profile) {
 }
 
 export function chooseMove(game, difficulty = "medium") {
+  // Tous les niveaux bloquent une maison de l'autre (le nouveau Facile est l'ancien Difficile, qui bloquait).
+  return chooseWith(game, PROFILE[difficulty] || PROFILE.medium, false);
+}
+
+/** Le robot v1 tel qu'il jouait à ce niveau (pour comparer la v2 à l'ancien). */
+export function chooseMoveV1(game, difficulty = "medium") {
+  return chooseWith(game, { ...(V1_PROFILE[difficulty] || V1_PROFILE.medium), deep: difficulty === "expert" }, difficulty === "easy");
+}
+
+function chooseWith(game, base, noBlock) {
   const moves = legalMoves(game);
   if (!moves.length || game.status !== "playing") return null;
-  const base = PROFILE[difficulty] || PROFILE.medium;
   const profile = {
     ...base,
     nodes: 0,
     until: performance.now() + base.ms,
   };
-  if (difficulty === "expert" && moves.length <= 18) {
+  if (base.deep && moves.length <= 18) {
     profile.depth += 1;
     profile.window += 2;
   }
   const player = game.current;
   const win = bestImmediate(game, player, profile.depth > 1);
   if (win) return win;
-  if (difficulty !== "easy") {
+  if (!noBlock) {
     const block = bestImmediate(game, 1 - player, false);
     if (block) return block;
   }

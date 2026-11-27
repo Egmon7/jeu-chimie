@@ -26,6 +26,8 @@ export function loadPrefs() {
   }
   // Règle unique : si tu encercles, tu rejoues (l’ancien choix « un point par tour » n’existe plus).
   prefs.extraTurn = true;
+  // Le niveau « Très difficile » n’existe plus : il passe en Expert.
+  if (prefs.difficulty === "veryhard") prefs.difficulty = "expert";
   return prefs;
 }
 

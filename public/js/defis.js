@@ -72,7 +72,7 @@ export const WEEKLY = [
   { id: "s_mieux_classe", name: "Plus fort que soi", text: "Battre en ligne un joueur mieux classé que toi.", goal: 1, xp: 120, measure: count((g) => online(g) && won(g) && g.opponentHigher === true) },
   { id: "s_adversaires5", name: "Tour du monde", text: "Affronter 5 adversaires différents en ligne.", goal: 5, xp: 100, measure: (games) => new Set(games.filter((g) => online(g) && g.opponentId).map((g) => g.opponentId)).size },
   { id: "s_tournoi", name: "Esprit de tournoi", text: "Jouer un match de tournoi.", goal: 1, xp: 80, measure: count((g) => online(g) && g.tourney === true) },
-  { id: "s_tresdur3", name: "Sans peur", text: "Gagner 3 parties contre Très difficile ou plus.", goal: 3, xp: 110, measure: count((g) => solo(g) && won(g) && atLeast(g, "veryhard")) },
+  { id: "s_tresdur3", name: "Sans peur", text: "Gagner 3 parties contre l’Expert.", goal: 3, xp: 110, measure: count((g) => solo(g) && won(g) && atLeast(g, "veryhard")) },
 ];
 
 export const DEFI_COUNT = 3;

@@ -1,4 +1,4 @@
-import { chooseMove } from "./ai.js";
+import { ROBOT_VERSION, chooseMove } from "./ai.js";
 import { Sounds } from "./audio.js";
 import { ONLINE_SUCCESS, defisNow, msUntilRenew } from "./defis.js";
 import {
@@ -1156,6 +1156,7 @@ function startMatch(settings, mode) {
   app.challengeVerdict = null;
   app.robotSpeak = {};
   app.wasBehind = false;
+  app.aiThinking = false;
   app.handCloses = 0;
   app.traceFaults = 0;
   app.freshChallenges = [];
@@ -1470,7 +1471,9 @@ function refreshHud() {
     ? "Partie terminée"
     : mine
       ? "À vous de jouer"
-      : `Au tour de ${name}`;
+      : app.mode === "solo" && app.aiThinking
+        ? `${name} réfléchit…`
+        : `Au tour de ${name}`;
   updateTimers();
 }
 
@@ -1852,6 +1855,53 @@ function robotBehind() {
   return game.scores[0] - game.scores[1] >= ROBOT_GAP[level];
 }
 
+/* ---------- Le robot réfléchit à côté de l'affichage ---------- */
+let aiWorker = null;
+let aiWorkerBroken = false;
+let aiSeq = 0;
+const aiWaiting = new Map();
+
+function dropAiWorker() {
+  aiWorkerBroken = true;
+  try { aiWorker?.terminate(); } catch { /* ignore */ }
+  aiWorker = null;
+  for (const resolve of aiWaiting.values()) resolve(undefined);
+  aiWaiting.clear();
+}
+
+/**
+ * Le coup du robot, calculé dans un fil à part pour que l'écran ne se fige pas.
+ * Renvoie undefined si ce fil n'est pas disponible : le coup est alors calculé ici, comme avant.
+ */
+function thinkInBackground(game, level) {
+  if (aiWorkerBroken || typeof Worker !== "function") return Promise.resolve(undefined);
+  try {
+    if (!aiWorker) {
+      aiWorker = new Worker(new URL("./aiWorker.js", import.meta.url), { type: "module" });
+      aiWorker.onmessage = (event) => {
+        const resolve = aiWaiting.get(event.data?.id);
+        if (!resolve) return;
+        aiWaiting.delete(event.data.id);
+        resolve(event.data.move || null);
+      };
+      aiWorker.onerror = dropAiWorker;
+    }
+    const id = ++aiSeq;
+    return new Promise((resolve) => {
+      aiWaiting.set(id, resolve);
+      // Pas de réponse en 8 s : on abandonne ce fil et on calcule ici.
+      window.setTimeout(() => {
+        if (!aiWaiting.has(id)) return;
+        dropAiWorker();
+      }, 8000);
+      aiWorker.postMessage({ id, game, level });
+    });
+  } catch {
+    dropAiWorker();
+    return Promise.resolve(undefined);
+  }
+}
+
 function queueAi() {
   app.inputLock = true;
   window.setTimeout(() => {
@@ -1875,12 +1925,29 @@ function queueAi() {
       endLocal();
       return;
     }
-    const move = chooseMove(app.game, app.game.settings?.difficulty || app.prefs.difficulty);
-    if (!move) {
-      app.inputLock = false;
-      return;
-    }
-    playLocal(move, false);
+    const game = app.game;
+    const level = game.settings?.difficulty || app.prefs.difficulty;
+    const ticket = game.movesPlayed;
+    app.aiThinking = true;
+    refreshHud();
+    thinkInBackground(game, level).then((found) => {
+      // Pause, abandon, autre partie ou coup déjà joué pendant la réflexion : ce coup ne compte plus.
+      const still = app.game === game
+        && game.status === "playing"
+        && game.movesPlayed === ticket
+        && !app.paused
+        && app.mode === "solo"
+        && app.players[game.current]?.kind === "ai";
+      app.aiThinking = false;
+      if (!still) return;
+      const move = found === undefined ? chooseMove(game, level) : found;
+      if (!move) {
+        app.inputLock = false;
+        refreshHud();
+        return;
+      }
+      playLocal(move, false);
+    });
   }, 320);
 }
 
@@ -1921,7 +1988,11 @@ async function pullProfile() {
     }
     if (!profile.name) return;
     // La photo n'arrivait pas à s'enregistrer sur le serveur : si cet appareil la garde encore, on la renvoie.
-    if (!profile.photo && local.photo) {
+    // Une seule fois par appareil : une photo retirée ailleurs ne doit pas revenir à chaque visite.
+    let resent = false;
+    try { resent = localStorage.getItem("egmon-photo-resync") === "1"; } catch { /* ignore */ }
+    if (!profile.photo && local.photo && !resent) {
+      try { localStorage.setItem("egmon-photo-resync", "1"); } catch { /* ignore */ }
       syncProfile({ name: profile.name, email: profile.email || "", icon: profile.icon || local.icon, photo: local.photo });
     }
     saveProfile(profile);
@@ -4084,7 +4155,7 @@ const ROBOT_LEVELS = [
   ["easy", "Facile"],
   ["medium", "Moyen"],
   ["hard", "Difficile"],
-  ["veryhard", "Très difficile"],
+  ["veryhard", "Très difficile (retiré)"],
   ["expert", "Expert"],
 ];
 let adminPanel = "";
@@ -4101,6 +4172,7 @@ function openAdminPanel(name) {
   });
   $("admin-title").textContent = ADMIN_PANELS[adminPanel] || "Admin";
   window.scrollTo(0, 0);
+  requestAnimationFrame(() => fitAdminPlayers());
 }
 
 function savedAdminPanel() {
@@ -4145,6 +4217,23 @@ function renderAdminPlayers(players) {
       return `<article class="history-item"><div><strong>${esc(player.name || "Sans nom")}</strong><span>${esc(player.email || "Sans e-mail")}</span></div><div><b>${esc(games)}${esc(online)}</b><span>${esc(when)}</span></div></article>`;
     }).join("")
     : `<p class="empty">${query ? "Personne ne correspond." : "Aucun joueur."}</p>`;
+  requestAnimationFrame(() => fitAdminPlayers());
+}
+
+/** Liste des joueurs : 5 noms visibles, puis on fait défiler. */
+function fitAdminPlayers() {
+  const box = $("admin-players");
+  if (!box) return;
+  const items = box.querySelectorAll(".history-item");
+  if (items.length <= 5 || !box.offsetParent) {
+    box.style.maxHeight = "";
+    box.style.overflowY = "";
+    return;
+  }
+  const top = items[0].getBoundingClientRect().top;
+  const bottom = items[4].getBoundingClientRect().bottom;
+  box.style.maxHeight = `${Math.ceil(bottom - top) + 2}px`;
+  box.style.overflowY = "auto";
 }
 
 function renderAdminRobot(robot, learn) {
@@ -4195,19 +4284,24 @@ function renderAdminLearn(learn) {
 
   // 1) La phrase qui dit où on en est.
   let headline;
-  if (!matches) headline = "Le robot attend les premières parties à observer.";
+  // Le robot v2 joue en Difficile et Expert (Facile = ancien Difficile, Moyen = ancien Expert) ;
+  // l'apprentissage continue d'observer les parties pour préparer la suite.
+  const v2 = ROBOT_VERSION === "v2";
+  if (v2) headline = `Le robot ${ROBOT_VERSION} joue en Difficile et Expert. Il continue d’apprendre : ${plural(matches, "partie gardée", "parties gardées")}, ${plural(sits, "situation repérée", "situations repérées")}.`;
+  else if (!matches) headline = "Le robot attend les premières parties à observer.";
   else if (!candidate) headline = `Le robot observe : ${plural(matches, "partie gardée", "parties gardées")}, ${plural(sits, "situation repérée", "situations repérées")}. Il joue encore comme avant (v1) : rien ne change pour les joueurs.`;
   else if (!activated) headline = `Un nouveau robot (${candidate}) est prêt à être comparé. Le robot qui joue reste le v1.`;
-  else headline = `Le nouveau robot (${candidate}) joue en Très difficile / Expert.`;
+  else headline = `Le nouveau robot (${candidate}) joue en Difficile / Expert.`;
   $("learn-headline").textContent = headline;
 
   // 2) Les étapes, avec ce qui est fait.
   const steps = [
     ["Observer les parties", matches > 0, matches ? plural(matches, "partie gardée", "parties gardées") : "en attente"],
     ["Repérer les situations", sits > 0, sits ? plural(sits, "situation", "situations") : "en attente"],
-    ["Préparer un nouveau robot", Boolean(candidate), candidate ? `version ${candidate}` : "prochaine étape, pas encore commencée"],
-    ["Le comparer à l’ancien", false, "après la préparation"],
-    ["Ta décision : l’activer ou non", Boolean(activated), activated ? "activé" : "à la fin"],
+    ["Préparer un nouveau robot", v2 || Boolean(candidate), v2 ? "v2 : ne laisse pas de maison, cherche les doubles menaces" : candidate ? `version ${candidate}` : "prochaine étape, pas encore commencée"],
+    ["Le comparer à l’ancien", v2, v2 ? "Expert 12×12 : 13 victoires v2, 6 v1, 5 nuls" : "après la préparation"],
+    ["Ta décision : l’activer ou non", v2 || Boolean(activated), v2 ? "activé en Difficile et Expert" : activated ? "activé" : "à la fin"],
+    ["Continuer d’apprendre", false, "les parties sont toujours observées pour la v3"],
   ];
   const current = steps.findIndex((step) => !step[1]);
   $("learn-steps").innerHTML = steps.map(([label, done, detail], index) => {

@@ -2975,8 +2975,15 @@ socket.on("move", (move, ack) => {
     const found = claim(socket);
     if (!found || found.room.game || limited(`${socket.id}:present`, 40, 60_000)) return;
     const room = found.room;
-    // Invitation : celui qui invite confirme en réglant la partie (« quick-setup »), pas ici.
-    if (room.direct && found.seat === 0) return;
+    // Invitation : celui qui invite confirme en réglant la partie (« quick-setup »).
+    // Une page restée ouverte avant la mise à jour n'a que « Je suis là » : il vaut accord sur les règles proposées.
+    if (room.direct && found.seat === 0) {
+      if (!room.ready[0]) {
+        room.ready[0] = true;
+        emitState(room, { type: "proposed" });
+      }
+      return;
+    }
     // Invitation : l'invité ne confirme qu'une fois les règles proposées.
     if (room.direct && !room.ready[0]) return;
     room.ready[found.seat] = true;
