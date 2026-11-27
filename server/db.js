@@ -1471,26 +1471,47 @@ export async function robotOverview() {
   };
 }
 
+/**
+ * Les matchs en ligne, un par match (chaque joueur a sa propre ligne dans games).
+ * Depuis le 20/11/2026 le serveur enregistre les deux lignes à la même heure exacte : elles font un match.
+ * Avant, chaque joueur l'enregistrait lui-même, à quelques secondes d'écart : deux lignes seules
+ * des deux joueurs, à moins de 10 s, font aussi un match. Deux matchs de suite ne sont plus fusionnés.
+ * Donne les colonnes day (jour à Paris) et played_at.
+ */
+const ONLINE_MATCHES_SQL = (filter = "") => `
+  WITH r AS (
+    SELECT played_at, player_id::text AS who,
+      CASE WHEN jsonb_typeof(names) = 'array'
+        THEN (SELECT string_agg(lower(val), '|' ORDER BY lower(val)) FROM jsonb_array_elements_text(names) AS val)
+        ELSE '' END AS duo
+    FROM games WHERE mode = 'online' ${filter}
+  ),
+  units AS (
+    SELECT played_at, duo, (played_at AT TIME ZONE 'Europe/Paris')::date AS day, COUNT(*) AS n, MIN(who) AS who
+    FROM r GROUP BY played_at, duo
+  ),
+  singles AS (
+    SELECT *, LAG(played_at) OVER w AS p_at, LAG(who) OVER w AS p_who, LAG(played_at, 2) OVER w AS p2_at, LAG(who, 2) OVER w AS p2_who
+    FROM units WHERE n = 1
+    WINDOW w AS (PARTITION BY duo ORDER BY played_at)
+  )
+  SELECT day, played_at FROM units WHERE n >= 2
+  UNION ALL
+  SELECT day, played_at FROM singles
+  WHERE NOT (p_at IS NOT NULL AND p_who <> who AND played_at - p_at <= interval '10 seconds'
+    AND NOT (p2_at IS NOT NULL AND p2_who <> p_who AND p_at - p2_at <= interval '10 seconds'))`;
+
 export async function adminOverview() {
   const { rows: counts } = await pool.query(`
     SELECT
       (SELECT COUNT(*)::int FROM profiles) AS people,
       (SELECT COUNT(*)::int FROM profiles WHERE password_hash <> '') AS accounts,
-      (SELECT COUNT(*)::int FROM games) AS games,
       (SELECT COUNT(*)::int FROM games WHERE mode = 'solo') AS solo,
       (SELECT COUNT(*)::int FROM games WHERE mode = 'local') AS local,
       (SELECT COUNT(*)::int FROM games WHERE mode = 'online') AS online_rows,
       (SELECT COUNT(*)::int FROM messages) AS messages
   `);
-  const { rows: onlineRows } = await pool.query(`
-    SELECT COUNT(*)::int AS online FROM (
-      SELECT DISTINCT date_trunc('minute', played_at),
-        CASE WHEN jsonb_typeof(names) = 'array'
-          THEN (SELECT string_agg(lower(val), '|' ORDER BY lower(val)) FROM jsonb_array_elements_text(names) AS val)
-          ELSE '' END
-      FROM games WHERE mode = 'online'
-    ) matches
-  `);
+  const { rows: onlineRows } = await pool.query(`SELECT COUNT(*)::int AS online FROM (${ONLINE_MATCHES_SQL()}) matches`);
   const { rows: days } = await pool.query(`
     WITH series AS (
       SELECT generate_series(
@@ -1499,23 +1520,20 @@ export async function adminOverview() {
         interval '1 day'
       )::date AS day
     ),
-    recent AS (
-      SELECT (played_at AT TIME ZONE 'Europe/Paris')::date AS day, mode, played_at, names
-      FROM games
-      WHERE played_at >= ((SELECT min(day) FROM series)::timestamp AT TIME ZONE 'Europe/Paris')
+    since AS (
+      SELECT ((SELECT min(day) FROM series)::timestamp AT TIME ZONE 'Europe/Paris') AS at
     ),
     per_day AS (
-      SELECT day, COUNT(*)::int AS games FROM recent GROUP BY day
+      SELECT (played_at AT TIME ZONE 'Europe/Paris')::date AS day,
+        COUNT(*) FILTER (WHERE mode = 'solo')::int AS robot,
+        COUNT(*) FILTER (WHERE mode = 'local')::int AS local
+      FROM games
+      WHERE mode IN ('solo', 'local') AND played_at >= (SELECT at FROM since)
+      GROUP BY 1
     ),
     matches AS (
-      SELECT day, COUNT(*)::int AS online FROM (
-        SELECT DISTINCT day, date_trunc('minute', played_at),
-          CASE WHEN jsonb_typeof(names) = 'array'
-            THEN (SELECT string_agg(lower(val), '|' ORDER BY lower(val)) FROM jsonb_array_elements_text(names) AS val)
-            ELSE '' END
-        FROM recent
-        WHERE mode = 'online'
-      ) m
+      SELECT day, COUNT(*)::int AS online
+      FROM (${ONLINE_MATCHES_SQL("AND played_at >= (SELECT at FROM since) - interval '1 minute'")}) m
       GROUP BY day
     ),
     seen AS (
@@ -1525,7 +1543,8 @@ export async function adminOverview() {
     )
     SELECT series.day::text AS day,
       COALESCE(seen.connected, 0) AS connected,
-      COALESCE(per_day.games, 0) AS games,
+      (COALESCE(per_day.robot, 0) + COALESCE(per_day.local, 0) + COALESCE(matches.online, 0))::int AS games,
+      COALESCE(per_day.robot, 0) AS robot,
       COALESCE(matches.online, 0) AS online
     FROM series
     LEFT JOIN seen USING (day)
@@ -1563,7 +1582,8 @@ export async function adminOverview() {
   return {
     people: Number(count.people) || 0,
     accounts: Number(count.accounts) || 0,
-    games: Number(count.games) || 0,
+    // Parties = robot + même écran + matchs en ligne (un match compte une fois, pas une fois par joueur).
+    games: (Number(count.solo) || 0) + (Number(count.local) || 0) + (Number(onlineRows[0]?.online) || 0),
     solo: Number(count.solo) || 0,
     local: Number(count.local) || 0,
     onlineRows: Number(count.online_rows) || 0,
@@ -1580,6 +1600,7 @@ export async function adminOverview() {
       day: row.day,
       connected: Number(row.connected) || 0,
       games: Number(row.games) || 0,
+      robot: Number(row.robot) || 0,
       online: Number(row.online) || 0,
     })),
     players: players.map((row) => ({

@@ -2625,23 +2625,30 @@ function createBlocked(socket) {
 
 function liveSnapshot() {
   reapRooms();
+  // Une personne compte une fois, même avec plusieurs onglets ouverts.
   const people = new Set();
-  let robotPlayers = 0;
+  const robot = new Set();
   for (const item of presence.values()) {
     if (item?.id) people.add(item.id);
-    if (item?.activity === "robot") robotPlayers += 1;
+    if (item?.activity === "robot" && item.id) robot.add(item.id);
   }
-  let onlinePlayers = 0;
+  const online = new Set();
   let playingRooms = 0;
   let waitingRooms = 0;
   for (const room of rooms.values()) {
+    const present = room.players.filter((player) => player?.connected && socketAlive(player.socketId));
     if (room.game?.status === "playing") {
+      // Un match dont les deux joueurs sont partis n'est plus « en cours ».
+      if (!present.length) continue;
       playingRooms += 1;
-      onlinePlayers += room.players.filter((player) => player).length;
-    } else if (!room.game) {
+      for (const player of room.players) if (player?.id) online.add(player.id);
+    } else if (!room.game && present.length) {
       waitingRooms += 1;
     }
   }
+  for (const id of online) robot.delete(id);
+  const robotPlayers = robot.size;
+  const onlinePlayers = online.size;
   return {
     connected: people.size,
     playing: onlinePlayers + robotPlayers,
